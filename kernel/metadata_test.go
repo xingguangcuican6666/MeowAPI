@@ -1,0 +1,47 @@
+package kernel_test
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/xingguangcuican6666/MeowAPI/kernel"
+)
+
+// TestMetadataIsScopedPerModule asserts the metadata store's two-tier model:
+// kernel-published values are readable by any context holding metadata:read,
+// while a context's own writes are private to it. This is stricter than the
+// prototype, where a single global store was readable by every plugin, which
+// made one plugin's state visible to all the others.
+func TestMetadataIsScopedPerModule(t *testing.T) {
+	quietConsole(t)
+	k := bootOne(t)
+
+	reader := &metaReader{}
+	kernel.Register("metareader", func() (kernel.Module, error) { return reader, nil })
+	t.Cleanup(func() { kernel.Unregister("metareader") })
+
+	// Published before the module loads, so its OnLoad can see it.
+	k.Publish("kernel.boot.id", "test-boot")
+	// A value owned by init, not published to modules.
+	require.NoError(t, k.InitContext().SyscallMetadataSet("init.private", "secret"))
+
+	pid, err := k.Load(kernel.Manifest{
+		Name: "metareader", Version: "0.1.0", MinKernelAPI: 1, MaxKernelAPI: 1,
+		Require: []kernel.Op{kernel.OpMetadataRead},
+	})
+	require.NoError(t, err)
+	defer func() { _ = k.Unload(pid) }()
+
+	assert.Equal(t, "test-boot", reader.published,
+		"a kernel-published value must be readable under metadata:read")
+	assert.Nil(t, reader.initPrivate,
+		"a module must not read metadata owned by another pid")
+	assert.NoError(t, reader.err)
+
+	// The exported snapshot only ever exposes published entries, so a
+	// diagnostic dump cannot leak a module's private state.
+	snap := kernel.MetadataSnapshot()
+	assert.Equal(t, "test-boot", snap["kernel.boot.id"])
+	assert.NotContains(t, snap, "init.private")
+}

@@ -1,0 +1,81 @@
+---
+title: "JWKS 端点"
+description: "GET /oauth2/jwks"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<Info>
+`GET /oauth2/jwks`
+</Info>
+
+返回 JSON Web Key Set，供依赖方验证 ID Token 的 RS256 签名。无需认证，可缓存（`Cache-Control: public, max-age=3600`）。
+
+## 请求
+
+```bash
+curl https://your-newapi.example.com/oauth2/jwks
+```
+
+## 响应
+
+```json
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "use": "sig",
+      "alg": "RS256",
+      "kid": "b1e7...uuid",
+      "n": "s0d…（base64url 编码的模数）",
+      "e": "AQAB"
+    }
+  ]
+}
+```
+
+<ResponseField name="kty" type="string">
+  密钥类型，`RSA`。
+</ResponseField>
+<ResponseField name="use" type="string">
+  用途，`sig`（签名）。
+</ResponseField>
+<ResponseField name="alg" type="string">
+  算法，`RS256`。
+</ResponseField>
+<ResponseField name="kid" type="string">
+  Key ID，与 ID Token JWT 头中的 `kid` 对应，用于选择验签公钥。签名密钥首次使用时自动生成（RSA 2048）并持久化，`kid` 稳定不变。
+</ResponseField>
+<ResponseField name="n" type="string">
+  RSA 公钥模数（base64url，无填充）。
+</ResponseField>
+<ResponseField name="e" type="string">
+  RSA 公钥指数（base64url，无填充），通常为 `AQAB`。
+</ResponseField>
+
+<Tip>
+按 `kid` 选择公钥，而非假设密钥集中只有一把。虽然当前仅暴露一把当前签名密钥，但 `keys` 是数组形态，客户端应按标准做法根据 JWT 头的 `kid` 匹配。
+</Tip>
+
+## 错误
+
+- 授权服务器未启用：`404`，`{ "error": "not_found", ... }`
+- 构建密钥集失败：`500`，`{ "error": "server_error", ... }`

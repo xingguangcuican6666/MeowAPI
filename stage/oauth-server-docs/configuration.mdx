@@ -1,0 +1,90 @@
+---
+title: "服务器配置"
+description: "管理员侧的授权服务器系统设置（oauth_server 配置组）"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<Note>
+本页面向 **New API 管理员/部署者**。第三方对接方通常无需关心这些设置，只需从管理员处获得端点地址与客户端凭据。
+</Note>
+
+授权服务器的行为由系统设置的 `oauth_server` 配置组控制。
+
+## 设置项
+
+<ResponseField name="enabled" type="boolean" default="false">
+  是否启用授权服务器。关闭时所有公开端点返回错误。
+</ResponseField>
+<ResponseField name="issuer" type="string">
+  OIDC Issuer 标识。为空时回退到系统的 `ServerAddress`（默认 `http://localhost:3000`）。所有端点 URL 由它拼接，末尾斜杠会被去除。
+</ResponseField>
+<ResponseField name="access_token_ttl" type="integer" default="3600">
+  Access Token 有效期（秒）。`0` 或负值回退默认 `3600`（1 小时）。同时决定 ID Token 的 `exp`。
+</ResponseField>
+<ResponseField name="refresh_token_ttl" type="integer" default="2592000">
+  Refresh Token 有效期（秒）。`0` 或负值回退默认 `2592000`（30 天）。
+</ResponseField>
+<ResponseField name="authorization_code_ttl" type="integer" default="600">
+  授权码（及待授权记录）有效期（秒）。`0` 或负值回退默认 `600`（10 分钟）。
+</ResponseField>
+<ResponseField name="allow_user_registration" type="boolean" default="false">
+  是否允许非管理员用户自行注册 OAuth 应用。默认关闭，即客户端由管理员统一管理。
+</ResponseField>
+<ResponseField name="signing_key / signing_key_id" type="string">
+  ID Token 的 RSA 私钥（PEM，`signing_key`）及其 JWKS `kid`（`signing_key_id`）。**首次使用时自动生成并持久化**，无需手工配置。其中 `signing_key`（私钥）出于安全考虑不会通过接口回传给前端；`signing_key_id` 是公开的 JWKS `kid`，会在 JWKS 中公布，无需保密。
+</ResponseField>
+
+## 客户端管理接口
+
+登录用户可通过以下接口管理客户端应用（面板 `{success, message, data}` 封装，需 UserAuth）。视图隔离：管理员可查看并管理所有客户端，普通用户只能查看与管理自己创建的客户端（引用他人客户端一律返回"不存在"，避免泄露其存在性）。创建应用需为管理员，或由管理员为该普通用户开启"创建 OAuth 应用"权限：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/oauth-server/scopes` | 获取可授予的 scope 目录（每项含 `oidc` / `sensitive` 标记） |
+| `GET` | `/api/oauth-server/clients` | 列出客户端（管理员看全部，普通用户仅看自己创建的） |
+| `POST` | `/api/oauth-server/clients` | 创建客户端（机密客户端返回一次性 `secret`；需管理员或被授予创建权限） |
+| `GET` | `/api/oauth-server/clients/:id` | 查看客户端 |
+| `PUT` | `/api/oauth-server/clients/:id` | 更新客户端 |
+| `DELETE` | `/api/oauth-server/clients/:id` | 删除客户端（级联删除其 OAuth 令牌、授权，以及该应用为所有用户创建的 API Key） |
+| `POST` | `/api/oauth-server/clients/:id/rotate-secret` | 轮换客户端密钥（返回一次性新 `secret`） |
+
+## 用户侧接口（已登录用户）
+
+登录用户可查看与撤销自己授权过的应用（需 UserAuth）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/oauth-server/authorizations` | 列出已授权的应用及 scope |
+| `DELETE` | `/api/oauth-server/authorizations/:client_id` | 断开某应用（撤销其为该用户签发的全部令牌，并删除该应用为该用户创建的全部 API Key） |
+
+<Info>
+`/api/oauth-server/authorize/context`、`/authorize/approve`、`/authorize/deny` 供 New API 前端同意页使用，属内部实现，此处不展开。
+</Info>
+
+## 限流环境变量
+
+`authorize` / `token` / `revoke` / `keys` 的限流阈值：
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `CRITICAL_RATE_LIMIT` | `20` | 时间窗内允许的请求数 |
+| `CRITICAL_RATE_LIMIT_DURATION` | `1200` | 时间窗（秒，默认 20 分钟） |

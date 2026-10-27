@@ -1,0 +1,128 @@
+---
+title: "授权端点"
+description: "GET /oauth2/authorize"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<Info>
+`GET /oauth2/authorize` · 受限流保护（默认 20 次 / 20 分钟）
+</Info>
+
+发起授权码流程（RFC 6749 §4.1.1）。这是一个**面向浏览器**的端点：你把用户浏览器重定向到这里，用户完成登录与同意后，浏览器会被重定向回你的 `redirect_uri`。
+
+## 查询参数
+
+<ParamField query="response_type" type="string" required>
+  必须为 `code`。其他值会以 `unsupported_response_type` 回跳。
+</ParamField>
+<ParamField query="client_id" type="string" required>
+  你的客户端标识。缺失或未知会渲染错误页（不重定向）。
+</ParamField>
+<ParamField query="redirect_uri" type="string" required>
+  回调地址，必须与注册值**精确匹配**。缺失或未注册会渲染错误页（不重定向）。
+</ParamField>
+<ParamField query="scope" type="string">
+  空格分隔的 scope。缺省时使用客户端允许的全部 scope。须为服务器支持且在客户端允许范围内。
+</ParamField>
+<ParamField query="state" type="string">
+  透传的防 CSRF 随机值，回跳时原样返回。强烈建议始终携带。
+</ParamField>
+<ParamField query="nonce" type="string">
+  绑定 ID Token 的随机值；若携带，会出现在签发的 ID Token 的 `nonce` claim 中。
+</ParamField>
+<ParamField query="code_challenge" type="string">
+  PKCE 挑战值。**公开客户端必填**；机密客户端可选。
+</ParamField>
+<ParamField query="code_challenge_method" type="string">
+  若带了 `code_challenge`，必须为 `S256`。
+</ParamField>
+
+## 示例
+
+```text
+GET https://your-newapi.example.com/oauth2/authorize
+  ?response_type=code
+  &client_id=cli_xxx
+  &redirect_uri=https%3A%2F%2Fyour-app.example.com%2Fcallback
+  &scope=openid%20profile%20email
+  &state=xyz123
+  &nonce=n-abc
+  &code_challenge=E9Melhoa2Ow...
+  &code_challenge_method=S256
+```
+
+## 行为
+
+<Steps>
+  <Step title="校验并暂存">
+    服务器校验参数后，把请求存为一次性"待授权"记录，302 到 New API 同意页 `/oauth-consent?req=<token>`（带 `Cache-Control: no-store`）。
+  </Step>
+  <Step title="用户登录并同意">
+    用户在 New API 前端登录并查看同意页。此环节及其接口属 New API 内部实现，第三方应用不直接参与。
+  </Step>
+  <Step title="回跳应用">
+    用户同意后浏览器 302 回 `redirect_uri`，携带授权码与 `state`。
+  </Step>
+</Steps>
+
+## 成功回跳
+
+```text
+https://your-app.example.com/callback?code=AUTH_CODE&state=xyz123
+```
+
+- `code`：单次有效的授权码，默认 10 分钟内到 [令牌端点](/endpoints/token) 兑换。
+- `state`：原样返回，务必与发起时核对。
+
+## 错误
+
+授权端点有两类错误，处理方式不同：
+
+### 1. 直接渲染错误页（不重定向）
+
+当无法安全地回跳到客户端时，返回 `400` 的 HTML 错误页（因为 `redirect_uri` 尚不可信）：
+
+- 授权服务器未启用
+- 缺失 / 未知 `client_id`
+- 应用已被禁用
+- `redirect_uri` 缺失或未注册
+
+### 2. 通过 redirect_uri 回传错误
+
+客户端与回调已可信后，协议错误按 RFC 6749 §4.1.2.1 以查询参数回跳：
+
+```text
+https://your-app.example.com/callback?error=invalid_scope&error_description=...&state=xyz123
+```
+
+| `error` | 触发条件 |
+| --- | --- |
+| `unsupported_response_type` | `response_type` 不是 `code` |
+| `invalid_scope` | 请求了不支持的 scope，或超出客户端允许范围 |
+| `invalid_request` | 带了 `code_challenge` 但方法不是 `S256`；或公开客户端未带 `code_challenge` |
+| `server_error` | 暂存授权请求失败 |
+| `access_denied` | 用户在同意页拒绝授权 |
+
+<Warning>
+应用回调处理必须同时覆盖成功（`code`）与失败（`error`）两种回跳，并在任一情况下都先校验 `state`。
+</Warning>
+

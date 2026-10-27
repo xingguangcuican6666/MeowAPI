@@ -1,0 +1,139 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel a superseded run on the same ref. A stale green tick on an abandoned
+# commit is worse than no tick.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.27.3'
+
+jobs:
+  # Instruction file integrity runs first and independently. It is the cheapest
+  # job and the one whose failure means the other jobs' instructions cannot be
+  # trusted, so a red here is not a formatting nit.
+  integrity:
+    name: instruction file integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: instrcheck (Rule A + Rule B)
+        run: go run ./tools/instrcheck
+
+      # Defence in depth: assert the same invariant without the Go tool, so a
+      # broken or weakened instrcheck cannot silently pass the job. Grep for the
+      # codepoint ranges directly over the tracked instruction surface.
+      - name: independent ASCII assertion
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            if LC_ALL=C grep -nP '[\x{0400}-\x{04FF}\x{0370}-\x{03FF}\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2069}\x{E0000}-\x{E007F}]' "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::forbidden codepoint range present"
+              fail=1
+            fi
+            if LC_ALL=C grep -qP '[^\x00-\x7F]' "$f" && [ "$(basename "$f")" != "LICENSE" ]; then
+              echo "::error file=$f::non-ASCII byte in an instruction file"
+              fail=1
+            fi
+          done < <(git ls-files | grep -Ei '(^|/)(AGENTS?\.md|CLAUDE\.md|GEMINI\.md)$|^\.agents/|^\.claude/|^\.cursor/|(^|/)mcp(_config)?\.json$')
+          if [ "$fail" -ne 0 ]; then
+            echo "instruction files violate the ASCII and invisible-character rules"
+            exit 1
+          fi
+          echo "independent assertion: clean"
+
+  build:
+    name: build and vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # gofmt over the whole module. stage/ carries its own go.mod and is
+      # reference material, so it is excluded rather than reformatted.
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          out="$(gofmt -l $(go list -f '{{.Dir}}' ./...))"
+          if [ -n "$out" ]; then
+            echo "these files are not gofmt-clean:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: build
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: kernel imports only the standard library
+        run: |
+          set -euo pipefail
+          self="$(go list -m)"
+          # Filter to module paths (contain a dot in the first element) and drop
+          # this module's own packages, which share the same shape.
+          deps="$(go list -deps ./kernel \
+            | grep -E '^[a-z0-9.-]+\.[a-z]{2,}/' \
+            | grep -v "^${self}/" || true)"
+          if [ -n "$deps" ]; then
+            echo "::error::the kernel must not import third-party packages:"
+            echo "$deps"
+            exit 1
+          fi
+          echo "kernel dependency hygiene: clean"
+
+  test:
+    name: test (race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go test -race
+        run: go test -race -count=1 -timeout 10m ./...
+
+      # The security suite is the point of this project, so an empty result is a
+      # failure rather than a pass. If the tests stop running, this goes red.
+      - name: assert the security suite actually ran
+        run: |
+          set -euo pipefail
+          out="$(go test -count=1 -v ./kernel/ ./tools/instrcheck/ 2>&1)"
+          passed="$(printf '%s' "$out" | grep -c '^--- PASS' || true)"
+          failed="$(printf '%s' "$out" | grep -c '^--- FAIL' || true)"
+          echo "passed=$passed failed=$failed"
+          if [ "$failed" -ne 0 ]; then
+            echo "$out" | grep '^--- FAIL'
+            exit 1
+          fi
+          if [ "$passed" -lt 30 ]; then
+            echo "::error::expected at least 30 passing security tests, got $passed"
+            echo "a guard against the suite silently not running"
+            exit 1
+          fi

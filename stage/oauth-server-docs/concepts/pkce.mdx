@@ -1,0 +1,86 @@
+---
+title: "PKCE"
+description: "授权码交换的 PKCE（RFC 7636），仅支持 S256"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+PKCE（Proof Key for Code Exchange，RFC 7636）把授权码绑定到发起授权的那一方，防止授权码被截获后滥用。
+
+## 是否必须
+
+<CardGroup cols={2}>
+  <Card title="公开客户端" icon="triangle-exclamation">
+    **强制**。未带 `code_challenge` 的授权请求会被拒绝（`invalid_request`）。
+  </Card>
+  <Card title="机密客户端" icon="thumbs-up">
+    **可选但强烈建议**。带上后按 PKCE 校验，安全性更高。
+  </Card>
+</CardGroup>
+
+## 仅支持 S256
+
+服务器只接受 `code_challenge_method=S256`。明文（`plain`）方法**不支持**（遵循 OAuth 2.1 / RFC 7636 §7.2 的建议）。发现文档中：
+
+```json
+"code_challenge_methods_supported": ["S256"]
+```
+
+## 计算方式
+
+<Steps>
+  <Step title="生成 code_verifier">
+    高熵随机串（RFC 7636 建议 43~128 个字符，取自 `[A-Za-z0-9-._~]`）。
+  </Step>
+  <Step title="派生 code_challenge">
+    `code_challenge = BASE64URL-ENCODE(SHA256(ASCII(code_verifier)))`（base64url、去除 `=` 填充）。
+  </Step>
+  <Step title="授权请求带上 challenge">
+    在 `/oauth2/authorize` 传 `code_challenge` 与 `code_challenge_method=S256`。
+  </Step>
+  <Step title="令牌请求带上 verifier">
+    在 `/oauth2/token` 传原始 `code_verifier`。服务器重新计算并**常数时间**比对。
+  </Step>
+</Steps>
+
+## 校验规则
+
+- 授权端点：只要带了 `code_challenge`，`code_challenge_method` 就必须是 `S256`，否则 `invalid_request`。
+- 令牌端点：若授权码携带了 `code_challenge`，则 `code_verifier` 必填且必须匹配，否则分别返回 `invalid_request`（缺失）或 `invalid_grant`（不匹配）。
+
+<Note>
+比对逻辑：`BASE64URL(SHA256(code_verifier))` 必须等于授权时存下的 `code_challenge`，且使用常数时间比较以避免侧信道泄露。
+</Note>
+
+## 生成示例
+
+```bash
+# code_verifier
+code_verifier=$(openssl rand -base64 60 | tr -d '\n=+/' | cut -c1-64)
+
+# code_challenge = BASE64URL(SHA256(code_verifier))
+code_challenge=$(printf '%s' "$code_verifier" \
+  | openssl dgst -sha256 -binary \
+  | openssl base64 | tr '+/' '-_' | tr -d '=\n')
+
+echo "verifier=$code_verifier"
+echo "challenge=$code_challenge"
+```

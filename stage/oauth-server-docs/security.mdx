@@ -1,0 +1,77 @@
+---
+title: "安全模型"
+description: "授权服务器采用的安全控制与对接方应遵循的实践"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+授权服务器按 OWASP ASVS 与 OAuth/OIDC 相关规范设计。本页汇总其内建控制，以及对接方应遵循的实践。
+
+## 服务端内建控制
+
+<AccordionGroup>
+  <Accordion title="授权码：单次、短时、PKCE" icon="key">
+    授权码单次有效、默认 10 分钟过期；公开客户端强制 PKCE（`S256`），机密客户端可选。`code_verifier` 与 `code_challenge` 做常数时间比对。
+  </Accordion>
+  <Accordion title="redirect_uri 精确匹配" icon="link">
+    回调地址逐字符精确匹配（无前缀/子串逻辑），注册时要求绝对 URL、无 fragment、https（loopback 除外），防开放重定向。
+  </Accordion>
+  <Accordion title="凭据与令牌落库存哈希" icon="database">
+    `client_secret`、Access/Refresh Token 均只存 HMAC 哈希（以进程 `SessionSecret` 派生密钥、按用途做域分隔）。明文只在颁发时返回一次。令牌永不写入日志。
+  </Accordion>
+  <Accordion title="Refresh Token 轮换 + 重放检测" icon="arrows-rotate">
+    每次刷新轮换令牌；重复使用已轮换的旧 Refresh Token 判定为重放，撤销整族令牌（RFC 6819 §5.2.2.3）。
+  </Accordion>
+  <Accordion title="客户端绑定" icon="lock">
+    授权码只能由签发它的客户端兑换；Refresh Token 只能由所属客户端刷新；撤销只作用于所属客户端的令牌。
+  </Accordion>
+  <Accordion title="规范化错误响应" icon="triangle-exclamation">
+    令牌/撤销/userinfo 端点返回 RFC 6749 §5.2 的 `{error, error_description}` 与正确状态码及 `Cache-Control: no-store`，而非 200 包裹的成功体。客户端认证失败按需附带 `WWW-Authenticate`。
+  </Accordion>
+  <Accordion title="ID Token 签名" icon="signature">
+    ID Token 以 RS256 签名，`aud` 绑定 `client_id`，公钥经 JWKS 暴露、`kid` 稳定。
+  </Accordion>
+  <Accordion title="关键端点限流" icon="gauge">
+    `authorize`、`token`、`revoke`，以及 `/oauth2/api/*` 中动用资金 / 取回密钥明文的接口受限流保护（默认 20 次 / 20 分钟）。
+  </Accordion>
+  <Accordion title="业务 scope 二次门禁（Trusted）" icon="shield-check">
+    敏感 scope（`wallet.topup`、`apikeys.manage`）仅当签发令牌的客户端被管理员标记为 **Trusted** 时才可申请/持有；服务端在每次业务调用时按 `client_id` 实时复核 Trusted，绝不信任客户端声明或配置期结论（OWASP ASVS V4 访问控制、纵深防御）。`Trusted` 字段仅管理员可写。
+  </Accordion>
+</AccordionGroup>
+
+## 对接方应遵循
+
+<Check>**始终校验 `state`**：发起时生成、回调时核对，防 CSRF。</Check>
+<Check>**尽量使用 PKCE**：公开客户端必须；机密客户端也建议。</Check>
+<Check>**妥善保管 `client_secret`**：仅用于后端；泄露后立即请求管理员轮换。</Check>
+<Check>**验证 ID Token**：校验签名（按 `kid` 取 JWKS 公钥）、`iss`、`aud`、`exp`，以及发起时带的 `nonce`。</Check>
+<Check>**全程 HTTPS**：生产环境的 Issuer 与回调都应为 https。</Check>
+<Check>**安全存储令牌**：Access/Refresh Token 等同凭据，勿放入 URL、日志或前端可读存储。</Check>
+<Check>**最小化 scope 申请**：只申请业务所需的 scope。敏感能力（`wallet.topup`、`apikeys.manage`）需管理员将客户端标记为 Trusted 后方可授权。</Check>
+<Check>**处理刷新轮换**：保存每次返回的新 `refresh_token`；遇 `invalid_grant` 时引导用户重新授权。</Check>
+
+<Warning>
+撤销令牌**不会**即时使已签发的 ID Token 失效——ID Token 是自包含 JWT，仅受 `exp` 约束。敏感判定应以 Access Token 的实时校验（`userinfo`）为准。
+</Warning>
+
+## 与 New API 第三方登录的区别
+
+本文档描述的是 New API 作为**身份提供方（IdP）**对外提供的协议。New API 自身"用 GitHub/OIDC 登录到 New API"的第三方登录（代码在 `oauth/` 与 `/api/oauth/*`）方向相反，是另一套独立机制，与此处无关。

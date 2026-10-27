@@ -1,0 +1,107 @@
+---
+title: "令牌"
+description: "Access / Refresh / ID Token 的形态、生命周期、轮换与验证"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+授权服务器颁发三种令牌：不透明的 **Access Token**、不透明的 **Refresh Token**，以及 JWT 形态的 **ID Token**。
+
+## 三种令牌一览
+
+| 令牌 | 形态 | 默认有效期 | 用途 |
+| --- | --- | --- | --- |
+| Access Token | 不透明随机串（`at_` 前缀） | 3600 秒（1 小时） | 调用 `userinfo` |
+| Refresh Token | 不透明随机串（`rt_` 前缀） | 30 天 | 换取新的一组令牌 |
+| ID Token | RS256 签名 JWT | 与 Access Token 同（1 小时） | 携带身份 claims，供客户端验证 |
+
+<Note>
+Access / Refresh Token 是**不透明**的：请勿解析其内容或依赖前缀。服务端只保存令牌的 HMAC 哈希，明文只在颁发时返回一次。ID Token 才是可解析、可验签的 JWT。
+</Note>
+
+有效期由系统设置控制，`0` 或负值回退到默认：
+
+| 设置项 | 默认值 |
+| --- | --- |
+| `oauth_server.access_token_ttl` | `3600`（1 小时） |
+| `oauth_server.refresh_token_ttl` | `2592000`（30 天） |
+| `oauth_server.authorization_code_ttl` | `600`（10 分钟） |
+
+## Access Token
+
+- 授权码换取令牌，或刷新令牌时颁发。
+- 在 `Authorization: Bearer <token>` 头（或 `access_token` 表单字段）中使用。
+- 服务端在 `userinfo` 处按数据库校验：被撤销或已过期的令牌一律视为无效。
+- 有效期到 `expires_in` 秒后过期。
+
+## Refresh Token
+
+授权码流程与刷新流程都会返回一个新的 `refresh_token`。它带有**轮换（rotation）**与**重放检测**：
+
+<Steps>
+  <Step title="每次刷新都会轮换">
+    用 Refresh Token 刷新时，旧令牌立即失效并被新的一组令牌取代。**请始终保存响应里返回的新 `refresh_token`。**
+  </Step>
+  <Step title="重放会触发整族撤销">
+    若把一个已被轮换过的（旧）Refresh Token 再次使用，服务器判定为重放（可能被窃取），会**撤销该授权下的整族令牌**，并返回 `invalid_grant`。此后用户需重新授权。
+  </Step>
+  <Step title="客户端绑定">
+    刷新时会重新核对客户端：签发给某客户端的令牌不能被另一个客户端刷新。
+  </Step>
+</Steps>
+
+无效、未知或已过期的 Refresh Token 统一返回 `invalid_grant`（见 [错误参考](/errors)）。
+
+## ID Token
+
+授予 `openid` scope 时，令牌端点额外返回一个 **RS256 签名的 JWT** 作为 `id_token`。其 claims：
+
+| claim | 说明 |
+| --- | --- |
+| `iss` | Issuer，等于发现文档中的 `issuer` |
+| `sub` | 用户唯一标识（字符串） |
+| `aud` | 客户端 `client_id` |
+| `iat` | 签发时间（Unix 秒） |
+| `exp` | 过期时间（签发时刻 + Access Token TTL） |
+| `auth_time` | 用户完成授权同意的时间 |
+| `nonce` | 若授权请求带了 `nonce` 则原样返回 |
+| *身份 claims* | 与所授予 scope 对应（`preferred_username`、`name`、`email`、`email_verified`、`groups`、`role`），详见 [Scope 与 Claims](/concepts/scopes-and-claims) |
+
+JWT 头包含 `alg: RS256` 与 `kid`。验证 ID Token 时：
+
+<Check>用 `${ISSUER}/oauth2/jwks` 中匹配 `kid` 的公钥验签。</Check>
+<Check>校验 `iss` 等于预期 Issuer。</Check>
+<Check>校验 `aud` 等于你的 `client_id`。</Check>
+<Check>校验 `exp` 未过期。</Check>
+<Check>若发起时带了 `nonce`，校验 `nonce` 一致。</Check>
+
+签名密钥（RSA 2048）在首次使用时自动生成并持久化，`kid` 稳定不变。公钥通过 [JWKS 端点](/endpoints/jwks) 对外提供。
+
+## 撤销与清理
+
+- 客户端可在 [撤销端点](/endpoints/revoke) 主动撤销某个 Access 或 Refresh Token；撤销会作用于其**整族**令牌。
+- 用户可在 New API 的"已授权应用"中断开某应用，该应用为此用户签发的所有令牌都会被撤销，且网关会立即删除该应用为此用户创建的全部 API Key（不交由应用自行清理）。
+- 后台任务会清理过期已久的令牌行（Access 与 Refresh 均过期超过 24 小时后删除）。
+
+<Warning>
+撤销令牌不会即时使已下发的 ID Token 失效——ID Token 是自包含 JWT，只受 `exp` 约束。请为 ID Token 设定合理的短有效期依赖，敏感操作以 Access Token 的实时校验为准。
+</Warning>
+

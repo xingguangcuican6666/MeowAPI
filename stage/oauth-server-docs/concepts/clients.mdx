@@ -1,0 +1,118 @@
+---
+title: "客户端应用"
+description: "机密客户端与公开客户端、应用注册、回调地址与允许的 scope"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+每个接入 New API OAuth 的第三方应用都是一个**客户端（Client）**，由管理员在 New API 后台注册。
+
+## 客户端类型
+
+<CardGroup cols={2}>
+  <Card title="机密客户端 (Confidential)" icon="server">
+    能安全保存密钥的后端应用。持有 `client_secret`，在令牌/撤销端点用它做客户端认证。
+  </Card>
+  <Card title="公开客户端 (Public)" icon="mobile-screen">
+    无法保存密钥的场景（SPA、移动/桌面原生应用）。`is_public = true`，**没有** `client_secret`，**必须**使用 PKCE。
+  </Card>
+</CardGroup>
+
+两者共用同一套授权码流程，区别只在**客户端认证方式**：
+
+| | 机密客户端 | 公开客户端 |
+| --- | --- | --- |
+| `client_secret` | 有（仅创建/轮换时展示一次） | 无 |
+| 令牌端点认证 | `client_secret_basic` 或 `client_secret_post` | `none`（仅 `client_id`） |
+| PKCE | 建议使用 | **强制** |
+
+## 应用注册
+
+客户端应用由**管理员**在 New API 后台的"OAuth 应用"中管理（对应管理接口 `/api/oauth-server/clients/*`，需要超级管理员权限）。系统设置 `oauth_server.allow_user_registration` 默认关闭，即普通用户不能自行注册应用。
+
+<Note>
+作为第三方接入方，你通常不直接调用管理接口，而是向 New API 管理员申请注册，并从其处获得 `client_id` 与（机密客户端的）`client_secret`。
+</Note>
+
+注册时可配置的字段：
+
+<ResponseField name="name" type="string" required>
+  应用名称，展示在用户同意页。
+</ResponseField>
+<ResponseField name="description" type="string">
+  应用简介，展示在同意页与"已授权应用"列表。
+</ResponseField>
+<ResponseField name="logo" type="string">
+  应用图标 URL。
+</ResponseField>
+<ResponseField name="homepage" type="string">
+  应用主页 URL。
+</ResponseField>
+<ResponseField name="redirect_uris" type="string[]" required>
+  允许的回调地址列表，**精确匹配**（见下）。至少一个。
+</ResponseField>
+<ResponseField name="scopes" type="string[]">
+  本应用**允许申请**的 scope 上限。缺省为 `openid profile email`。
+</ResponseField>
+<ResponseField name="is_public" type="boolean">
+  是否为公开客户端。默认 `false`（机密客户端）。
+</ResponseField>
+
+注册成功后你会拿到：
+
+- `client_id`：形如 `cli_<uuid>` 的公开标识。
+- `client_secret`：仅机密客户端有，**只在创建或轮换时以明文返回一次**，服务端只保存其 HMAC 哈希。丢失后只能轮换（rotate）重置。
+
+## 回调地址（redirect_uri）规则
+
+回调地址在授权端点被**精确匹配**（不做前缀/子串匹配，遵循 RFC 6749 §3.1.2 防开放重定向）。注册时会校验：
+
+<Check>必须是**绝对 URL**（带 scheme 与 host）。</Check>
+<Check>**不得包含 fragment**（`#...`）。</Check>
+<Check>必须使用 **https**；例外：指向 loopback（`localhost` / `127.0.0.1` / `::1`）时允许 http，便于本地/原生开发。</Check>
+
+<Warning>
+授权请求中的 `redirect_uri` 必须与注册值**逐字符相同**（包括结尾斜杠、查询串、大小写）。任何差异都会导致授权端点直接报错、且不会重定向。
+</Warning>
+
+## 允许的 scope
+
+客户端的 `scopes` 是它**能申请的上限**。运行时的约束链为：
+
+```
+请求的 scope  ⊆  客户端允许的 scope  ⊆  服务器支持的 scope
+```
+
+- 授权请求未带 `scope` 时，默认使用客户端允许的全部 scope。
+- 请求了不支持的 scope → `invalid_scope`。
+- 请求超出客户端允许范围 → `invalid_scope`。
+
+即便用户曾经同意过，若管理员之后收窄了客户端的允许范围，同意页仍会按当前上限重新校验。scope 目录见 [Scope 与 Claims](/concepts/scopes-and-claims)。
+
+<Note>
+敏感业务 scope（`wallet.topup`、`apikeys.manage`）授予"代表用户动用资金 / 管理密钥"这类特权动作。它默认**不在**客户端允许范围内，也不在默认的 `openid profile email` 里，需管理员将其显式加入客户端 `scopes`。此外，客户端还须被管理员标记为 **Trusted**（`trusted` 字段，仅管理员可写）后，才能申请或持有敏感 scope；服务端在每次业务调用时实时复核该标记。scope 目录见 [Scope 与 Claims](/concepts/scopes-and-claims)。
+</Note>
+
+## 启用状态
+
+客户端有 `status` 字段：`1` = 启用，`2` = 禁用。被禁用的客户端在授权、令牌、撤销端点一律按认证失败/不可用处理。
+
+删除客户端会**级联删除**其全部已发令牌与用户授权记录，使撤销彻底生效。

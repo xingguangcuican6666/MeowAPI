@@ -1,0 +1,116 @@
+---
+title: "Scope 与 Claims"
+description: "支持的 scope 目录，以及每个 scope 映射出的 userinfo / ID Token claims"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+New API 授权服务器支持以下 scope。scope 决定用户同意页展示的条目、`userinfo` 端点与 ID Token 中返回的 claims，以及可直接调用的业务能力。
+
+## Scope 目录
+
+**身份 scope**（映射 OIDC 标准 claims）：
+
+| scope | 标题 | 说明 | OIDC |
+| --- | --- | --- | --- |
+| `openid` | Sign you in | 验证身份并登录你；**颁发 ID Token 的前提** | ✅ |
+| `profile` | Basic profile | 用户名与显示名 | ✅ |
+| `email` | Email address | 邮箱地址 | ✅ |
+| `groups` | Groups and role | 账号所属分组与角色 | ❌ |
+
+**业务 scope**（按「域.动作」命名，直接授权 [业务 API](/endpoints/scoped-api)，不注入任何身份 claim）：
+
+| scope | 标题 | 授权内容 | 敏感 |
+| --- | --- | --- | --- |
+| `wallet.read` | Read your wallet | 读钱包余额（`quota`/`used_quota`）与充值档位 | — |
+| `wallet.topup` | Top up your wallet | 创建充值订单 / 支付链接、兑换码充值 | 🔒 |
+| `apikeys.manage` | Manage your API keys | 对用户 API 密钥的全量 CRUD | 🔒 |
+| `models.read` | View available models | 列出可用分组、模型与定价 | — |
+| `models.invoke` | Call models on your behalf | 直接调用 `/v1/*` 推理，扣用户钱包额度 | — |
+
+<Note>
+`openid` 是任何 OpenID Connect 流程的必要 scope：**只有授予了 `openid`，令牌端点才会返回 `id_token`**。
+
+🔒 **敏感 scope** 授予"代表用户动用资金 / 管理密钥"这类特权动作。它默认**不在**客户端允许范围内，且仅当管理员把该客户端标记为 **Trusted** 后，才可被申请或持有；服务端在每次调用时二次校验 Trusted（不信任配置期结论）。
+</Note>
+
+Scope 字符串以空格分隔（如 `openid profile email`），解析时去重并保序。
+
+## Claims 映射
+
+每个 scope 会向 `userinfo` 响应与 ID Token 注入以下 claims：
+
+<AccordionGroup>
+  <Accordion title="openid → sub" icon="fingerprint">
+    `sub`：用户唯一标识（New API 用户 ID 的字符串形式，如 `"1024"`）。在 `userinfo` 响应中恒定返回；在 ID Token 中始终存在。
+  </Accordion>
+  <Accordion title="profile → preferred_username, name" icon="user">
+    - `preferred_username`：用户名（`username`）。
+    - `name`：显示名（`display_name`）；为空时回退为用户名。
+  </Accordion>
+  <Accordion title="email → email, email_verified" icon="envelope">
+    - `email`：邮箱地址（仅在非空时返回）。
+    - `email_verified`：`true`。New API 在绑定邮箱时即完成验证，因此已存储的非空邮箱按已验证处理。
+  </Accordion>
+  <Accordion title="groups → groups, role" icon="users">
+    - `groups`：账号所属分组数组（主分组 + 附加分组，去重并排序）。
+    - `role`：用户角色（整数）。
+  </Accordion>
+</AccordionGroup>
+
+<Info>
+分组与角色信息**仅在授予 `groups` scope 时**暴露，与同意页展示保持一致。业务 scope（`wallet.*`、`apikeys.manage`、`models.*`）不注入任何 claim，其作用见 [业务 API](/endpoints/scoped-api)。
+</Info>
+
+## claims_supported
+
+发现文档中 `claims_supported` 声明服务器可能返回的全部 claims：
+
+```json
+[
+  "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce",
+  "preferred_username", "name", "email", "email_verified", "groups", "role"
+]
+```
+
+其中 `iss`、`aud`、`exp`、`iat`、`auth_time`、`nonce` 是 ID Token 的协议级 claims（见 [令牌](/concepts/tokens)），其余为 scope 驱动的身份 claims。
+
+## 示例
+
+授予 `openid profile email groups` 时，`userinfo` 返回：
+
+```json
+{
+  "sub": "1024",
+  "preferred_username": "alice",
+  "name": "Alice Zhang",
+  "email": "alice@example.com",
+  "email_verified": true,
+  "groups": ["default", "vip"],
+  "role": 1
+}
+```
+
+只授予 `openid` 时，`userinfo` 仅返回 `sub`：
+
+```json
+{ "sub": "1024" }
+```

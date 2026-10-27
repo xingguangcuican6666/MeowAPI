@@ -1,0 +1,96 @@
+---
+title: "简介"
+description: "New API 内置的 OAuth 2.0 / OpenID Connect 授权服务器，让第三方应用使用 New API 账号登录"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+New API 内置了一个 **OAuth 2.0 / OpenID Connect（OIDC）授权服务器**（Identity Provider，IdP）。开启后，第三方应用可以让用户"使用 New API 账号登录"，并在用户授权的范围内读取其身份信息。
+
+<Note>
+本文档描述的是 **New API 对外提供的 OAuth 协议**——即 New API 作为**身份提供方**、第三方应用作为**客户端**接入的接口。
+
+它与 New API 自身的"第三方登录"（GitHub / OIDC / 自定义 OAuth 登录到 New API，代码位于 `oauth/` 与 `/api/oauth/*`）方向相反，二者互不相关。
+</Note>
+
+## 能力概览
+
+<CardGroup cols={2}>
+  <Card title="标准授权码流程" icon="key">
+    Authorization Code 流程 + 强制/可选 PKCE（`S256`），仅支持 `response_type=code`。
+  </Card>
+  <Card title="OpenID Connect" icon="id-card">
+    颁发 RS256 签名的 ID Token，提供 `userinfo` 端点与 `.well-known/openid-configuration` 发现文档。
+  </Card>
+  <Card title="不透明令牌 + 轮换" icon="arrows-rotate">
+    Access / Refresh Token 为不透明随机串，落库存哈希；Refresh Token 轮换并检测重放。
+  </Card>
+  <Card title="细粒度 Scope" icon="list-check">
+    `openid`、`profile`、`email`、`groups` 身份 scope，外加 `wallet.*`、`apikeys.manage`、`models.*` 业务 scope，逐项在同意页展示与授权。
+  </Card>
+</CardGroup>
+
+## 端点一览
+
+所有公开端点都以 New API 服务地址（Issuer）为前缀，走 OAuth 标准线格式（不是管理面板的 `{success, message, data}` 封装）。
+
+| 端点 | 方法 | 说明 |
+| --- | --- | --- |
+| `/.well-known/openid-configuration` | `GET` | OIDC 发现文档 |
+| `/oauth2/jwks` | `GET` | ID Token 验签公钥（JWKS） |
+| `/oauth2/authorize` | `GET` | 授权端点，发起授权码流程 |
+| `/oauth2/token` | `POST` | 令牌端点，换取/刷新令牌 |
+| `/oauth2/userinfo` | `GET` `POST` | 用户信息端点 |
+| `/oauth2/revoke` | `POST` | 令牌撤销端点（RFC 7009） |
+| `/oauth2/api/*` | `GET` `POST` `PUT` `DELETE` | 业务 API（钱包 / API 密钥 / 模型目录），按 scope 直连 |
+| `/v1/*` | — | 标准模型推理，`at_` 令牌需 `models.invoke` scope |
+
+<Info>
+Issuer 由系统设置 `oauth_server.issuer` 决定；为空时回退到 New API 的 `ServerAddress`（默认 `http://localhost:3000`），并去除结尾斜杠。所有端点 URL 均由 Issuer 拼接得到，请始终以发现文档中的地址为准。
+</Info>
+
+## 你需要准备什么
+
+<Steps>
+  <Step title="启用授权服务器">
+    管理员在系统设置中开启 `oauth_server.enabled`。未开启时所有端点返回错误（详见[错误参考](/errors)）。
+  </Step>
+  <Step title="注册应用，拿到凭据">
+    由管理员在 New API 后台"OAuth 应用"中注册你的应用，配置 `redirect_uris` 与允许的 scope，获得 `client_id`（机密客户端还会获得一次性展示的 `client_secret`）。详见[客户端应用](/concepts/clients)。
+  </Step>
+  <Step title="按授权码流程接入">
+    引导用户到 `/oauth2/authorize`，在回调中拿到 `code`，再用 `/oauth2/token` 换取令牌。参见[快速开始](/quickstart)与[授权码流程](/flows/authorization-code)。
+  </Step>
+</Steps>
+
+## 规范遵循
+
+该实现遵循以下规范中与实现相关的要求：
+
+- **RFC 6749** — OAuth 2.0 授权框架
+- **RFC 6750** — Bearer Token 使用
+- **RFC 7636** — 授权码交换的 PKCE（仅 `S256`）
+- **RFC 7009** — 令牌撤销
+- **OpenID Connect Core 1.0** 与 **OpenID Connect Discovery 1.0**
+
+<Tip>
+如果你的语言/框架已有成熟的标准 OIDC 客户端库（如 `openid-client`、`AppAuth`、Spring Security OAuth 等），直接把发现文档地址 `${ISSUER}/.well-known/openid-configuration` 交给它即可完成大部分对接。
+</Tip>

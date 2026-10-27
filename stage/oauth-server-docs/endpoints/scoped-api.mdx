@@ -1,0 +1,119 @@
+---
+title: "业务 API（访问令牌直连）"
+description: "用 at_ 访问令牌按 scope 直接调用钱包、API 密钥、模型目录与模型推理"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+访问令牌（`at_` 前缀）是**一等业务凭据**：用户授予的 scope 直接授权对应的业务能力，无需再换取中继 API Key。除身份信息端点 [`/oauth2/userinfo`](/endpoints/userinfo) 外，业务能力分为两类：
+
+- **`/oauth2/api/*`** — 钱包、API 密钥、模型目录的管理接口，返回**面板封装** `{success, message, data}`（复用后台同名处理器，以令牌所属用户身份运行）。
+- **`/v1/*`** — 标准模型推理（relay），与 `sk-` 中继密钥共用路由，仅凭 `at_` 前缀分流。
+
+<Info>
+`at_` 直连取代了旧的 `POST /oauth2/keys` 中继密钥桥。该端点已移除，`api_keys` scope 已下线；升级时经它签发的旧 `sk-` Key 会被一次性吊销。
+</Info>
+
+## 认证与授权
+
+用 `Authorization: Bearer at_xxxx` 头携带访问令牌（RFC 6750）。每次调用服务端强制校验：
+
+1. 令牌有效、未过期、未撤销，且解析出资源所有者（用户）。
+2. 令牌被授予该端点要求的 scope，否则 `403 insufficient_scope`。
+3. **敏感 scope**（`wallet.topup`、`apikeys.manage`）额外要求签发该令牌的客户端已被管理员标记为 **Trusted**（请求时二次校验，不信任配置期结论），否则 `403`。
+
+所有接口仅以令牌解析出的用户为操作对象，绝不接受请求参数中的用户标识，不存在跨用户路径。
+
+## /oauth2/api 端点一览
+
+| 端点 | 方法 | 所需 scope | 说明 |
+| --- | --- | --- | --- |
+| `/oauth2/api/wallet` | `GET` | `wallet.read` | 读余额：`{quota, used_quota}` |
+| `/oauth2/api/wallet/topup-options` | `GET` | `wallet.read` | 充值档位与支付配置 |
+| `/oauth2/api/wallet/topup` | `POST` | `wallet.topup` 🔒 | 创建充值订单 / 支付链接 |
+| `/oauth2/api/wallet/redeem` | `POST` | `wallet.topup` 🔒 | 兑换码充值 |
+| `/oauth2/api/tokens` | `GET` | `apikeys.manage` 🔒 | 列出用户的 API 密钥 |
+| `/oauth2/api/tokens/search` | `GET` | `apikeys.manage` 🔒 | 搜索 API 密钥 |
+| `/oauth2/api/tokens/auto-groups` | `GET` | `apikeys.manage` 🔒 | 可选的自动分组 |
+| `/oauth2/api/tokens/:id` | `GET` | `apikeys.manage` 🔒 | 单个密钥详情 |
+| `/oauth2/api/tokens/:id/key` | `POST` | `apikeys.manage` 🔒 | 取回单个密钥明文 |
+| `/oauth2/api/tokens` | `POST` | `apikeys.manage` 🔒 | 新建密钥 |
+| `/oauth2/api/tokens` | `PUT` | `apikeys.manage` 🔒 | 更新密钥 |
+| `/oauth2/api/tokens/:id` | `DELETE` | `apikeys.manage` 🔒 | 删除密钥 |
+| `/oauth2/api/tokens/batch` | `POST` | `apikeys.manage` 🔒 | 批量删除 |
+| `/oauth2/api/tokens/batch/keys` | `POST` | `apikeys.manage` 🔒 | 批量取回明文 |
+| `/oauth2/api/models` | `GET` | `models.read` | 用户可用模型 |
+| `/oauth2/api/groups` | `GET` | `models.read` | 用户可用分组 |
+| `/oauth2/api/pricing` | `GET` | `models.read` | 模型定价 |
+
+🔒 = 敏感 scope，仅 Trusted 客户端可申请/持有。请求体与响应字段与后台同名接口一致。
+
+<Note>
+`GET /oauth2/api/wallet` 是 `GetSelf` 的精简替身：`wallet.read` 只授予查看额度，故仅返回 `quota` 与 `used_quota`，绝不返回身份、返佣、支付客户或设置字段。充值/密钥等取回明文的接口额外受关键操作限流保护。
+</Note>
+
+## 示例
+
+<Tabs>
+  <Tab title="读钱包余额">
+    ```bash
+    curl https://your-newapi.example.com/oauth2/api/wallet \
+      -H "Authorization: Bearer at_xxxxxxxx"
+    # {"success":true,"message":"","data":{"quota":420000,"used_quota":58000}}
+    ```
+  </Tab>
+  <Tab title="列出 API 密钥（敏感）">
+    ```bash
+    curl https://your-newapi.example.com/oauth2/api/tokens \
+      -H "Authorization: Bearer at_xxxxxxxx"
+    # 需 apikeys.manage scope 且客户端为 Trusted，否则 403
+    ```
+  </Tab>
+</Tabs>
+
+## 模型推理（/v1/* relay）
+
+被授予 **`models.invoke`** scope 的访问令牌可直接调用标准推理端点，与 `sk-` 密钥用法完全一致，只需把 `Authorization` 换成 `Bearer at_...`：
+
+```bash
+curl https://your-newapi.example.com/v1/chat/completions \
+  -H "Authorization: Bearer at_xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4o-mini", "messages": [{"role":"user","content":"hi"}]}'
+```
+
+<Info>
+**纯用户级计费**：`at_` 推理消耗直接从**用户钱包**（`User.Quota`）扣费，走用户默认/可用分组，可调用该分组允许的全部模型。令牌不对应任何中继密钥行，故令牌计费腿置为 no-op（日志中 `token_id=0`），无独立额度或模型白名单限制。`models.invoke` 不注入任何身份 claim。
+</Info>
+
+## 错误
+
+| HTTP | `error` | 场景 | 附加响应头 |
+| --- | --- | --- | --- |
+| 401 | `invalid_token` | 缺少 Bearer 令牌 | `WWW-Authenticate: Bearer error="invalid_token"` |
+| 401 | `invalid_token` | 令牌无效 / 已过期 / 已撤销 | `WWW-Authenticate: Bearer error="invalid_token"` |
+| 403 | `insufficient_scope` | 令牌未被授予该端点所需 scope | `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` |
+| 403 | `insufficient_scope` | 敏感 scope，但客户端未被标记 Trusted | `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` |
+| 403 | — | 令牌所属账号被禁用 | — |
+
+<Note>
+`/oauth2/api/*` 的错误体是面板封装 `{success:false, message}`，并附带 RFC 6750 `WWW-Authenticate` 挑战头；`/v1/*` relay 的错误体是 OpenAI 风格错误封装，同样附带挑战头。
+</Note>

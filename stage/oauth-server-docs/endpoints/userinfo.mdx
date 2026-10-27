@@ -1,0 +1,91 @@
+---
+title: "用户信息端点"
+description: "GET / POST /oauth2/userinfo"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<Info>
+`GET /oauth2/userinfo` · `POST /oauth2/userinfo`
+</Info>
+
+返回 Access Token 所授予 scope 对应的用户 claims（OpenID Connect Core §5.3）。需要有效的 Bearer Access Token。
+
+## 认证
+
+支持两种传递 Access Token 的方式（RFC 6750）：
+
+<Tabs>
+  <Tab title="Authorization 头（推荐）">
+    ```bash
+    curl https://your-newapi.example.com/oauth2/userinfo \
+      -H "Authorization: Bearer at_xxxxxxxx"
+    ```
+    scheme `Bearer` 大小写不敏感。
+  </Tab>
+  <Tab title="表单字段（POST）">
+    ```bash
+    curl -X POST https://your-newapi.example.com/oauth2/userinfo \
+      -d access_token=at_xxxxxxxx
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+不接受通过 URL 查询参数传递 Access Token（RFC 6750 §2.3）。
+</Note>
+
+## 响应
+
+`200`，claims 取决于令牌被授予的 scope，`sub` 恒定返回：
+
+```json
+{
+  "sub": "1024",
+  "preferred_username": "alice",
+  "name": "Alice Zhang",
+  "email": "alice@example.com",
+  "email_verified": true,
+  "groups": ["default", "vip"],
+  "role": 1
+}
+```
+
+| claim | 来源 scope |
+| --- | --- |
+| `sub` | 始终返回 |
+| `preferred_username`, `name` | `profile` |
+| `email`, `email_verified` | `email` |
+| `groups`, `role` | `groups` |
+
+各 claim 的取值规则见 [Scope 与 Claims](/concepts/scopes-and-claims)。
+
+## 错误
+
+| HTTP | `error` | 场景 | 附加响应头 |
+| --- | --- | --- | --- |
+| 401 | `invalid_token` | 未提供 Bearer 令牌 | `WWW-Authenticate: Bearer realm="oauth"` |
+| 401 | `invalid_token` | 令牌无效 / 已过期 / 已撤销 | `WWW-Authenticate: Bearer error="invalid_token"` |
+| 400 | `invalid_request` | 授权服务器未启用 | — |
+
+```json
+{ "error": "invalid_token", "error_description": "the access token is invalid or has expired" }
+```

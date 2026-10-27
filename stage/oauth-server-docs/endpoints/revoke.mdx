@@ -1,0 +1,68 @@
+---
+title: "撤销端点"
+description: "POST /oauth2/revoke"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<Info>
+`POST /oauth2/revoke` · `Content-Type: application/x-www-form-urlencoded` · 受限流保护（默认 20 次 / 20 分钟）
+</Info>
+
+撤销一个 Access 或 Refresh Token（RFC 7009）。只能撤销**属于当前认证客户端**的令牌，且会撤销该令牌所在的**整族**令牌，使泄露的令牌对不再可用。
+
+## 客户端认证
+
+与 [令牌端点](/endpoints/token#客户端认证) 相同：机密客户端用 HTTP Basic 或表单字段；公开客户端仅传 `client_id`。
+
+## 参数
+
+<ParamField body="token" type="string" required>
+  要撤销的令牌，可以是 Access Token 或 Refresh Token。服务器会两种哈希都匹配一次。
+</ParamField>
+
+## 请求示例
+
+```bash
+curl -X POST https://your-newapi.example.com/oauth2/revoke \
+  -u "cli_xxx:YOUR_CLIENT_SECRET" \
+  -d token=rt_xxxxxxxx
+```
+
+## 响应
+
+`200`，**无响应体**，带 `Cache-Control: no-store`。
+
+<Note>
+遵循 RFC 7009 §2.2：无论令牌是否存在，只要请求合法就返回 `200`。未知令牌、属于其他客户端的令牌都按无操作处理，因此**不能**用本端点探测令牌是否有效。
+</Note>
+
+## 错误
+
+| HTTP | `error` | 场景 |
+| --- | --- | --- |
+| 400 | `invalid_request` | 授权服务器未启用 |
+| 401 | `invalid_client` | 客户端认证失败或客户端被禁用 |
+| 500 | `server_error` | 撤销时的内部错误 |
+
+<Tip>
+撤销会连带该授权族的另一半令牌一起失效（Access + Refresh）。若要"下线"某用户对某应用的全部授权，用户也可在 New API 的"已授权应用"中断开该应用——此操作还会删除该应用为该用户创建的全部 API Key。
+</Tip>

@@ -1,0 +1,113 @@
+---
+title: "错误参考"
+description: "OAuth 端点的错误响应格式与错误码汇总"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+## 两种错误"外观"
+
+New API 授权服务器有两套响应封装，取决于端点：
+
+<CardGroup cols={2}>
+  <Card title="OAuth 线格式" icon="plug">
+    所有公开端点（`/oauth2/*`、`/.well-known/*`）使用 RFC 6749 §5.2 的错误体，配合正确的 4xx/401/404 状态码与 `Cache-Control: no-store`。**这是第三方应用会遇到的格式。**
+  </Card>
+  <Card title="面板封装" icon="table-columns">
+    New API 内部同意页接口（`/api/oauth-server/*`）使用 `{success, message, data}` 封装。第三方应用不直接调用。
+  </Card>
+</CardGroup>
+
+## OAuth 错误体
+
+```json
+{
+  "error": "invalid_grant",
+  "error_description": "the authorization code is invalid or has expired"
+}
+```
+
+所有 OAuth JSON 错误响应都带 `Cache-Control: no-store` 与 `Pragma: no-cache`。（`/oauth2/authorize` 无法安全重定向时渲染的 HTML 错误页与重定向响应仅带 `Cache-Control: no-store`。）
+
+## 错误码汇总
+
+<AccordionGroup>
+  <Accordion title="授权端点 /oauth2/authorize" icon="right-to-bracket">
+    **渲染 HTML 错误页（400，不重定向）**：服务器未启用、缺失/未知 `client_id`、应用被禁用、`redirect_uri` 缺失或未注册。
+
+    **通过 redirect_uri 回传（查询参数）**：
+
+    | `error` | 场景 |
+    | --- | --- |
+    | `unsupported_response_type` | `response_type` ≠ `code` |
+    | `invalid_scope` | scope 不支持或超出客户端允许范围 |
+    | `invalid_request` | `code_challenge_method` ≠ `S256`；公开客户端缺 `code_challenge` |
+    | `server_error` | 暂存请求失败 |
+    | `access_denied` | 用户拒绝 |
+  </Accordion>
+  <Accordion title="令牌端点 /oauth2/token" icon="key">
+    | HTTP | `error` | 场景 |
+    | --- | --- | --- |
+    | 400 | `invalid_request` | 服务器未启用；缺 `code`/`refresh_token`；PKCE 缺 `code_verifier` |
+    | 401 | `invalid_client` | 客户端认证失败/被禁用 |
+    | 400 | `invalid_grant` | 授权码无效/过期/已用/属他客户端；`redirect_uri` 不匹配；`code_verifier` 不匹配；Refresh Token 无效/过期/重放 |
+    | 400 | `unsupported_grant_type` | `grant_type` 非法 |
+    | 500 | `server_error` | 内部错误 |
+  </Accordion>
+  <Accordion title="用户信息端点 /oauth2/userinfo" icon="id-card">
+    | HTTP | `error` | 场景 |
+    | --- | --- | --- |
+    | 401 | `invalid_token` | 缺 Bearer 令牌（`WWW-Authenticate: Bearer realm="oauth"`） |
+    | 401 | `invalid_token` | 令牌无效/过期/撤销（`WWW-Authenticate: Bearer error="invalid_token"`） |
+    | 400 | `invalid_request` | 服务器未启用 |
+  </Accordion>
+  <Accordion title="撤销端点 /oauth2/revoke" icon="ban">
+    | HTTP | `error` | 场景 |
+    | --- | --- | --- |
+    | 400 | `invalid_request` | 服务器未启用 |
+    | 401 | `invalid_client` | 客户端认证失败/被禁用 |
+    | 500 | `server_error` | 内部错误 |
+
+    合法请求即便令牌未知也返回 `200`（无响应体）。
+  </Accordion>
+  <Accordion title="业务 API /oauth2/api/* 与 relay /v1/*" icon="key">
+    | HTTP | `error` | 场景 | 附加响应头 |
+    | --- | --- | --- | --- |
+    | 401 | `invalid_token` | 缺 Bearer 令牌；令牌无效/过期/撤销 | `WWW-Authenticate: Bearer error="invalid_token"` |
+    | 403 | `insufficient_scope` | 令牌未被授予该端点所需 scope | `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` |
+    | 403 | `insufficient_scope` | 敏感 scope（`wallet.topup`/`apikeys.manage`），但客户端未被标记 Trusted | `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` |
+    | 403 | — | 令牌所属账号被禁用 | — |
+
+    `/oauth2/api/*` 返回面板封装 `{success:false, message}`，`/v1/*` relay 返回 OpenAI 风格错误体；两者都附带上述 `WWW-Authenticate` 挑战头。
+  </Accordion>
+  <Accordion title="发现 / JWKS" icon="magnifying-glass">
+    | HTTP | `error` | 场景 |
+    | --- | --- | --- |
+    | 404 | `not_found` | 服务器未启用 |
+    | 500 | `server_error` | 构建密钥集失败（仅 JWKS） |
+  </Accordion>
+</AccordionGroup>
+
+## 限流
+
+`/oauth2/authorize`、`/oauth2/token`、`/oauth2/revoke` 受"关键操作"限流保护，默认 **20 次 / 20 分钟**（可由 `CRITICAL_RATE_LIMIT` 与 `CRITICAL_RATE_LIMIT_DURATION` 环境变量调整）；`/oauth2/api/*` 中动用资金或取回密钥明文的接口（`wallet/topup`、`wallet/redeem`、`tokens/:id/key`、`tokens/batch/keys`）同样受此限流。发现、JWKS、userinfo 端点不限流（前两者可缓存，userinfo 已要求有效令牌）。
+
+超过限流阈值时会被限流中间件拦截。

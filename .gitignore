@@ -1,0 +1,29 @@
+# Build artifacts
+/meowapi
+/instrcheck
+/dist/
+*.exe
+*.test
+*.out
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/*
+!.vscode/settings.json
+
+# Runtime data: a module's data root, audit spill files and kernel dumps are
+# operator state, never source.
+/data/
+*.audit.log
+
+# Local environment overrides
+.env
+.env.local
+
+# mirror/ is a Java design prototype: the sources are the specification, the
+# compiled output is not. Classes and jars are build artifacts and would go
+# stale the moment a source changed, which makes them worse than absent.
+mirror/bin/
+mirror/*.jar

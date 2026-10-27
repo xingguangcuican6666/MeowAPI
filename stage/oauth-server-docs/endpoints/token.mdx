@@ -1,0 +1,175 @@
+---
+title: "令牌端点"
+description: "POST /oauth2/token"
+---
+
+<!--
+Copyright (C) 2023-2026 xingguangcuican6666
+
+This file is part of new-api, which is licensed under the GNU Affero General
+Public License v3.0. Original project: https://github.com/QuantumNous/new-api
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+
+<Info>
+`POST /oauth2/token` · `Content-Type: application/x-www-form-urlencoded` · 受限流保护（默认 20 次 / 20 分钟）
+</Info>
+
+签发令牌（RFC 6749 §3.2）。支持两种 `grant_type`：`authorization_code` 与 `refresh_token`。请求前先完成**客户端认证**。
+
+响应始终带 `Cache-Control: no-store` 与 `Pragma: no-cache`。
+
+## 客户端认证
+
+<Tabs>
+  <Tab title="机密客户端 · Basic">
+    推荐方式：HTTP Basic，用户名为 `client_id`，密码为 `client_secret`。
+
+    ```bash
+    curl -X POST .../oauth2/token \
+      -u "cli_xxx:YOUR_CLIENT_SECRET" \
+      -d grant_type=... 
+    ```
+  </Tab>
+  <Tab title="机密客户端 · 表单">
+    在表单体中传 `client_id` 与 `client_secret`（`client_secret_post`）。
+
+    ```bash
+    curl -X POST .../oauth2/token \
+      -d client_id=cli_xxx \
+      -d client_secret=YOUR_CLIENT_SECRET \
+      -d grant_type=...
+    ```
+  </Tab>
+  <Tab title="公开客户端 · none">
+    无密钥，仅在表单体传 `client_id`；安全性由 PKCE 保证。
+
+    ```bash
+    curl -X POST .../oauth2/token \
+      -d client_id=cli_xxx \
+      -d grant_type=authorization_code \
+      -d code=... -d redirect_uri=... -d code_verifier=...
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+认证失败返回 `401` + `invalid_client`；若用了 Basic，会附带 `WWW-Authenticate: Basic realm="oauth"`。被禁用的客户端同样按认证失败处理。
+</Note>
+
+## 授权码模式
+
+`grant_type=authorization_code`：把授权码换成令牌集。
+
+### 参数
+
+<ParamField body="grant_type" type="string" required>
+  `authorization_code`
+</ParamField>
+<ParamField body="code" type="string" required>
+  授权端点回跳的授权码，单次有效。
+</ParamField>
+<ParamField body="redirect_uri" type="string" required>
+  必须与授权请求时使用的 `redirect_uri` **完全一致**。
+</ParamField>
+<ParamField body="code_verifier" type="string">
+  PKCE 校验值。若授权时带了 `code_challenge`，此项必填且必须匹配。
+</ParamField>
+
+### 请求示例
+
+```bash
+curl -X POST https://your-newapi.example.com/oauth2/token \
+  -u "cli_xxx:YOUR_CLIENT_SECRET" \
+  -d grant_type=authorization_code \
+  -d code=AUTH_CODE \
+  -d redirect_uri=https://your-app.example.com/callback \
+  -d code_verifier=THE_VERIFIER
+```
+
+## 刷新模式
+
+`grant_type=refresh_token`：轮换出一组新令牌。旧 Refresh Token 立即失效。
+
+### 参数
+
+<ParamField body="grant_type" type="string" required>
+  `refresh_token`
+</ParamField>
+<ParamField body="refresh_token" type="string" required>
+  上一次颁发的 Refresh Token。
+</ParamField>
+
+### 请求示例
+
+```bash
+curl -X POST https://your-newapi.example.com/oauth2/token \
+  -u "cli_xxx:YOUR_CLIENT_SECRET" \
+  -d grant_type=refresh_token \
+  -d refresh_token=rt_xxxxxxxx
+```
+
+<Warning>
+Refresh Token 会轮换：请保存响应中新的 `refresh_token`。重复使用已轮换的旧令牌会触发重放检测并撤销整族令牌（`invalid_grant`）。详见 [令牌](/concepts/tokens)。
+</Warning>
+
+## 成功响应
+
+`200`，两种模式返回结构相同：
+
+```json
+{
+  "access_token": "at_xxxxxxxx",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scope": "openid profile email",
+  "refresh_token": "rt_yyyyyyyy",
+  "id_token": "eyJhbGciOiJSUzI1NiIs..."
+}
+```
+
+<ResponseField name="access_token" type="string">
+  不透明 Access Token。
+</ResponseField>
+<ResponseField name="token_type" type="string">
+  恒为 `Bearer`。
+</ResponseField>
+<ResponseField name="expires_in" type="integer">
+  Access Token 有效期（秒），默认 `3600`。
+</ResponseField>
+<ResponseField name="scope" type="string">
+  实际授予的 scope（空格分隔）。
+</ResponseField>
+<ResponseField name="refresh_token" type="string">
+  新的 Refresh Token。
+</ResponseField>
+<ResponseField name="id_token" type="string">
+  RS256 签名的 ID Token。**仅在授予了 `openid` scope 时返回**。
+</ResponseField>
+
+## 错误
+
+`4xx/5xx`，格式为 `{ "error": ..., "error_description": ... }`：
+
+| HTTP | `error` | 场景 |
+| --- | --- | --- |
+| 400 | `invalid_request` | 授权服务器未启用；缺 `code` / `refresh_token`；PKCE 缺 `code_verifier` |
+| 401 | `invalid_client` | 客户端认证失败或客户端被禁用 |
+| 400 | `invalid_grant` | 授权码无效/过期/已用；授权码属于其他客户端；`redirect_uri` 不匹配；`code_verifier` 不匹配；Refresh Token 无效/过期/重放 |
+| 400 | `unsupported_grant_type` | `grant_type` 不是 `authorization_code` 或 `refresh_token` |
+| 500 | `server_error` | 签发/刷新令牌时的内部错误 |
+
+完整错误参考见 [错误](/errors)。
+
