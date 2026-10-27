@@ -63,6 +63,9 @@ type SContext interface {
 	// Identity is what a module may learn about itself.
 	Identity
 
+	// Every group below is declared in the file of the subsystem it serves, so a
+	// new subsystem adds its own group and its own methods without rewriting this
+	// file. Keeping them separate is what lets two subsystems be written at once.
 	SyscallClock
 	SyscallMeta
 	SyscallLog
@@ -71,6 +74,23 @@ type SContext interface {
 	SyscallMeter
 	SyscallFD
 	SyscallBoot
+
+	SyscallLimit
+	SyscallQos
+	SyscallCPU
+	SyscallPipe
+	SyscallShm
+	SyscallKV
+	SyscallCrypto
+	SyscallKeyring
+	SyscallReceipt
+	SyscallSched
+	SyscallSignal
+	SyscallLock
+	SyscallEvent
+	SyscallTrace
+	SyscallRoute
+	SyscallRequest
 
 	sealed()
 }
@@ -187,3 +207,184 @@ func canSpawnInto(parent, child Domain) bool {
 	}
 	return false
 }
+
+// SyscallCrypto is the primitives half of the syscall surface. Key material does
+// not cross this boundary in either direction: a module asks for a signature and
+// receives the signature, never the key.
+type SyscallCrypto interface {
+	// SyscallCryptoRandom returns n cryptographically secure random bytes from
+	// crypto/rand. Requires crypto:random.
+	SyscallCryptoRandom(n int) ([]byte, error)
+	// SyscallCryptoRandomHex returns n random bytes as 2n lowercase hex
+	// characters, for tokens and nonces. Requires crypto:random.
+	SyscallCryptoRandomHex(n int) (string, error)
+	// SyscallCryptoHash digests data with a kernel-approved algorithm and returns
+	// the hex digest. Requires crypto:hash.
+	SyscallCryptoHash(algo HashAlgo, data []byte) (string, error)
+	// SyscallCryptoSign signs msg with this node's key and returns only the
+	// signature. Requires crypto:sign, which no module domain holds.
+	SyscallCryptoSign(msg []byte) (Signature, error)
+	// SyscallCryptoVerify checks a signature against one named verification key
+	// and reports only the verdict. Requires crypto:verify.
+	SyscallCryptoVerify(key string, msg, sig []byte) (bool, error)
+	// SyscallCryptoVerifyCluster checks a signature against the sealed cluster
+	// roots and reports the verdict with the matching key id. Requires
+	// crypto:verify.
+	SyscallCryptoVerifyCluster(msg, sig []byte) (bool, string, error)
+}
+
+func (c *sContext) SyscallCryptoRandom(n int) ([]byte, error) { return CryptoRandom(c, n) }
+func (c *sContext) SyscallCryptoRandomHex(n int) (string, error) {
+	return CryptoRandomHex(c, n)
+}
+func (c *sContext) SyscallCryptoHash(algo HashAlgo, data []byte) (string, error) {
+	return CryptoHash(c, algo, data)
+}
+func (c *sContext) SyscallCryptoSign(msg []byte) (Signature, error) { return CryptoSign(c, msg) }
+func (c *sContext) SyscallCryptoVerify(key string, msg, sig []byte) (bool, error) {
+	return CryptoVerify(c, key, msg, sig)
+}
+func (c *sContext) SyscallCryptoVerifyCluster(msg, sig []byte) (bool, string, error) {
+	return CryptoVerifyCluster(c, msg, sig)
+}
+
+// SyscallKeyring is the secret-custody half of the syscall surface. No method here
+// hands a plaintext credential to a module: the module names an alias and an action,
+// the kernel applies the secret and returns the result.
+type SyscallKeyring interface {
+	// SyscallSecretAliases lists the aliases visible to this context, narrowed to
+	// the secret prefixes the manifest declared. Requires secret:use.
+	SyscallSecretAliases() ([]string, error)
+	// SyscallSecretUse applies a custodied secret on this context's behalf and
+	// returns only the result. Requires secret:use, scoped by prefix.
+	SyscallSecretUse(alias string, action SecretAction, data []byte) (SecretResult, error)
+	// SyscallSecretRead returns a plaintext credential. Requires secret:read,
+	// which no module domain holds.
+	SyscallSecretRead(alias string) ([]byte, error)
+	// SyscallSecretRegister takes custody of a credential. Requires secret:read.
+	SyscallSecretRegister(spec SecretSpec) error
+	// SyscallSecretRevoke destroys a custodied credential. Requires secret:read.
+	SyscallSecretRevoke(alias string) error
+}
+
+func (c *sContext) SyscallSecretAliases() ([]string, error) { return SecretAliases(c) }
+func (c *sContext) SyscallSecretUse(alias string, action SecretAction, data []byte) (SecretResult, error) {
+	return SecretUse(c, alias, action, data)
+}
+func (c *sContext) SyscallSecretRead(alias string) ([]byte, error) { return SecretRead(c, alias) }
+func (c *sContext) SyscallSecretRegister(spec SecretSpec) error {
+	return SecretRegister(c, spec)
+}
+func (c *sContext) SyscallSecretRevoke(alias string) error { return SecretRevoke(c, alias) }
+
+// SyscallReceipt is the settlement half of the syscall surface. A module may verify
+// any receipt and take custody of one; only a context holding receipt:issue may mint
+// one, and no module domain does.
+type SyscallReceipt interface {
+	// SyscallReceiptIssue mints and signs one settlement receipt. Requires
+	// receipt:issue, which is held by the kernel domain alone.
+	SyscallReceiptIssue(spec ReceiptSpec) (Receipt, error)
+	// SyscallReceiptVerify recomputes a receipt's canonical encoding and checks
+	// its signature against the sealed cluster roots. Requires receipt:verify.
+	SyscallReceiptVerify(r Receipt) (ReceiptVerdict, error)
+	// SyscallReceiptOpen verifies a receipt and returns a per-pid handle to the
+	// verdict. Requires receipt:verify.
+	SyscallReceiptOpen(r Receipt) (FD, ReceiptVerdict, error)
+}
+
+func (c *sContext) SyscallReceiptIssue(spec ReceiptSpec) (Receipt, error) {
+	return ReceiptIssue(c, spec)
+}
+func (c *sContext) SyscallReceiptVerify(r Receipt) (ReceiptVerdict, error) {
+	return ReceiptVerify(c, r)
+}
+func (c *sContext) SyscallReceiptOpen(r Receipt) (FD, ReceiptVerdict, error) {
+	return ReceiptOpen(c, r)
+}
+
+// SyscallKV is the namespaced-state half of the syscall surface. Keys are scoped by
+// owner pid, so one module cannot read or write another's state.
+type SyscallKV interface {
+	// SyscallKVGet reads one value from this module's namespace. Requires
+	// kv:read. The returned slice is a copy the caller owns.
+	SyscallKVGet(key string) ([]byte, error)
+	// SyscallKVPut stores one value in this module's namespace. Requires
+	// kv:write. The value is copied in, and a write over the per-module ceiling
+	// is refused with a *KVQuotaError.
+	SyscallKVPut(key string, value []byte) error
+	// SyscallKVDelete removes one key. Requires kv:write.
+	SyscallKVDelete(key string) error
+	// SyscallKVKeys lists this module's own keys, sorted. Requires kv:read.
+	SyscallKVKeys() ([]string, error)
+}
+
+func (c *sContext) SyscallKVGet(key string) ([]byte, error) { return KVGet(c, key) }
+func (c *sContext) SyscallKVPut(key string, value []byte) error {
+	return KVPut(c, key, value)
+}
+func (c *sContext) SyscallKVDelete(key string) error { return KVDelete(c, key) }
+func (c *sContext) SyscallKVKeys() ([]string, error) { return KVKeys(c) }
+
+// SyscallShm is the shared-buffer half of the syscall surface. The kernel owns the
+// bytes and never hands out the underlying slice on either side, so there is no call
+// shape in which a reader obtains a writable alias into a prompt in flight.
+type SyscallShm interface {
+	// SyscallShmAlloc allocates a shared buffer and returns a descriptor for it.
+	// Requires shm:alloc. The payload is written through SyscallShmWrite and
+	// never handed back as a slice.
+	SyscallShmAlloc(size int, label string) (ShmDescriptor, error)
+	// SyscallShmWrite copies bytes into a segment this context owns. Requires
+	// shm:alloc, and refuses a sealed segment.
+	SyscallShmWrite(fd FD, offset int, p []byte) (int, error)
+	// SyscallShmRead copies bytes out of a segment this context owns or was
+	// granted. Requires shm:map.
+	SyscallShmRead(fd FD, offset int, dst []byte) (int, error)
+	// SyscallShmBytes returns a fresh copy of a segment's whole payload. Requires
+	// shm:map.
+	SyscallShmBytes(fd FD) ([]byte, error)
+	// SyscallShmSize reports a segment's payload size. Requires shm:map.
+	SyscallShmSize(fd FD) (int, error)
+	// SyscallShmGrant authorises one peer to map a segment, and seals it. Requires
+	// shm:alloc.
+	SyscallShmGrant(fd FD, peer PID) error
+	// SyscallShmMap maps a granted segment read-only. Requires shm:map and a grant
+	// from the owner.
+	SyscallShmMap(id SHMID, label string) (ShmMapping, error)
+	// SyscallShmSeal makes this context's own segment immutable without granting
+	// it. Requires shm:alloc.
+	SyscallShmSeal(fd FD) error
+}
+
+func (c *sContext) SyscallShmAlloc(size int, label string) (ShmDescriptor, error) {
+	return ShmAlloc(c, size, label)
+}
+func (c *sContext) SyscallShmWrite(fd FD, offset int, p []byte) (int, error) {
+	return ShmWrite(c, fd, offset, p)
+}
+func (c *sContext) SyscallShmRead(fd FD, offset int, dst []byte) (int, error) {
+	return ShmRead(c, fd, offset, dst)
+}
+func (c *sContext) SyscallShmBytes(fd FD) ([]byte, error) { return ShmBytes(c, fd) }
+func (c *sContext) SyscallShmSize(fd FD) (int, error)     { return ShmSize(c, fd) }
+func (c *sContext) SyscallShmGrant(fd FD, peer PID) error { return ShmGrant(c, fd, peer) }
+func (c *sContext) SyscallShmMap(id SHMID, label string) (ShmMapping, error) {
+	return ShmMap(c, id, label)
+}
+func (c *sContext) SyscallShmSeal(fd FD) error { return ShmSeal(c, fd) }
+
+// The SyscallSched and SyscallSignal group interfaces are declared in sched.go and
+// signal.go respectively, beside the subsystems that implement them. Only the
+// methods live here, and they are one line each: the policy check and the panic
+// containment are inside the subsystem, so a syscall entry point has no logic of its
+// own to get wrong.
+
+func (c *sContext) SyscallSchedSpawn(job SchedJob) (FD, error) { return SchedSpawn(c, job) }
+func (c *sContext) SyscallSchedTimer(spec TimerSpec) (FD, error) {
+	return SchedTimer(c, spec)
+}
+func (c *sContext) SyscallSchedWait(fd FD) (SchedOutcome, error) { return SchedWait(c, fd) }
+
+func (c *sContext) SyscallSignalSend(target PID, kind SignalKind) error {
+	return SignalSend(c, target, kind)
+}
+func (c *sContext) SyscallSignalHandle(h SignalHandler) error { return SignalHandle(c, h) }

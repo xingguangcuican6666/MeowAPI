@@ -74,14 +74,67 @@ const KernelAPI = 1
 // console last so the shutdown's own records are still visible until the end.
 //
 // Callers hold the boot guard, so this cannot race with a live kernel.
+// resetKernel returns every subsystem to its pre-boot state.
+//
+// The ordering is not arbitrary and there are three rules behind it:
+//
+//  1. Accounting before grants. A subsystem that counted work must be cleared
+//     before the grants that authorized it, so a stray late charge cannot land in
+//     a table that no longer has a policy behind it.
+//  2. Execution before the handle table. ksched, ksignal and kwatchdog hold
+//     references to handles and to running work; clearing them first means their
+//     cancellation paths see a consistent registry, and clearing the fd table
+//     afterwards drops what is left without a subsystem still pointing at it.
+//  3. Secrets before the trust root. kkeyring and kreceipt hold material derived
+//     from the sealed root, so they are wiped first: a restarted kernel must never
+//     coexist with a stale keyring, even for the instant between the two resets.
+//
+// The console is cleared last so a reset can still report itself.
 func resetKernel() {
+	// Accounting and admission.
 	resetUsage()
+	resetSlots()
+	resetQos()
+	resetCPU()
+
+	// Module state and shared memory.
+	resetKVFS()
+	resetFSScopes()
+	resetShm()
+
+	// Channels and coordination. Locks before the fd table they hand out handles
+	// through, and before signals, because a lock release can wake a waiter that is
+	// about to be terminated.
+	resetPipes()
+	resetLocks()
+	resetEvents()
+	resetTraces()
+	resetRoutes()
+	resetMeter()
+
+	// Crypto caches hold parsed key material, so they go with the secrets.
+	resetCrypto()
+
+	// Execution: the watchdog first, so a patrol in flight stops noticing work
+	// that the two below are about to forget.
+	resetWatchdog()
+	resetSched()
+	resetSignals()
+
+	// Grants and the module registry, then the handle table they reference.
 	resetGrants()
 	resetModules()
 	resetFDTables()
+
+	// Identity and evidence.
 	kmeta.reset()
 	kscm.reset()
 	kaudit.reset()
+
+	// Secrets, then the root they derive from.
+	resetKeyring()
+	resetReceipts()
 	kboot.reset()
+
 	kconsole.reset()
 }

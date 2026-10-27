@@ -43,6 +43,15 @@ type Manifest struct {
 	// SecretPrefixes bound secret:read. There is no wildcard and no
 	// read-everything grant.
 	SecretPrefixes []string `json:"secret_prefixes,omitempty"`
+	// ServeRoutes lists the exact paths this module may register in the kernel
+	// route table, each absolute and normalized. It bounds route:register the way
+	// ReadPaths bounds fs:read.
+	//
+	// There is no wildcard, and that is the control. A module that could register
+	// any path could register a path another module was about to serve, or a
+	// shorter prefix of one, and the table would stop being a reviewed surface. An
+	// empty list means the module serves nothing, which is the right default.
+	ServeRoutes []string `json:"serve_routes,omitempty"`
 }
 
 // scopedOps are granted by manifest scope rather than by the domain ceiling.
@@ -178,6 +187,34 @@ func (m *Manifest) checkScopes() error {
 				return manifestErr("empty secret prefix is a read-all grant and is rejected")
 			}
 		}
+	}
+
+	if m.requires(OpRouteRegister) {
+		// Serving a route is how a module becomes reachable from other modules, so
+		// the declaration is the reviewed surface. Requiring at least one exact path
+		// is what stops a wildcard-style claim: a module that could register any
+		// path could register one another module was about to serve, or a shorter
+		// prefix of one, and the route table would stop being a thing anyone
+		// approved.
+		if len(m.ServeRoutes) == 0 {
+			return manifestErr("%s requires at least one exact serve path", OpRouteRegister)
+		}
+		declared := make(map[string]bool, len(m.ServeRoutes))
+		for _, p := range m.ServeRoutes {
+			norm, err := normalizeRoutePath(p)
+			if err != nil {
+				return manifestErr("serve path %q is invalid: %v", p, err)
+			}
+			if declared[norm] {
+				return manifestErr("duplicate serve path %q", p)
+			}
+			declared[norm] = true
+		}
+	} else if len(m.ServeRoutes) > 0 {
+		// Declaring routes without asking to register them is a manifest that says
+		// something it cannot do, which is the kind of mismatch worth refusing at
+		// load time rather than discovering at review time.
+		return manifestErr("serve paths are declared without requesting %s", OpRouteRegister)
 	}
 	return nil
 }

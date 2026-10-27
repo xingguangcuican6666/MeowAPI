@@ -96,6 +96,11 @@ type LoadedModule struct {
 	// manifest request narrowed to the domain ceiling.
 	Effective []Op
 	module    Module
+	// ctx is the sealed context this module was spawned with. The kernel keeps it
+	// so a dispatch through kservice can run the handler under the handler's own
+	// authority instead of the caller's. It is never handed to a module: the only
+	// context a module ever sees is the one passed to its own OnLoad.
+	ctx *sContext
 }
 
 var (
@@ -209,7 +214,7 @@ func LoadModule(ctx SContext, m Manifest) (PID, error) {
 		// Give the module a chance to release what it took, then abandon. The
 		// unload error is deliberately ignored: the load failure is the one that
 		// matters, and runUnload already recovered any panic.
-		runUnload(inst)
+		runUnload(inst, child.pid)
 		return 0, abandon("module OnLoad failed",
 			fmt.Errorf("kernel: OnLoad for %q failed: %w", m.Name, err))
 	}
@@ -219,7 +224,7 @@ func LoadModule(ctx SContext, m Manifest) (PID, error) {
 	modulesMu.Lock()
 	modules[child.pid] = &LoadedModule{
 		PID: child.pid, Name: m.Name, Manifest: m,
-		Effective: effective, module: inst,
+		Effective: effective, module: inst, ctx: child,
 	}
 	byName[m.Name] = child.pid
 	modulesMu.Unlock()
@@ -275,12 +280,71 @@ func UnloadModule(ctx SContext, pid PID) error {
 		return nil
 	}
 
-	err := runUnload(rec.module)
+	err := runUnload(rec.module, pid)
 	clearGrants(pid)
+
+	// Locks this pid held cannot stay held, but how they are given up depends on why
+	// the module is going away.
+	//
+	// A clean unload means OnUnload ran, so whatever the module was serializing
+	// finished: release the lock and let the next waiter in.
+	//
+	// A forced termination - a kill signal, the drain default action, a watchdog
+	// detection - means the critical section was abandoned half-done. Handing the
+	// lock to the next waiter there would tell it the work it was waiting for
+	// completed, which is a lie, and the waiter would then act on a half-updated
+	// resource. So the lock is condemned instead and waiters receive
+	// ErrLockOwnerGone, which is a different error precisely because it calls for a
+	// different response.
+	//
+	// This runs before handle reclamation, not after: a lock handle's Close releases
+	// its lock, so by the time the table was walked the registry entry would be gone
+	// and condemnation would have nothing left to condemn. markDead latches first and
+	// release() is a no-op on a dead lock, so the two paths compose.
+	//
+	// The flag read here is `terminating`, not `terminated`. ksignal stores
+	// `terminated` after UnloadModule returns, so reading it from inside the unload
+	// path would always see false and every forced teardown would quietly take the
+	// clean-release branch, which is the branch that lies to the waiter.
+	if _, condemned := SignalState(pid); condemned {
+		klocks.markDead(pid)
+	} else {
+		klocks.releaseAll(pid)
+	}
+
 	// Reclaim every handle the module opened. This is the property that makes a
 	// crashed or hung module leak nothing: no resource's only reference lives
 	// inside module code, so walking the table closes all of them.
 	closed, reclaimErrs := reclaimFDs(pid)
+	// Drop the namespaces this pid owned. Handles are reclaimed above, but kvfs,
+	// the fs scope and kshm keep registries keyed by pid that no handle owns, and a
+	// pid is never reused: leaving them would make every load-and-unload cycle leak
+	// state that nothing can ever reach again.
+	KVDropNamespace(pid)
+	ClearFSScope(pid)
+	ShmDropNamespace(pid)
+	// Subscriptions are dropped, so a dead module stops accumulating a backlog.
+	kevents.dropAll(pid)
+	// Live spans are ended and marked abandoned, so a module that dies mid-request
+	// still leaves a record of the stage it was in instead of vanishing from the
+	// trace with no end time.
+	dropSpansFor(pid)
+	// Pipes this module registered are dropped from the registry. The fd table
+	// closed the resources above; this clears the index so a snapshot does not keep
+	// reporting a pipe whose owner has been gone since the last restart.
+	DropPipesFor(pid)
+	// Routes this module served are unregistered, so a call cannot resolve to a
+	// handler whose module is gone.
+	unregisterRoutesFor(pid)
+	// Open meter requests are closed and marked abandoned, so a module that dies
+	// mid-request does not leave an entry open forever quietly eating the ledger's
+	// ceiling.
+	closeRequestsFor(pid)
+	// Tell anyone waiting on this pid that it is gone. Posted before the process
+	// record closes so a peer learns from the event rather than from a failed call.
+	// The detail is the module's own name, read from the process table while the
+	// record is still open.
+	PostEvent(EventPeerDisconnected, pid, nameForPID(pid))
 	kscm.terminate(pid)
 	kaudit.record(AuditUnload, c, "module unloaded", map[string]any{
 		"module": rec.Name, "pid": pid, "fds_reclaimed": closed,
@@ -309,7 +373,18 @@ func UnloadModule(ctx SContext, pid PID) error {
 // property of the kernel, so it applies to both lifecycle methods; recovering one
 // and not the other would leave the load path - the one running untrusted code for
 // the first time - as the crash vector.
+// runLoad calls OnLoad with panic containment and CPU accounting.
+//
+// The recover is here rather than in a shared wrapper so the panic wording stays
+// "OnLoad panicked", which is what an operator greps for and what the tests assert.
+// The deferred charge runs on the panic path too, so a module that panics still pays
+// for the time it burned.
 func runLoad(m Module, ctx *sContext) (err error) {
+	if budgetExhausted(ctx.pid) {
+		return fmt.Errorf("%w: pid %d refused OnLoad", ErrCPUBudget, ctx.pid)
+	}
+	start := mono()
+	defer accountSupervised(ctx.pid, "OnLoad", start)
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("OnLoad panicked: %v", r)
@@ -320,7 +395,18 @@ func runLoad(m Module, ctx *sContext) (err error) {
 
 // runUnload calls OnUnload with a hard deadline and with panics recovered. The
 // kernel does not block on module code and does not let module code abort it.
-func runUnload(m Module) error {
+// runUnload calls OnUnload on its own goroutine, bounded by unloadTimeout and with
+// panic containment. The goroutine is the kernel's, so ksched and kwatchdog can
+// account for it, and the timeout is what makes unloading a hung module survivable
+// rather than a decision to abandon the process.
+//
+// A refusal for budget is deliberately absent here. Unload is teardown: refusing to
+// run it would leave the module's handles, locks, routes and subscriptions behind,
+// which is worse than letting an over-budget module clean up after itself.
+func runUnload(m Module, pid PID) error {
+	start := mono()
+	defer accountSupervised(pid, "OnUnload", start)
+
 	done := make(chan error, 1)
 	go func() {
 		defer func() {
@@ -376,4 +462,52 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// nameForPID reads a pid's label from the process table. It returns an empty string
+// for a pid with no record, which is correct for an event about a module that never
+// got far enough to be named.
+func nameForPID(pid PID) string {
+	for _, r := range ProcTable() {
+		if r.PID == pid {
+			return r.Name
+		}
+	}
+	return ""
+}
+
+// moduleContextOf returns the sealed context a live module was spawned with, or nil
+// when no such module is loaded. kservice uses it to run a route handler under the
+// handler's own authority rather than the caller's, which is the line that makes the
+// route table a security boundary instead of a convenience.
+//
+// It is package-private on purpose: nothing outside the kernel may obtain another
+// module's context, and a module never receives one but its own.
+func moduleContextOf(pid PID) *sContext {
+	modulesMu.Lock()
+	defer modulesMu.Unlock()
+	rec, ok := modules[pid]
+	if !ok {
+		return nil
+	}
+	// A retired or missing context means the module is being torn down, so a
+	// dispatch to it must fail rather than run against a context whose syscalls
+	// are all refused.
+	if rec.ctx == nil || rec.ctx.retired.Load() {
+		return nil
+	}
+	return rec.ctx
+}
+
+// manifestOf returns the manifest a live module was loaded under, or false when the
+// module is gone. Route declarations are read through here so a handler's authority
+// comes from what was reviewed at load time and not from anything mutable later.
+func manifestOf(pid PID) (Manifest, bool) {
+	modulesMu.Lock()
+	defer modulesMu.Unlock()
+	rec, ok := modules[pid]
+	if !ok {
+		return Manifest{}, false
+	}
+	return rec.Manifest, true
 }

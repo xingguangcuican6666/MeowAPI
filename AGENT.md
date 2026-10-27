@@ -53,6 +53,18 @@ kernel/                      EL1 trust root. No business logic, standard library
   audit.go                   kaudit: the hash-chained audit record
   fdtable.go                 kfdtable: per-pid integer handles for kernel resources
   bootconfig.go              kboot: the sealed trust root and resource ceilings
+  rlimit.go                  krlimit: concurrency slots under both ceilings
+  qos.go                     kqos: token-bucket admission on kernel time
+  cputime.go                 kcputime: supervised-work accounting and runaway break
+  kv.go                      kvfs: namespaced module state and confined fs paths
+  shm.go                     kshm and kslab: shared buffers, sealing, zeroing
+  pipe.go                    kpipe: byte-only streaming channels with abort
+  crypto.go                  kcrypto: randomness, hashing, signing, verification
+  keyring.go                 kkeyring: custody by use; no plaintext to modules
+  receipt.go                 kreceipt: canonical signed settlement receipts
+  sched.go                   ksched: supervised jobs and timers with deadlines
+  signal.go                  ksignal: reload, drain, kill and stream abort
+  watchdog.go                kwatchdog: overdue-work detection and stack capture
   console.go                 kernel console, retention, the canonical fault emitter
   dump.go                    read-only kernel state rendering
 internal/auditfile/          the durable audit sink: JSON Lines, per-boot segments
@@ -84,6 +96,18 @@ policy operation that gates it, in the same change.
 | `kernel/module.go` | - | `Module` contract, `Register`, load, unload | `moduleloader.java`, `Plugin.java` |
 | `kernel/manifest.go` | - | `Manifest`, validation, scoped operations, `Digest` | none |
 | `kernel/usage.go` | - | usage ABI: closed kind set, per-event ceilings, per-pid accounting. Counts quantities, never prices them | none |
+| `kernel/rlimit.go` | krlimit | concurrency slots under the per-module and kernel ceilings from the sealed root | none |
+| `kernel/qos.go` | kqos | token-bucket admission per uid and per domain; time comes from kclock only | none |
+| `kernel/cputime.go` | kcputime | accounting for kernel-supervised work, plus the budget breaker | none |
+| `kernel/kv.go` | kvfs | per-pid namespaced state; path resolution confined to a data root | none |
+| `kernel/shm.go` | kshm, kslab | shared buffers, sealed on grant, zeroed on release | none |
+| `kernel/pipe.go` | kpipe | streaming between modules as bytes, with a latching abort | none |
+| `kernel/crypto.go` | kcrypto | randomness, hashing, verification for everyone; signing for the kernel | none |
+| `kernel/keyring.go` | kkeyring | secret custody by use, prefix-scoped, plaintext only for `secret:read` | none |
+| `kernel/receipt.go` | kreceipt | signed settlement receipts over a canonical encoding | none |
+| `kernel/sched.go` | ksched | supervised jobs and timers, deadline clamped to the sealed ceiling | none |
+| `kernel/signal.go` | ksignal | reload, drain, kill, abort, with termination as the default for drain | none |
+| `kernel/watchdog.go` | kwatchdog | detects overdue kernel-run work, captures a stack, asks for termination | none |
 | `kernel/clock.go` | kclock | the monotonic time authority: no rewind, no setter | none |
 | `kernel/audit.go` | kaudit | the hash-chained audit record, sink support, `VerifyChain` | none |
 | `kernel/fdtable.go` | kfdtable | per-pid integer handles; reclamation on unload | none |
