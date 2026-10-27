@@ -474,7 +474,7 @@ func TestWatchdogConcurrencyIsRaceFree(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		sent := newSentinel(false)
+		sent := sigNewSentinel(false)
 		t.Cleanup(sent.release)
 		require.NoError(t, p.captured().SyscallSignalHandle(sent.record))
 		for range 50 {

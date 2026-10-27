@@ -324,7 +324,7 @@ func TestSchedShorterTimeoutIsHonouredAndExpires(t *testing.T) {
 	assert.NotEmpty(t, out.Stack, "an abandoned run must carry a stack snapshot as evidence")
 	assert.LessOrEqual(t, len(out.Stack), kernel.MaxWatchdogStackBytes)
 	assert.True(t, strings.Contains(out.Stack, "goroutine") || strings.Contains(out.Stack, "no longer running"),
-		"the snapshot must be a stack or an explanation, got: %s", firstLine(out.Stack))
+		"the snapshot must be a stack or an explanation, got: %s", schedFirstLine(out.Stack))
 
 	running, _ := kernel.SchedCount(pid)
 	assert.Zero(t, running, "an abandoned run must release its slot")
@@ -333,7 +333,7 @@ func TestSchedShorterTimeoutIsHonouredAndExpires(t *testing.T) {
 	}), "the kernel must report a run it stopped waiting for")
 }
 
-func firstLine(s string) string {
+func schedFirstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 	return line
 }

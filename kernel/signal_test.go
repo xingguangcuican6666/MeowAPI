@@ -65,7 +65,7 @@ func (s *sigSentinel) release() {
 	}
 }
 
-func newSentinel(blocking bool) *sigSentinel {
+func sigNewSentinel(blocking bool) *sigSentinel {
 	s := &sigSentinel{}
 	if blocking {
 		s.block = make(chan struct{})
@@ -98,7 +98,7 @@ func TestSignalSendIsGranted(t *testing.T) {
 	k, _ := schedQuiet(t, kernel.BootLimits{})
 	pid, p := sigLoad(t, k)
 
-	sent := newSentinel(false)
+	sent := sigNewSentinel(false)
 	t.Cleanup(sent.release)
 	require.NoError(t, p.captured().SyscallSignalHandle(sent.record))
 
@@ -263,7 +263,7 @@ func TestKillTerminatesEvenWithAHandler(t *testing.T) {
 	k, _ := schedQuiet(t, kernel.BootLimits{})
 	pid, p := sigLoad(t, k)
 
-	sent := newSentinel(true) // blocks forever until released
+	sent := sigNewSentinel(true) // blocks forever until released
 	t.Cleanup(sent.release)
 	require.NoError(t, p.captured().SyscallSignalHandle(sent.record))
 
@@ -293,7 +293,7 @@ func TestDrainRefusesNewSupervisedWork(t *testing.T) {
 	k, _ := schedQuiet(t, kernel.BootLimits{CallTimeoutMillis: 2_000})
 	pid, p := sigLoad(t, k, kernel.OpSchedSpawn, kernel.OpSchedTimer)
 
-	sent := newSentinel(false)
+	sent := sigNewSentinel(false)
 	t.Cleanup(sent.release)
 	require.NoError(t, p.captured().SyscallSignalHandle(sent.record))
 
@@ -427,7 +427,7 @@ func TestSignalQueueIsBoundedAndReportsOverflow(t *testing.T) {
 	k, _ := schedQuiet(t, kernel.BootLimits{})
 	pid, p := sigLoad(t, k)
 
-	sent := newSentinel(true)
+	sent := sigNewSentinel(true)
 	t.Cleanup(sent.release)
 	require.NoError(t, p.captured().SyscallSignalHandle(sent.record))
 
@@ -485,7 +485,7 @@ func TestKillAppliesEvenWithAFullQueue(t *testing.T) {
 	k, _ := schedQuiet(t, kernel.BootLimits{})
 	pid, p := sigLoad(t, k)
 
-	sent := newSentinel(true)
+	sent := sigNewSentinel(true)
 	t.Cleanup(sent.release)
 	require.NoError(t, p.captured().SyscallSignalHandle(sent.record))
 
@@ -570,7 +570,7 @@ func TestSignalToAnUnloadedModuleDoesNotRunStaleCode(t *testing.T) {
 	k, _ := schedQuiet(t, kernel.BootLimits{})
 	pid, p := sigLoad(t, k)
 
-	sent := newSentinel(false)
+	sent := sigNewSentinel(false)
 	t.Cleanup(sent.release)
 	require.NoError(t, p.captured().SyscallSignalHandle(sent.record))
 
@@ -593,7 +593,7 @@ func TestSignalHandleCanBeRemoved(t *testing.T) {
 	k, _ := schedQuiet(t, kernel.BootLimits{})
 	pid, p := sigLoad(t, k)
 
-	sent := newSentinel(false)
+	sent := sigNewSentinel(false)
 	t.Cleanup(sent.release)
 	require.NoError(t, p.captured().SyscallSignalHandle(sent.record))
 	require.NoError(t, k.InitContext().SyscallSignalSend(pid, kernel.SignalReload))
@@ -615,7 +615,7 @@ func TestSignalConcurrencyIsRaceFree(t *testing.T) {
 	k, _ := schedQuiet(t, kernel.BootLimits{})
 	pid, p := sigLoad(t, k, kernel.OpSchedSpawn)
 
-	sent := newSentinel(false)
+	sent := sigNewSentinel(false)
 	t.Cleanup(sent.release)
 	require.NoError(t, p.captured().SyscallSignalHandle(sent.record))
 
@@ -683,7 +683,7 @@ func TestSignalStateDoesNotSurviveRestart(t *testing.T) {
 	k1, _ := schedQuiet(t, kernel.BootLimits{CallTimeoutMillis: 2_000})
 	pid, p := sigLoad(t, k1, kernel.OpSchedSpawn)
 
-	sent := newSentinel(false)
+	sent := sigNewSentinel(false)
 	t.Cleanup(sent.release)
 	require.NoError(t, p.captured().SyscallSignalHandle(sent.record))
 	require.NoError(t, k1.InitContext().SyscallSignalSend(pid, kernel.SignalReload))
@@ -722,7 +722,7 @@ func TestSignalStateDoesNotSurviveRestart(t *testing.T) {
 	defer func() { _ = k2.Shutdown() }()
 
 	pid2, p2 := sigLoad(t, k2, kernel.OpSchedSpawn)
-	fresh := newSentinel(false)
+	fresh := sigNewSentinel(false)
 	t.Cleanup(fresh.release)
 	require.NoError(t, p2.captured().SyscallSignalHandle(fresh.record))
 
