@@ -31,6 +31,13 @@ type BootConfig struct {
 	// the default. Values below the floor are raised to it, because a window of
 	// zero is not a smaller buffer but no audit trail.
 	AuditWindow int
+	// TrustRoot is the sealed boot configuration: node identity, cluster root
+	// keys, this node's signing key, and the resource ceilings every subsystem
+	// enforces. It is loaded and sealed before init is spawned, so nothing that
+	// runs later can have observed it unsealed, and no caller can change it
+	// afterwards. The zero value yields the default ceilings and a node id of
+	// "local", which is enough for a single-node deployment and for tests.
+	TrustRoot BootTrustRoot
 }
 
 // Kernel is the handle returned by a successful boot. It is the only reference
@@ -102,6 +109,16 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 	}
 	kaudit.setSink(cfg.AuditSink)
 
+	// The trust root is sealed here, before any context exists, so no code that
+	// runs later can have read it unsealed and no code at all can write it.
+	trustRoot := cfg.TrustRoot
+	if trustRoot.NodeID == "" {
+		trustRoot.NodeID = "local"
+	}
+	if err := loadBootConfig(trustRoot); err != nil {
+		return nil, fmt.Errorf("kernel: invalid boot trust root: %w", err)
+	}
+
 	root, err := kscm.handoffRootContext()
 	if err != nil {
 		return nil, err
@@ -112,6 +129,7 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 	// fact that a boot happened at all unattributed.
 	kaudit.record(AuditBoot, root, "kernel booting", map[string]any{
 		"kernel_api": KernelAPI, "modules_requested": len(cfg.Modules),
+		"trust_root_digest": BootDigest(), "node_id": trustRoot.NodeID,
 	})
 
 	spawned, err := root.SyscallSpawn(DomainInit, "init")

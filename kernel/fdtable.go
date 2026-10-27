@@ -21,8 +21,12 @@ import (
 //     the kernel walks its table and closes everything in it. There is no resource
 //     whose only reference lived inside the module.
 //
-// FDs are allocated per pid and never reused within a boot, so a stale FD from a
-// previous module instance cannot accidentally address a live resource.
+// Handle numbers are allocated per pid from a counter that only increases, so a
+// closed number is never reissued inside the same table: a module holding a stale
+// number gets "not open" rather than silently addressing a different resource.
+// Numbers do repeat across pids, which is correct and is the isolation property -
+// pid A's handle 1 and pid B's handle 1 are unrelated resources, and neither can
+// resolve the other's.
 type FD int
 
 // noFD is the zero value and is never valid.
@@ -83,17 +87,33 @@ func fdTableFor(pid PID) *fdTable {
 
 // install registers a resource and returns its handle. Every subsystem that hands
 // a module something stateful goes through here rather than returning a pointer.
-func install(pid PID, res resource, label string) FD {
+//
+// The ceiling comes from the sealed trust root, so a module cannot raise it and
+// neither can the code calling install. Returning an error rather than a bare FD is
+// what forces every subsystem to handle exhaustion; a zero FD would be
+// indistinguishable from "no handle" at the call site and would be silently stored.
+func install(pid PID, res resource, label string) (FD, error) {
 	t := fdTableFor(pid)
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	if max := Limits().MaxOpenFDsPerModule; len(t.byFD) >= max {
+		// Reaching a ceiling is an operator-visible event, not just a caller
+		// error: it is either a leak in a module or a limit set too low, and both
+		// need to be diagnosable after the fact.
+		fault(nil, "handle ceiling reached", map[string]any{
+			"pid": pid, "max_open_fds_per_module": max, "open": len(t.byFD),
+		})
+		return noFD, fmt.Errorf("kernel: pid %d holds the maximum of %d open handles", pid, max)
+	}
 
 	fd := t.next
 	t.next++
 	kind := res.Kind()
 	t.byFD[fd] = &fdEntry{fd: fd, res: res, kind: kind, openedAt: mono(), label: label}
 	t.byKind[kind]++
-	return fd
+	return fd, nil
 }
 
 // lookup resolves a handle within one pid. A handle from another pid's table does
@@ -183,7 +203,7 @@ func reclaimFDs(pid PID) (closed int, errs []error) {
 	sortFDEntries(entries)
 	for _, e := range entries {
 		closed++
-		if err := e.res.Close(); err != nil {
+		if err := closeResource(e); err != nil {
 			errs = append(errs, fmt.Errorf("fd %d (%s): %w", e.fd, e.kind, err))
 		}
 	}
@@ -250,4 +270,17 @@ func (c *sContext) SyscallClose(fd FD) error {
 
 func (c *sContext) SyscallFDs() []FDInfo {
 	return FDList(c.pid)
+}
+
+// closeResource closes one resource, containing a panic so that a broken Close
+// cannot strand the handles opened after it. Reclamation runs during unload, and a
+// module that panics while being torn down is exactly the module whose resources
+// most need closing.
+func closeResource(e *fdEntry) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("Close panicked: %v", r)
+		}
+	}()
+	return e.res.Close()
 }

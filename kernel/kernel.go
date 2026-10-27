@@ -29,6 +29,7 @@
 //	clock.go       kclock: the monotonic time authority every deadline reads
 //	audit.go       kaudit: the hash-chained record of what the kernel did
 //	fdtable.go     kfdtable: per-pid integer handles for every kernel resource
+//	bootconfig.go  kboot: the sealed trust root and the resource ceilings
 //	usage.go       the usage ABI: kinds, ceilings, per-pid accounting
 //	console.go     the kernel console: records, formats, levels, retention
 //	dump.go        a read-only rendering of kernel state for debugging
@@ -81,5 +82,6 @@ func resetKernel() {
 	kmeta.reset()
 	kscm.reset()
 	kaudit.reset()
+	kboot.reset()
 	kconsole.reset()
 }

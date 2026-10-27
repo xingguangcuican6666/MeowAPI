@@ -151,9 +151,21 @@ func LoadModule(ctx SContext, m Manifest) (PID, error) {
 
 	modulesMu.Lock()
 	pid, live := byName[m.Name]
+	count := len(modules)
 	modulesMu.Unlock()
 	if live {
 		return 0, fmt.Errorf("kernel: module %q already loaded at pid %d", m.Name, pid)
+	}
+	// The ceiling comes from the sealed trust root rather than from a constant or
+	// a module declaration, because a quota the loaded code could raise is not a
+	// quota.
+	if max := Limits().MaxModules; count >= max {
+		err := fmt.Errorf("kernel: module limit reached (%d live modules)", max)
+		fault(c, "module load refused by quota", map[string]any{"module": m.Name, "max_modules": max})
+		kaudit.record(AuditReject, c, "module limit reached", map[string]any{
+			"module": m.Name, "max_modules": max, "live": count,
+		})
+		return 0, err
 	}
 
 	child, err := kscm.spawn(c, DomainPlugin, m.Name)
@@ -171,8 +183,15 @@ func LoadModule(ctx SContext, m Manifest) (PID, error) {
 	// so the cleanup cannot drift between branches.
 	abandon := func(reason string, err error) error {
 		clearGrants(child.pid)
+		// A module that fails during OnLoad may already have opened handles. The
+		// table is walked here exactly as it is on unload, so a failed load leaks
+		// nothing either.
+		reclaimFDs(child.pid)
 		kscm.setArtifact(child.pid, m.Name, digest, ProcRejected)
 		fault(child, reason, map[string]any{"module": m.Name, "error": err.Error()})
+		kaudit.record(AuditReject, child, reason, map[string]any{
+			"module": m.Name, "error": err.Error(),
+		})
 		return err
 	}
 

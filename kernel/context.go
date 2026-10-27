@@ -70,6 +70,7 @@ type SContext interface {
 	SyscallProc
 	SyscallMeter
 	SyscallFD
+	SyscallBoot
 
 	sealed()
 }
@@ -104,6 +105,12 @@ type sContext struct {
 
 // errRetired is returned by every syscall on a withdrawn context.
 var errRetired = errors.New("kernel: context retired")
+
+// errForeignContext is returned when something that is not a kernel-issued context
+// reaches an internal entry point. Because SContext is sealed, no module can
+// produce one; this guards the host process and future internal callers, and it
+// fails closed rather than assuming the caller is legitimate.
+var errForeignContext = errors.New("kernel: context was not issued by this kernel")
 
 // newRootContext creates the pid 0 context. Only the context manager calls this,
 // once per boot, and only the bootloader ever holds the result.

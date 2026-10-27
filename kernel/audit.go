@@ -351,11 +351,19 @@ var ErrAuditChainBroken = errors.New("kernel: audit chain verification failed")
 // AuditCheckpoint writes a chain-head marker. An operator takes one before a
 // deployment so that a later investigation can prove the trail was intact up to
 // that point, and only the tail after it is in question.
-func AuditCheckpoint(ctx *sContext, label string) (string, error) {
-	if err := check(ctx, OpAuditAppend); err != nil {
+//
+// It requires audit:append, so in practice only init can take one. It is an
+// operator action rather than a module one: a module checkpointing the chain would
+// be marking its own evidence.
+func AuditCheckpoint(ctx SContext, label string) (string, error) {
+	c, ok := ctx.(*sContext)
+	if !ok {
+		return "", errForeignContext
+	}
+	if err := check(c, OpAuditAppend); err != nil {
 		return "", err
 	}
-	e := kaudit.record(AuditPolicy, ctx, "audit checkpoint: "+label, map[string]any{
+	e := kaudit.record(AuditPolicy, c, "audit checkpoint: "+label, map[string]any{
 		"prev_head": kaudit.head(),
 	})
 	return e.Hash, nil
