@@ -52,7 +52,31 @@ const (
 // needed runtime stack inspection because every class shares one classloader
 // namespace; here package visibility gives a stronger guarantee at compile time.
 // Do not port the stack walk as the primary control.
+//
+// The syscall surface is composed of per-subsystem groups, each declared in the
+// file that implements it. A new subsystem adds its own group interface and its
+// own methods on *sContext, and lists the group here; it does not rewrite this
+// file. Keeping the groups separate is what lets two subsystems be written at
+// once without either touching the other's code, and it makes the syscall surface
+// of any one subsystem readable in one place.
 type SContext interface {
+	// Identity is what a module may learn about itself.
+	Identity
+
+	SyscallClock
+	SyscallMeta
+	SyscallLog
+	SyscallAudit
+	SyscallProc
+	SyscallMeter
+	SyscallFD
+
+	sealed()
+}
+
+// Identity is what a context can report about itself. Every field is set by the
+// kernel at spawn time; none of it is chosen by the module.
+type Identity interface {
 	// PID returns the context's process id.
 	PID() PID
 	// UID returns the context's kernel-allocated owner id.
@@ -63,45 +87,6 @@ type SContext interface {
 	// "kernel" for the two kernel-owned contexts. It is a diagnostic label
 	// chosen by the kernel, never by the module.
 	Name() string
-
-	// SyscallMetadataGet reads a key from the kernel metadata store.
-	// Requires metadata:read. A module sees its own entries and
-	// kernel-published ones, never another module's.
-	SyscallMetadataGet(key string) (any, error)
-	// SyscallMetadataSet writes a key to the kernel metadata store.
-	// Requires metadata:write, which no module domain holds.
-	SyscallMetadataSet(key string, value any) error
-	// SyscallSpawn creates a child context. Requires process:fork, and the
-	// target domain must be permitted by the transition rule: nothing spawns
-	// into the kernel domain, and a module can only spawn modules or untrusted
-	// contexts.
-	SyscallSpawn(dom Domain, name string) (SContext, error)
-	// SyscallLog writes to the kernel console. Requires log:write. A context
-	// outside the kernel and init domains may not emit fault records, because
-	// the fault stream is the kernel's own audit trail.
-	SyscallLog(level Level, msg string) error
-	// SyscallUsageEmit reports one usage fact. Requires usage:emit. The kernel
-	// validates the kind and quantity before recording anything; an unknown kind
-	// or an out-of-range quantity is refused rather than accumulated. The kernel
-	// counts quantities and never prices them.
-	SyscallUsageEmit(f UsageFact) error
-	// SyscallClose releases a handle this context opened. Handles are per pid,
-	// so a handle another module holds does not resolve here. Requires no
-	// operation of its own: closing what you opened is not a capability.
-	SyscallClose(fd FD) error
-	// SyscallAuditRead queries the audit chain. Requires audit:read.
-	SyscallAuditRead(f AuditFilter) ([]AuditEntry, error)
-	// SyscallAuditAppend attaches a note to a request trace. Requires
-	// audit:append, which the plugin domain does not hold by default, and
-	// kernel-only kinds are refused even to a holder.
-	SyscallAuditAppend(kind AuditKind, trace, msg string, fields map[string]any) (AuditEntry, error)
-	// SyscallNow returns kernel time. Mono is the only value any subsystem may
-	// use to measure an interval or a deadline; Wall is for records a human reads.
-	// Requires no operation: every module needs a clock and a module that could
-	// not read time could not implement a timeout.
-	SyscallNow() KernelTime
-
-	sealed()
 }
 
 // sContext is the kernel-private implementation of SContext.
@@ -147,64 +132,25 @@ func (c *sContext) alive() error {
 	return nil
 }
 
-func (c *sContext) SyscallMetadataGet(key string) (any, error) {
-	if err := c.alive(); err != nil {
-		return nil, err
-	}
-	return kmeta.read(c, key)
-}
+// The syscall methods themselves live in the file of the subsystem they serve,
+// next to the group interface they satisfy: metadata.go, console.go, audit.go,
+// proc.go, usage.go, fdtable.go and clock.go. What stays here is the identity,
+// the liveness gate every syscall shares, and the domain transition rule.
 
-func (c *sContext) SyscallMetadataSet(key string, value any) error {
-	if err := c.alive(); err != nil {
-		return err
-	}
-	return kmeta.write(c, key, value)
-}
-
-func (c *sContext) SyscallSpawn(dom Domain, name string) (SContext, error) {
-	if err := c.alive(); err != nil {
-		return nil, err
-	}
-	return kscm.spawn(c, dom, name)
-}
-
-func (c *sContext) SyscallLog(level Level, msg string) error {
+// syscall is the shared prologue. Every syscall begins with it, so the liveness
+// and policy checks cannot be forgotten in one of them and remembered in another.
+//
+// op is optional: a syscall that needs no capability (reading the clock, closing
+// a handle you opened) passes "", and only liveness is checked. Passing an op
+// means the denial is recorded on the audit chain as well as the console.
+func (c *sContext) syscall(op Op) error {
 	if err := c.alive(); err != nil {
 		return err
 	}
-	if err := check(c, OpLogWrite); err != nil {
-		return err
+	if op == "" {
+		return nil
 	}
-	// Fault records are the kernel's own audit trail. Letting a module emit
-	// them would let it forge evidence or bury a real denial in noise.
-	if level == LogFault && c.dom != DomainKernel && c.dom != DomainInit {
-		fault(c, "attempt to emit fault record from unprivileged domain", map[string]any{"msg": msg})
-		kaudit.record(AuditEscalation, c, "denied fault-record emission", map[string]any{"msg": msg})
-		return &DeniedError{Op: OpLogWrite, Ctx: c, Reason: "fault level reserved for the kernel"}
-	}
-	kconsole.Emit(level, c.pid, c.dom, msg, nil)
-	return nil
-}
-
-func (c *sContext) SyscallUsageEmit(f UsageFact) error {
-	if err := c.alive(); err != nil {
-		return err
-	}
-	if err := check(c, OpUsageEmit); err != nil {
-		return err
-	}
-	return emitUsage(c, f)
-}
-
-func (c *sContext) SyscallClose(fd FD) error {
-	if err := c.alive(); err != nil {
-		return err
-	}
-	return closeFD(c.pid, fd)
-}
-
-func (c *sContext) SyscallNow() KernelTime {
-	return KernelTime{Mono: mono(), Wall: nowUTC()}
+	return check(c, op)
 }
 
 // canSpawnInto is the domain transition rule. It lives with the context rather

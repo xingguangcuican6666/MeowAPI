@@ -179,3 +179,19 @@ func resetUsage() {
 	usage = map[PID]*UsageCounters{}
 	usageRejected = 0
 }
+
+// SyscallMeter is the accounting half of the syscall surface.
+type SyscallMeter interface {
+	// SyscallUsageEmit reports one usage fact. Requires usage:emit. The kernel
+	// validates the kind and quantity before recording anything; an unknown kind
+	// or an out-of-range quantity is refused rather than accumulated. The kernel
+	// counts quantities and never prices them.
+	SyscallUsageEmit(f UsageFact) error
+}
+
+func (c *sContext) SyscallUsageEmit(f UsageFact) error {
+	if err := c.syscall(OpUsageEmit); err != nil {
+		return err
+	}
+	return emitUsage(c, f)
+}

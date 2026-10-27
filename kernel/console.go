@@ -279,3 +279,26 @@ func fault(ctx *sContext, msg string, fields map[string]any) {
 	}
 	kconsole.Emit(LogFault, pid, dom, msg, fields)
 }
+
+// SyscallLog is the console half of the syscall surface.
+type SyscallLog interface {
+	// SyscallLog writes to the kernel console. Requires log:write. A context
+	// outside the kernel and init domains may not emit fault records, because
+	// the fault stream is the kernel's own audit trail.
+	SyscallLog(level Level, msg string) error
+}
+
+func (c *sContext) SyscallLog(level Level, msg string) error {
+	if err := c.syscall(OpLogWrite); err != nil {
+		return err
+	}
+	// Fault records are evidence. Letting a module emit them would let it forge
+	// a record of its own good behavior or bury a real denial in noise.
+	if level == LogFault && c.dom != DomainKernel && c.dom != DomainInit {
+		fault(c, "attempt to emit fault record from unprivileged domain", map[string]any{"msg": msg})
+		kaudit.record(AuditEscalation, c, "denied fault-record emission", map[string]any{"msg": msg})
+		return &DeniedError{Op: OpLogWrite, Ctx: c, Reason: "fault level reserved for the kernel"}
+	}
+	kconsole.Emit(level, c.pid, c.dom, msg, nil)
+	return nil
+}

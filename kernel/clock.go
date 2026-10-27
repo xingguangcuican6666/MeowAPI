@@ -87,8 +87,50 @@ type KernelTime struct {
 	Wall time.Time `json:"wall"`
 }
 
+// Clock is a handle on the kernel time authority. It is read-only: there is no
+// setter anywhere, which is the entire point of the subsystem. A module that
+// could set the time could extend its own rate-limit window, backdate a billing
+// period, or make a watchdog deadline never arrive.
+type Clock struct{ c *kernelClock }
+
+// KernelClock returns the kernel time authority, for the host process, the console
+// dump and tests. Subsystems inside the kernel use the package-level mono()
+// instead, so that no code path can be handed a different clock.
+func KernelClock() Clock { return Clock{c: kclock} }
+
+// Mono returns nanoseconds on the kernel's monotonic clock.
+func (c Clock) Mono() int64 { return c.c.Mono() }
+
+// Now returns wall-clock UTC time, for records a human reads.
+func (c Clock) Now() time.Time { return c.c.Now() }
+
+// Since returns the nanoseconds elapsed from a Mono() reading.
+func (c Clock) Since(start int64) int64 { return c.c.Since(start) }
+
+// Elapsed returns the duration elapsed from a Mono() reading.
+func (c Clock) Elapsed(start int64) time.Duration { return c.c.Elapsed(start) }
+
+// Deadline returns the Mono() value at which a timeout starting now expires.
+func (c Clock) Deadline(after time.Duration) int64 { return c.c.Deadline(after) }
+
+// Expired reports whether a Mono() deadline has passed.
+func (c Clock) Expired(deadline int64) bool { return c.c.Expired(deadline) }
+
 // Mono is the package-level entry point every subsystem uses.
 func mono() int64 { return kclock.Mono() }
 
 // nowUTC is the package-level wall clock, for record timestamps only.
 func nowUTC() time.Time { return kclock.Now() }
+
+// SyscallClock is the time half of the syscall surface.
+type SyscallClock interface {
+	// SyscallNow returns kernel time. Mono is the only value a module may use to
+	// measure an interval or a deadline; Wall is for records a human reads.
+	// Requires no operation: a module that cannot read time cannot implement a
+	// timeout, and there is nothing to gain by granting a forged clock.
+	SyscallNow() KernelTime
+}
+
+func (c *sContext) SyscallNow() KernelTime {
+	return KernelTime{Mono: mono(), Wall: nowUTC()}
+}

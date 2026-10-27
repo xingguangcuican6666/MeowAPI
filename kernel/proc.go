@@ -227,3 +227,19 @@ func (m *contextManager) reset() {
 // rather than sync.Once because a second boot must fail loudly; sync.Once would
 // silently no-op and leave the caller believing the kernel came up.
 var booted atomic.Bool
+
+// SyscallProc is the process half of the syscall surface.
+type SyscallProc interface {
+	// SyscallSpawn creates a child context. Requires process:fork, and the
+	// target domain must be permitted by the transition rule.
+	SyscallSpawn(dom Domain, name string) (SContext, error)
+}
+
+func (c *sContext) SyscallSpawn(dom Domain, name string) (SContext, error) {
+	if err := c.syscall(""); err != nil {
+		return nil, err
+	}
+	// spawn performs the policy check and the transition check itself, so that
+	// both are enforced together and neither can be skipped by a future caller.
+	return kscm.spawn(c, dom, name)
+}

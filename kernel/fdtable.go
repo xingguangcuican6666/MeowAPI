@@ -229,3 +229,25 @@ type closedFlag struct{ v atomic.Bool }
 // mark returns true the first time it is called, false afterwards.
 func (c *closedFlag) mark() bool { return !c.v.Swap(true) }
 func (c *closedFlag) done() bool { return c.v.Load() }
+
+// SyscallFD is the handle half of the syscall surface.
+type SyscallFD interface {
+	// SyscallClose releases a handle this context opened. Handles are per pid,
+	// so a handle belonging to another module does not resolve here. Requires no
+	// operation: closing what you opened is not a capability.
+	SyscallClose(fd FD) error
+	// SyscallFDs lists this context's open handles, for a module diagnosing its
+	// own leaks. Requires no operation, and never exposes another pid's table.
+	SyscallFDs() []FDInfo
+}
+
+func (c *sContext) SyscallClose(fd FD) error {
+	if err := c.syscall(""); err != nil {
+		return err
+	}
+	return closeFD(c.pid, fd)
+}
+
+func (c *sContext) SyscallFDs() []FDInfo {
+	return FDList(c.pid)
+}

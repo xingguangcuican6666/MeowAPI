@@ -81,7 +81,7 @@ type auditLog struct {
 	lastHash string
 	truncate int64
 	sink     AuditSink
-	genesis  bool
+	window   int
 }
 
 // AuditSink receives sealed entries. Implementations must not retain a reference
@@ -95,14 +95,34 @@ type AuditSinkFunc func(e AuditEntry) error
 
 func (f AuditSinkFunc) WriteAudit(e AuditEntry) error { return f(e) }
 
-// auditWindow is how many entries stay queryable in memory.
-const auditWindow = 8192
+// defaultAuditWindow is how many entries stay queryable in memory when the boot
+// configuration does not say otherwise.
+const defaultAuditWindow = 8192
 
-var kaudit = &auditLog{lastHash: "0"}
+// DefaultAuditWindow reports the window used when BootConfig.AuditWindow is zero.
+func DefaultAuditWindow() int { return defaultAuditWindow }
 
-// genesis is the hash of an empty chain. A verifier that sees this as Prev knows
+// minAuditWindow is the floor. A window of zero would discard every entry before
+// anything could read it, which is not a smaller buffer but no audit trail.
+const minAuditWindow = 16
+
+// MinAuditWindow reports the floor the window is clamped to.
+func MinAuditWindow() int { return minAuditWindow }
+
+var kaudit = &auditLog{lastHash: AuditGenesis, window: defaultAuditWindow}
+
+// AuditGenesis is the Prev value of an empty chain. A verifier that sees it knows
 // it is reading the first entry of a boot.
-const auditGenesis = "0"
+const AuditGenesis = "0"
+
+// AuditWindow reports how many entries stay queryable in memory. Entries beyond
+// it are evicted to the sink; the count of evictions is reported by AuditLen so a
+// gap is visible rather than silent.
+func AuditWindow() int {
+	kaudit.mu.Lock()
+	defer kaudit.mu.Unlock()
+	return kaudit.window
+}
 
 // record appends one entry. It is called by the kernel, never by a module: the
 // module-reachable syscall only permits reading and appending to a request's own
@@ -133,7 +153,7 @@ func (a *auditLog) append(kind AuditKind, ctx *sContext, msg, trace string, fiel
 	a.lastHash = e.Hash
 
 	a.entries = append(a.entries, e)
-	if over := len(a.entries) - auditWindow; over > 0 {
+	if over := len(a.entries) - a.window; over > 0 {
 		a.truncate += int64(over)
 		a.entries = a.entries[over:]
 	}
@@ -212,13 +232,32 @@ func VerifyChain(entries []AuditEntry, expectPrev string) int {
 	return -1
 }
 
-// SetSink installs the audit sink. It is reachable only from the bootloader, not
+// setSink installs the audit sink. It is reachable only from the bootloader, not
 // from a module, so a module cannot redirect the audit trail to a sink it
-// controls. A nil sink disables spilling and keeps memory-only.
+// controls. A nil sink keeps the chain memory-only.
 func (a *auditLog) setSink(s AuditSink) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sink = s
+}
+
+// setWindow sizes the in-memory window, clamped to the floor.
+func (a *auditLog) setWindow(n int) {
+	if n < minAuditWindow {
+		n = minAuditWindow
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.window = n
+	a.trimLocked()
+}
+
+// trimLocked evicts entries beyond the window. Caller holds a.mu.
+func (a *auditLog) trimLocked() {
+	if over := len(a.entries) - a.window; over > 0 {
+		a.truncate += int64(over)
+		a.entries = append([]AuditEntry(nil), a.entries[over:]...)
+	}
 }
 
 // Head returns the most recent entry's hash, or the genesis value for an empty
@@ -295,9 +334,15 @@ func (a *auditLog) reset() {
 	defer a.mu.Unlock()
 	a.entries = nil
 	a.nextSeq = 0
-	a.lastHash = auditGenesis
+	a.lastHash = AuditGenesis
 	a.truncate = 0
-	a.genesis = false
+	// The window and the sink are operator configuration and are reset to their
+	// defaults, because Boot re-applies this boot's configuration immediately
+	// afterwards. Keeping them across a restart would let a previous boot's
+	// configuration govern a new one that did not ask for it, and a caller
+	// passing no sink would silently keep writing to the old one.
+	a.window = defaultAuditWindow
+	a.sink = nil
 }
 
 // ErrAuditChainBroken is returned when a chain fails verification.
@@ -316,32 +361,36 @@ func AuditCheckpoint(ctx *sContext, label string) (string, error) {
 	return e.Hash, nil
 }
 
-// SyscallAuditRead is the module-reachable audit read. It requires audit:read and
-// returns copies. A module cannot read the chain unless its manifest declares it,
-// and it can never write to it.
-func (c *sContext) SyscallAuditRead(f AuditFilter) ([]AuditEntry, error) {
-	if err := c.alive(); err != nil {
-		return nil, err
+func validAuditKind(k AuditKind) bool {
+	switch k {
+	case AuditBoot, AuditShutdown, AuditSpawn, AuditExit, AuditDenial,
+		AuditEscalation, AuditLoad, AuditUnload, AuditReject, AuditRequest,
+		AuditUsage, AuditSettle, AuditSecret, AuditPanic, AuditPolicy,
+		AuditPeer, AuditSlash:
+		return true
 	}
-	if err := check(c, OpAuditRead); err != nil {
+	return false
+}
+
+// SyscallAudit is the audit half of the syscall surface.
+type SyscallAudit interface {
+	// SyscallAuditRead queries the audit chain. Requires audit:read.
+	SyscallAuditRead(f AuditFilter) ([]AuditEntry, error)
+	// SyscallAuditAppend attaches a note to a request trace. Requires
+	// audit:append, which the plugin domain does not hold by default, and
+	// kernel-only kinds are refused even to a holder.
+	SyscallAuditAppend(kind AuditKind, trace, msg string, fields map[string]any) (AuditEntry, error)
+}
+
+func (c *sContext) SyscallAuditRead(f AuditFilter) ([]AuditEntry, error) {
+	if err := c.syscall(OpAuditRead); err != nil {
 		return nil, err
 	}
 	return AuditQuery(f), nil
 }
 
-// SyscallAuditAppend lets a module attach a note to an existing request trace. It
-// requires audit:append, which the plugin domain does not hold by default: the
-// ordinary module path is log:write. Granting audit:append to a module is a
-// deliberate decision that the module's notes become evidence.
-//
-// The entry is attributed to the calling pid and cannot be attributed to anyone
-// else, so a module can annotate its own behavior and cannot fabricate a record
-// for another module.
 func (c *sContext) SyscallAuditAppend(kind AuditKind, trace, msg string, fields map[string]any) (AuditEntry, error) {
-	if err := c.alive(); err != nil {
-		return AuditEntry{}, err
-	}
-	if err := check(c, OpAuditAppend); err != nil {
+	if err := c.syscall(OpAuditAppend); err != nil {
 		return AuditEntry{}, err
 	}
 	if !validAuditKind(kind) {
@@ -354,21 +403,12 @@ func (c *sContext) SyscallAuditAppend(kind AuditKind, trace, msg string, fields 
 		AuditReject, AuditPolicy, AuditPanic:
 		fault(c, "module attempted to append a kernel-only audit kind",
 			map[string]any{"kind": string(kind)})
+		kaudit.record(AuditEscalation, c, "denied kernel-only audit kind",
+			map[string]any{"kind": string(kind)})
 		return AuditEntry{}, &DeniedError{
 			Op: OpAuditAppend, Ctx: c,
 			Reason: fmt.Sprintf("audit kind %q is reserved to the kernel", kind),
 		}
 	}
 	return kaudit.append(kind, c, msg, trace, fields), nil
-}
-
-func validAuditKind(k AuditKind) bool {
-	switch k {
-	case AuditBoot, AuditShutdown, AuditSpawn, AuditExit, AuditDenial,
-		AuditEscalation, AuditLoad, AuditUnload, AuditReject, AuditRequest,
-		AuditUsage, AuditSettle, AuditSecret, AuditPanic, AuditPolicy,
-		AuditPeer, AuditSlash:
-		return true
-	}
-	return false
 }

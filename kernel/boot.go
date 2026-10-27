@@ -21,6 +21,16 @@ type BootConfig struct {
 	// LogLevel sets the minimum severity reaching the sink. Empty keeps debug,
 	// meaning nothing is filtered. Faults are retained in history regardless.
 	LogLevel Level
+	// AuditSink receives every sealed audit entry as it is written. It is the
+	// operator's copy of the chain, and it is the only way to reconstruct the
+	// trail after the in-memory window evicts an entry or the process dies.
+	// Installing a sink is a bootloader privilege: a module cannot redirect the
+	// audit trail to a sink it controls.
+	AuditSink AuditSink
+	// AuditWindow is how many audit entries stay queryable in memory. Zero keeps
+	// the default. Values below the floor are raised to it, because a window of
+	// zero is not a smaller buffer but no audit trail.
+	AuditWindow int
 }
 
 // Kernel is the handle returned by a successful boot. It is the only reference
@@ -72,6 +82,12 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 		}
 	}()
 
+	// Reset first, then apply configuration. The order matters: configuration
+	// comes from this BootConfig, so a leftover sink or window from a previous
+	// boot would be operator state the caller did not ask for. Resetting first
+	// makes every boot start from the same defaults regardless of history.
+	resetKernel()
+
 	if cfg.Console != nil {
 		kconsole.SetOutput(cfg.Console)
 	}
@@ -81,12 +97,22 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 	if cfg.LogLevel != "" {
 		kconsole.SetLevel(cfg.LogLevel)
 	}
-	kconsole.reset()
+	if cfg.AuditWindow > 0 {
+		kaudit.setWindow(cfg.AuditWindow)
+	}
+	kaudit.setSink(cfg.AuditSink)
 
 	root, err := kscm.handoffRootContext()
 	if err != nil {
 		return nil, err
 	}
+
+	// The boot record is the first link in the audit chain, so it is written
+	// before init is spawned. A chain that opened with the spawn would leave the
+	// fact that a boot happened at all unattributed.
+	kaudit.record(AuditBoot, root, "kernel booting", map[string]any{
+		"kernel_api": KernelAPI, "modules_requested": len(cfg.Modules),
+	})
 
 	spawned, err := root.SyscallSpawn(DomainInit, "init")
 	if err != nil {
@@ -99,9 +125,6 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 
 	kconsole.Emit(LogInfo, initCtx.pid, initCtx.dom, "init started", map[string]any{
 		"kernel_api": KernelAPI,
-	})
-	kaudit.record(AuditBoot, initCtx, "kernel booted", map[string]any{
-		"kernel_api": KernelAPI, "modules_requested": len(cfg.Modules),
 	})
 
 	k = &Kernel{initCtx: initCtx}
@@ -184,6 +207,11 @@ func (k *Kernel) Publish(key string, value any) {
 
 	kmeta.publish(key, value)
 	kconsole.Emit(LogDebug, 0, DomainKernel, "published kernel metadata", map[string]any{"key": key})
+	// Publishing changes state every module holding metadata:read can see, so it
+	// is audited. The value is deliberately not recorded: configuration can carry
+	// a credential, and the audit trail is readable by anything holding
+	// audit:read.
+	kaudit.record(AuditPolicy, k.initCtx, "published kernel metadata", map[string]any{"key": key})
 }
 
 // Shutdown unloads every module newest-first and releases the boot guard.

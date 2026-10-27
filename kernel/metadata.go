@@ -96,3 +96,27 @@ func (s *metadataStore) reset() {
 	defer s.mu.Unlock()
 	s.entries = make(map[metadataKey]any)
 }
+
+// SyscallMeta is the metadata half of the syscall surface.
+type SyscallMeta interface {
+	// SyscallMetadataGet reads a key. Requires metadata:read. A module sees its
+	// own entries and kernel-published ones, never another module's.
+	SyscallMetadataGet(key string) (any, error)
+	// SyscallMetadataSet writes a key. Requires metadata:write, which no module
+	// domain holds.
+	SyscallMetadataSet(key string, value any) error
+}
+
+func (c *sContext) SyscallMetadataGet(key string) (any, error) {
+	if err := c.syscall(OpMetadataRead); err != nil {
+		return nil, err
+	}
+	return kmeta.read(c, key)
+}
+
+func (c *sContext) SyscallMetadataSet(key string, value any) error {
+	if err := c.syscall(OpMetadataWrite); err != nil {
+		return err
+	}
+	return kmeta.write(c, key, value)
+}
