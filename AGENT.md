@@ -38,36 +38,58 @@ records the substitute.
 ## Architecture
 
 ```
-main.go            boot entry: kernel.Boot, report, Shutdown
-kernel/            EL1 trust root. No business logic, standard library only.
-  boot.go          boot guard, root handoff, init spawn, publish, shutdown
-  scontext.go      SContext, domains, syscalls, spawn transition rule
-  namespace.go     policy table and check(), context manager, process table, metadata
-  moduleloader.go  Module contract, Register, Manifest and validation, load/unload
-  uartconsole.go   kernel console, retention, the canonical fault emitter
-plugins/           one directory per module. Each is independently buildable.
-  diag/            reference module: the smallest conforming plugin
-mirror/            Java design prototype. Reference only, never built or run.
-stage/             reference material from the archived fork. Not built.
+main.go                      boot entry: kernel.Boot, report, Shutdown, -audit
+kernel/                      EL1 trust root. No business logic, standard library only.
+  kernel.go                  package doc, the ABI version, the one reset path
+  context.go                 sealed SContext, identity, syscall groups, transition rule
+  policy.go                  Op set, domain rules, grant narrowing, check(), denials
+  proc.go                    context manager, pid/uid allocation, process table
+  metadata.go                per-owner kernel key-value store
+  boot.go                    boot guard, root handoff, init spawn, shutdown
+  module.go                  Module contract, Register, load and unload
+  manifest.go                Manifest, validation, scoped operations
+  usage.go                   usage ABI: kinds, ceilings, per-pid accounting
+  clock.go                   kclock: the monotonic time authority
+  audit.go                   kaudit: the hash-chained audit record
+  fdtable.go                 kfdtable: per-pid integer handles for kernel resources
+  bootconfig.go              kboot: the sealed trust root and resource ceilings
+  console.go                 kernel console, retention, the canonical fault emitter
+  dump.go                    read-only kernel state rendering
+internal/auditfile/          the durable audit sink: JSON Lines, per-boot segments
+plugins/                     one directory per module. Each is independently buildable.
+  diag/                      reference module: the smallest conforming plugin
+tools/instrcheck/            instruction-file integrity checker, runs in CI
+tools/auditverify/           verify an audit trail without the kernel, CLI
+.github/workflows/ci.yml     integrity, build, vet, race, audit end to end
+mirror/                      Java design prototype. Reference only, never built or run.
+stage/                       reference material from the archived fork. Not built.
 ```
 
 ### Kernel package layout
 
-The kernel is split across these files. Do not add another without saying why in
-the change summary.
+Each file is one subsystem, named after the OS primitive it answers to. A subsystem
+owns its lock, its reset entry in `resetKernel()`, and its `Syscall...` group
+interface in `context.go`; nothing else reaches into its state. The subsystem list
+is expected to grow; a new subsystem adds one file, one group, one reset, and the
+policy operation that gates it, in the same change.
 
-| File | Responsibility | mirror/ counterpart |
-| --- | --- | --- |
-| `kernel/boot.go` | Boot guard, root context handoff, init spawn, publish, shutdown, panic path | `App.java`, `kernel/init/init.java` |
-| `kernel/scontext.go` | Opaque `SContext`, domains, syscall entry points, spawn transition rule | `kernel/security/scontext.java` |
-| `kernel/namespace.go` | Context manager: pid/uid allocation, process table, metadata store, policy rules, grant narrowing and `check()` | `kernel/security/scm.java`, `smap.java`, `kmetadata.java`, `policy.java` |
-| `kernel/moduleloader.go` | `Module` contract, `Register`, manifest validation, load, unload, module registry | `kernel/module/moduleloader.java`, `Plugin.java` |
-| `kernel/usage.go` | Usage ABI: kinds, per-event ceilings, per-pid accounting. Counts quantities, never prices them | none; new in the Go port |
-| `kernel/uartconsole.go` | Kernel console: JSON/text rendering, level filter, retention, fault emitter, state dump | `kernel/uart/console.java` |
-
-`namespace.go` carries four concerns today (policy, process table, grants,
-metadata). When it grows, split it into `policy.go`, `process.go` and
-`metadata.go` rather than letting it absorb more.
+| File | Subsystem | Responsibility | mirror/ counterpart |
+| --- | --- | --- | --- |
+| `kernel/kernel.go` | - | package doc, `KernelAPI`, `resetKernel`, the one reset path | none |
+| `kernel/context.go` | core | sealed `SContext`, identity, the syscall group composition, the spawn transition rule | `scontext.java` |
+| `kernel/policy.go` | - | the `Op` set, domain rules, manifest grant narrowing, `check()`, `DeniedError` | `policy.java` |
+| `kernel/proc.go` | - | context manager, pid/uid allocation, the append-only process table | `scm.java`, `smap.java` |
+| `kernel/metadata.go` | - | per-owner-pid kernel key-value store | `kmetadata.java` |
+| `kernel/boot.go` | - | boot guard, root handoff, init spawn, `Publish`, `Shutdown` | `App.java`, `init.java` |
+| `kernel/module.go` | - | `Module` contract, `Register`, load, unload | `moduleloader.java`, `Plugin.java` |
+| `kernel/manifest.go` | - | `Manifest`, validation, scoped operations, `Digest` | none |
+| `kernel/usage.go` | - | usage ABI: closed kind set, per-event ceilings, per-pid accounting. Counts quantities, never prices them | none |
+| `kernel/clock.go` | kclock | the monotonic time authority: no rewind, no setter | none |
+| `kernel/audit.go` | kaudit | the hash-chained audit record, sink support, `VerifyChain` | none |
+| `kernel/fdtable.go` | kfdtable | per-pid integer handles; reclamation on unload | none |
+| `kernel/bootconfig.go` | kboot | the sealed trust root, cluster roots, resource ceilings | none |
+| `kernel/console.go` | - | kernel console: JSON/text, level filter, retention, fault emitter | `console.java` |
+| `kernel/dump.go` | - | read-only kernel state rendering for debugging | none |
 
 ### The billing ABI
 

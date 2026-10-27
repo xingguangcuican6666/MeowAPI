@@ -124,7 +124,7 @@ jobs:
       - name: assert the security suite actually ran
         run: |
           set -euo pipefail
-          out="$(go test -count=1 -v ./kernel/ ./tools/instrcheck/ 2>&1)"
+          out="$(go test -count=1 -v ./kernel/ ./internal/... ./tools/... 2>&1)"
           passed="$(printf '%s' "$out" | grep -c '^--- PASS' || true)"
           failed="$(printf '%s' "$out" | grep -c '^--- FAIL' || true)"
           echo "passed=$passed failed=$failed"
@@ -132,8 +132,69 @@ jobs:
             echo "$out" | grep '^--- FAIL'
             exit 1
           fi
-          if [ "$passed" -lt 30 ]; then
-            echo "::error::expected at least 30 passing security tests, got $passed"
+          # The floor rises as the suite grows and is never lowered. It is a guard
+          # against the suite silently not running, not against a slow test day.
+          if [ "$passed" -lt 130 ]; then
+            echo "::error::expected at least 130 passing security tests, got $passed"
             echo "a guard against the suite silently not running"
             exit 1
           fi
+
+  # End-to-end: boot the kernel for real, write an audit trail, tamper with it, and
+  # prove the verifier catches it. This exercises main.go, the auditfile sink and
+  # the auditverify binary together, which no unit test does.
+  audit-integrity:
+    name: audit chain end to end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: boot the kernel and write a trail
+        run: |
+          set -euo pipefail
+          go run . -text -audit /tmp/meow-audit.log >/dev/null
+          go run . -text -audit /tmp/meow-audit.log >/dev/null
+          echo "wrote two boots to one trail"
+
+      - name: verify the clean trail
+        run: |
+          set -euo pipefail
+          go run ./tools/auditverify /tmp/meow-audit.log
+          go run ./tools/auditverify -json /tmp/meow-audit.log
+
+      - name: verify the trail detects tampering
+        run: |
+          set -euo pipefail
+          cp /tmp/meow-audit.log /tmp/tampered.log
+          sed -i 's/module loaded/module EDITED/' /tmp/tampered.log
+          if go run ./tools/auditverify /tmp/tampered.log; then
+            echo "::error::a rewritten message was not detected"
+            exit 1
+          fi
+          echo "tampering detected as expected"
+
+      - name: verify the trail detects a deleted entry
+        run: |
+          set -euo pipefail
+          # Drop a line from the middle, the cheapest way to hide an event.
+          sed '5d' /tmp/meow-audit.log > /tmp/shortened.log
+          if go run ./tools/auditverify /tmp/shortened.log; then
+            echo "::error::a deleted entry was not detected"
+            exit 1
+          fi
+          echo "deletion detected as expected"
+
+      - name: the audit file is owner-only
+        run: |
+          set -euo pipefail
+          mode="$(stat -c '%a' /tmp/meow-audit.log)"
+          if [ "$mode" != "600" ]; then
+            echo "::error::audit file mode is $mode, expected 600"
+            exit 1
+          fi
+          echo "audit file mode: $mode"
