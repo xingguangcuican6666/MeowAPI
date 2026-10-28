@@ -56,6 +56,21 @@ const maxPipeBuffer = 16 * 1024 * 1024
 // maxPipesPerModule bounds how many pipes one module may hold open.
 const maxPipesPerModule = 256
 
+// maxPipeTotalBytes bounds the buffered bytes one module may hold across all of its
+// pipes at once.
+//
+// This bound exists because the two above multiply, and neither says anything about
+// the product on its own: 256 pipes at 16MiB each is 4GiB reachable by one module
+// alone. kshm has MaxSharedBytes for exactly this reason, and a stream whose peer
+// never drains holds its buffer for as long as both ends stay open, so the exposure
+// is real rather than theoretical.
+//
+// It is sized as one eighth of that worst case, which is 16384 pipes worth of default
+// buffers or 256 pipes worth of a 2MiB buffer: enough headroom for a module streaming
+// many provider responses, and small enough that the product of the other two bounds
+// can no longer be reached.
+const maxPipeTotalBytes = maxPipesPerModule * maxPipeBuffer / 8
+
 // pipeChunk is one queued message. It is always a fresh allocation, never a slice
 // of a caller's buffer.
 type pipeChunk struct {
@@ -107,7 +122,12 @@ func (p *pipe) Close() error {
 	}
 	p.closed = true
 	p.queue = nil
+	owner, capacity := p.owner, p.cap
 	p.mu.Unlock()
+
+	// The capacity reservation goes back with the pipe, or a module that opens and
+	// closes pipes in a loop would exhaust its own allowance without holding one.
+	kpipes.releaseCapacity(owner, capacity)
 
 	// Drop the registry entry with the pipe. It is keyed by (pid, fd) and pids are
 	// never reused, so an entry left behind is unreachable garbage that
@@ -271,6 +291,12 @@ type pipeRegistry struct {
 	mu    sync.RWMutex
 	byFD  map[fdRef]*pipe
 	count map[PID]int
+	// bytes reserves each pipe's full capacity against its owner at open time
+	// rather than counting what happens to be buffered. Reserving is the right
+	// measure for a bound on exposure: a pipe that is empty now can fill to its
+	// capacity at any moment, and a ceiling computed from current contents would
+	// let a module open every pipe first and fill them all second.
+	bytes map[PID]int64
 }
 
 type fdRef struct {
@@ -278,7 +304,34 @@ type fdRef struct {
 	fd  FD
 }
 
-var kpipes = &pipeRegistry{byFD: map[fdRef]*pipe{}, count: map[PID]int{}}
+var kpipes = &pipeRegistry{
+	byFD:  map[fdRef]*pipe{},
+	count: map[PID]int{},
+	bytes: map[PID]int64{},
+}
+
+// reserveCapacity charges one pipe's capacity against its owner's total and reports
+// whether the total would exceed the bound. It returns false without charging when
+// the open must be refused, so a failed open consumes nothing.
+func (r *pipeRegistry) reserveCapacity(pid PID, capacity int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.bytes[pid]+int64(capacity) > maxPipeTotalBytes {
+		return false
+	}
+	r.bytes[pid] += int64(capacity)
+	return true
+}
+
+// releaseCapacity gives a pipe's reservation back.
+func (r *pipeRegistry) releaseCapacity(pid PID, capacity int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.bytes[pid] -= int64(capacity)
+	if r.bytes[pid] <= 0 {
+		delete(r.bytes, pid)
+	}
+}
 
 func (r *pipeRegistry) add(pid PID, fd FD, p *pipe) {
 	r.mu.Lock()
@@ -326,6 +379,7 @@ func (r *pipeRegistry) removePID(pid PID) {
 		delete(r.byFD, ref)
 	}
 	delete(r.count, pid)
+	delete(r.bytes, pid)
 	r.mu.Unlock()
 
 	for _, p := range doomed {
@@ -418,8 +472,17 @@ func OpenPipe(ctx SContext, name string, capacity int, mode PipeMode) (FD, error
 	}
 
 	p := newPipe(name, c.pid, 0, capacity, mode)
+	if !kpipes.reserveCapacity(c.pid, p.cap) {
+		fault(c, "pipe byte ceiling reached", map[string]any{
+			"module": c.name, "requested": p.cap, "max_pipe_total_bytes": maxPipeTotalBytes,
+		})
+		return noFD, fmt.Errorf(
+			"kernel: pid %d would exceed the maximum of %d buffered bytes across its pipes",
+			c.pid, maxPipeTotalBytes)
+	}
 	fd, err := install(c.pid, p, name)
 	if err != nil {
+		kpipes.releaseCapacity(c.pid, p.cap)
 		return noFD, err
 	}
 	kpipes.add(c.pid, fd, p)
@@ -541,4 +604,5 @@ func resetPipes() {
 	defer kpipes.mu.Unlock()
 	kpipes.byFD = map[fdRef]*pipe{}
 	kpipes.count = map[PID]int{}
+	kpipes.bytes = map[PID]int64{}
 }

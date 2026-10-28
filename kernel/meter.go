@@ -342,10 +342,32 @@ func (l *meterLedger) finish(r MeterRecord, abandoned bool) {
 	} else {
 		l.recorded++
 	}
-	if over := len(l.done) - maxRetainedRequests; over > 0 {
-		l.evicted += int64(over)
-		l.done = append([]MeterRecord(nil), l.done[over:]...)
+	l.trimLocked()
+}
+
+// trimLocked keeps the ledger at its bound.
+//
+// It trims in batches rather than one record at a time, and the batch is the reason
+// this is a separate function. Trimming exactly to the bound would make every insert
+// past the ceiling reallocate and copy all maxRetainedRequests records under the write
+// lock, which is O(n) per request forever and lands as a throughput cliff precisely
+// when the gateway is busiest. Dropping back to seven eighths of the bound makes the
+// cost amortized constant: one copy per eighth of the ledger's worth of inserts.
+//
+// The trade is that a query may see slightly fewer records than the bound. The bound
+// was always a memory ceiling and never a promise of exact retention, and the
+// evicted counter says how much has gone.
+func (l *meterLedger) trimLocked() {
+	if len(l.done) <= maxRetainedRequests {
+		return
 	}
+	keep := maxRetainedRequests - maxRetainedRequests/8
+	if len(l.done) <= keep {
+		return
+	}
+	over := len(l.done) - keep
+	l.evicted += int64(over)
+	l.done = append([]MeterRecord(nil), l.done[over:]...)
 }
 
 // MeterFilter selects retained records to query.

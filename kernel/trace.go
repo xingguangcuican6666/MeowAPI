@@ -463,10 +463,24 @@ func (r *traceRegistry) finish(s Span) {
 	} else {
 		r.completed++
 	}
-	if over := len(r.done) - maxRetainedSpans; over > 0 {
-		r.evicted += int64(over)
-		r.done = append([]Span(nil), r.done[over:]...)
+	r.trimLocked()
+}
+
+// trimLocked keeps the span history at its bound, dropping back to seven eighths of
+// it rather than to exactly the bound. See kmeter's trimLocked for why: trimming one
+// record at a time past the ceiling makes every insert copy the whole history under
+// the write lock, which is a throughput cliff at exactly the wrong moment.
+func (r *traceRegistry) trimLocked() {
+	if len(r.done) <= maxRetainedSpans {
+		return
 	}
+	keep := maxRetainedSpans - maxRetainedSpans/8
+	if len(r.done) <= keep {
+		return
+	}
+	over := len(r.done) - keep
+	r.evicted += int64(over)
+	r.done = append([]Span(nil), r.done[over:]...)
 }
 
 // TraceFilter selects spans to query.

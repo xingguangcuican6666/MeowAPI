@@ -125,7 +125,8 @@ func (h *lockHandle) Close() error {
 
 // acquire takes the lock for pid, waiting until deadline. exclusive requests a write
 // lock; otherwise a read lock is taken, and multiple readers may hold it at once.
-func (r *lockRegistry) acquire(name string, pid PID, exclusive bool, deadline int64) (FD, error) {
+func (r *lockRegistry) acquire(ctx *sContext, name string, exclusive bool, deadline int64) (FD, error) {
+	pid := ctx.pid
 	l := r.get(name)
 
 	l.mu.Lock()
@@ -142,7 +143,10 @@ func (r *lockRegistry) acquire(name string, pid PID, exclusive bool, deadline in
 	r.mu.RUnlock()
 	if heldCount >= maxLocksPerModule {
 		l.mu.Unlock()
-		fault(nil, "lock ceiling reached", map[string]any{
+		// Attributed to the calling context rather than to nothing. A ceiling
+		// refusal that reports pid 0 is a ceiling refusal an operator cannot act
+		// on: the fault record has to say which module leaked its locks.
+		fault(ctx, "lock ceiling reached", map[string]any{
 			"pid": pid, "max_locks_per_module": maxLocksPerModule,
 		})
 		return noFD, fmt.Errorf("kernel: pid %d holds the maximum of %d locks", pid, maxLocksPerModule)
@@ -391,7 +395,7 @@ func LockTake(ctx SContext, name string, exclusive bool, deadline int64) (FD, er
 		// that made it.
 		return noFD, errors.New("kernel: lock acquisition requires a deadline on the monotonic clock")
 	}
-	return klocks.acquire(name, c.pid, exclusive, deadline)
+	return klocks.acquire(c, name, exclusive, deadline)
 }
 
 func (c *sContext) SyscallLockTake(name string, exclusive bool, deadline int64) (FD, error) {
