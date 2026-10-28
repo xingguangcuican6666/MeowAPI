@@ -22,6 +22,11 @@
 .env
 .env.local
 
+# Claude Code session state. .claude/worktrees/ holds agent working trees, each of
+# which is itself a git checkout, so staging one with `git add -A` would embed a
+# repository inside this one and silently commit another session's work in progress.
+.claude/
+
 # mirror/ is a Java design prototype: the sources are the specification, the
 # compiled output is not. Classes and jars are build artifacts and would go
 # stale the moment a source changed, which makes them worse than absent.

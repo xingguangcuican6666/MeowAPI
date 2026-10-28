@@ -250,18 +250,63 @@ func resetGrants() {
 	grants = map[PID]map[Op]struct{}{}
 }
 
+// enforcedScopedOps are the scoped operations that already have per-call boundary
+// enforcement implemented in the subsystem that owns them. Membership here is a claim
+// about code that exists, not about an operation that ought to be grantable, and the
+// distinction is a security boundary rather than a bookkeeping one.
+//
+// A scoped operation absent from the plugin domain's ceiling is refused at the ceiling
+// before its declared boundary is ever consulted, which makes it unreachable from any
+// module even when its manifest declares it correctly. That is the right outcome while
+// the enforcement is missing and the wrong outcome once it exists, so the pass-through
+// below is gated on this set: an operation enters it only when a per-call check is in
+// the tree, and it leaves the set if that check is ever removed.
+//
+// Passing through an operation with no per-call enforcement would turn its manifest
+// declaration into an unbounded grant, because the declaration would be the only thing
+// deciding and nothing would check the call against it. peer:dial, net:dial and
+// net:listen are scoped in manifest.go and deliberately absent here for exactly that
+// reason: their subsystems do not yet enforce a declared boundary per call.
+var enforcedScopedOps = map[Op]bool{
+	OpFSRead:    true, // kv.go: FSCheckRead consults the manifest's ReadPaths
+	OpFSWrite:   true, // kv.go: FSCheckWrite consults the manifest's WritePaths
+	OpSecretUse: true, // keyring.go: secretPrefixesFor and aliasInScope per call
+}
+
 // granted is the effective decision: the domain ceiling, then the module's own
 // declaration. The reason distinguishes "your domain lacks this", which only a
 // kernel change fixes, from "you forgot to declare it", which the module author
 // fixes.
+//
+// One exception, and it is the reason scoped operations work at all. An operation in
+// moduleScopedOps is deliberately absent from rules[DomainPlugin] - a capability every
+// module held by default would be an unbounded capability - so applying the ceiling to
+// it would refuse it twice, and the second refusal is the one that sticks: the declared
+// scope would never be consulted and the operation would be unreachable from any
+// module. For those, and only in the plugin domain, the declaration decides.
+//
+// That is still not a widening. The operation remains refused to every module whose
+// manifest does not declare it; declaring it requires declaring its boundary, because
+// manifest.Validate() rejects net:dial with no allowed host, fs:read with no read path
+// and an empty secret prefix as a read-all grant; and the per-call scope enforcement in
+// the owning subsystem still runs afterwards. A context with no manifest behind it - one
+// init spawned directly - has no boundary to enforce against, so it is refused rather
+// than passed through, which is what keeps this from becoming an unbounded grant.
 func granted(ctx *sContext, op Op) (ok bool, reason string) {
+	byDeclaration := false
 	if !Allowed(ctx.dom, op) {
-		return false, ""
+		if !(IsScoped(op) && enforcedScopedOps[op] && ctx.dom == DomainPlugin) {
+			return false, ""
+		}
+		byDeclaration = true
 	}
 	grantsMu.RLock()
 	set, constrained := grants[ctx.pid]
 	grantsMu.RUnlock()
 	if !constrained {
+		if byDeclaration {
+			return false, fmt.Sprintf("%s is scope-enforced and this context has no manifest scope", op)
+		}
 		return true, ""
 	}
 	if _, declared := set[op]; declared {

@@ -512,9 +512,22 @@ func TestQosNegativeCostIsRefused(t *testing.T) {
 // the property that a caller-supplied timestamp would destroy.
 func TestQosBucketRefillsOnTheKernelClock(t *testing.T) {
 	harness.QuietConsole(t)
-	// 6000 requests per minute refills one request every 10ms, so a short sleep is
-	// enough to observe refill without making the suite slow.
-	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 6000}))
+	// Burst 3 with a rate of 60,000 per minute gives a bucket that empties in three
+	// admits and refills one token per millisecond. Both numbers are chosen so the
+	// test observes a state change rather than a duration.
+	//
+	// The rate used to be 6000 per minute with a fixed 30ms sleep, which is a timing
+	// comparison rather than an assertion about refill: it needed roughly three tokens
+	// to arrive inside a window, and on a machine busy enough to be running the rest
+	// of the suite under -race alongside it, they did not. AGENT.md forbids
+	// sleep-based timing tests for exactly this reason. What follows waits for the
+	// condition instead of assuming a duration, so it is bounded but not brittle.
+	//
+	// Burst also has to be set, and the reason is not obvious: capacity comes from
+	// RequestsPerMinute unless Burst is positive, so raising the rate to make refill
+	// fast also raises the capacity, and a bucket that cannot be drained in a bounded
+	// number of admits is a bucket this test can never empty.
+	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 60_000, Burst: 3}))
 	t.Cleanup(func() { _ = kernel.SetQosPolicy("uid", kernel.QosPolicy{}) })
 
 	k, err := kernel.Boot(kernel.BootConfig{})
@@ -525,8 +538,10 @@ func TestQosBucketRefillsOnTheKernelClock(t *testing.T) {
 	pid, _ := loadAdmissionProbe(t, k, capture, kernel.OpQosAdmit)
 	defer func() { _ = k.Unload(pid) }()
 
-	// Drain the bucket.
-	for range 6000 {
+	// Drain the bucket. The bound is deliberately loose: the loop exits on the first
+	// refusal, so what it needs is a ceiling that cannot be reached by any policy
+	// this test sets, not a number tuned to the rate.
+	for range 100 {
 		d, err := capture.ctx.SyscallQosAdmit(0)
 		require.NoError(t, err)
 		if !d.Admitted {
@@ -537,11 +552,22 @@ func TestQosBucketRefillsOnTheKernelClock(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, d.Admitted, "the bucket must be empty before refill is observable")
 
-	time.Sleep(30 * time.Millisecond)
-
-	d, err = capture.ctx.SyscallQosAdmit(0)
-	require.NoError(t, err)
-	assert.True(t, d.Admitted, "the bucket must refill from the kernel clock")
+	// Poll until the bucket refills. The bound is generous because what is being
+	// asserted is that refill happens on the kernel clock at all, not that it
+	// happens within some particular duration - and a bound that has to be tuned to
+	// the machine is the flake this replaced.
+	deadline := time.Now().Add(5 * time.Second)
+	for !d.Admitted {
+		d, err = capture.ctx.SyscallQosAdmit(0)
+		require.NoError(t, err)
+		if d.Admitted {
+			break
+		}
+		require.False(t, time.Now().After(deadline),
+			"the bucket must refill from the kernel clock; it never did")
+		time.Sleep(time.Millisecond)
+	}
+	assert.True(t, d.Admitted)
 }
 
 // TestQosPolicyIsNotModuleWritable proves a module cannot raise its own rate. There

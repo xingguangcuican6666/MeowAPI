@@ -184,6 +184,25 @@ func LoadModule(ctx SContext, m Manifest) (PID, error) {
 	// Grants go in before any module code runs.
 	setGrants(child.pid, effective)
 
+	// So do the scopes the grants are meaningless without. A scoped operation is
+	// granted by its manifest boundary rather than by the domain ceiling, so a
+	// module holding fs:read with no installed path boundary has a capability the
+	// kernel has no boundary to enforce against, and a module holding secret:use
+	// with no installed prefix sees no alias at all.
+	//
+	// Both subsystems document this exact hook and neither could call it themselves:
+	// only the loader has a validated manifest in hand, and only the loader
+	// allocates the pid. Installing here rather than later matters because OnLoad
+	// runs below - a module that needs a credential or a file during
+	// initialization would otherwise fail closed, and the failure would look
+	// exactly like a misconfigured prefix rather than like an unwired hook.
+	//
+	// The scopes are per pid and pids are never reused, so nothing is needed in the
+	// abandon closure: a rejected load leaves scopes that no later module can reach,
+	// and resetKernel clears both registries wholesale.
+	SetFSScope(child.pid, m.ReadPaths, m.WritePaths)
+	setSecretScope(child.pid, m.SecretPrefixes)
+
 	// abandon is the single unwind path. Every failure below returns through it,
 	// so the cleanup cannot drift between branches.
 	abandon := func(reason string, err error) error {

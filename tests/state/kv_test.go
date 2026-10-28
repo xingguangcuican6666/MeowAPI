@@ -166,6 +166,22 @@ func stateDenialOps() []string {
 	return out
 }
 
+// stateEscalationOps is stateDenialOps for the other refusal kind. A subsystem that
+// refuses a call which exceeds a declared boundary files an escalation, because the
+// module reached past a grant it does hold; the policy gate files a denial, because
+// the module holds nothing. Both are *DeniedError to the caller, so only the audit
+// kind distinguishes them, and a test that queries one while the kernel writes the
+// other passes for the wrong reason or fails for none.
+func stateEscalationOps() []string {
+	var out []string
+	for _, e := range kernel.AuditQuery(kernel.AuditFilter{Kind: kernel.AuditEscalation}) {
+		if op, ok := e.Fields["op"].(string); ok {
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
 // TestKVStoreIsNamespacedPerModule is the isolation property. Keys are scoped by
 // owner pid exactly as metadata.go does, so one module cannot read or write
 // another's state - and the reason it cannot is structural rather than a refusal:
@@ -877,14 +893,15 @@ func TestFSPathAllowedMatchesBySegment(t *testing.T) {
 
 // TestFSCheckGateIsEnforced asserts the policy gate in front of the resolver.
 //
-// Today fs:read and fs:write are unreachable from every live domain. They are
-// scoped operations: manifest validation accepts them and effectiveOps carries
-// them into the grant set, but granted() in policy.go still consults Allowed(),
-// which is false for the plugin domain. The scoped pass-through that module.go's
-// comment describes is not implemented. This test asserts the behavior as it
-// stands - refused, typed as a denial, recorded on the audit chain - and its
-// second branch keeps it passing unchanged once scoped operations are passed
-// through to per-call enforcement.
+// fs:read and fs:write are scoped operations: a module holds one only if its
+// manifest declares it, and declaring it requires declaring the path boundary that
+// bounds it. The gate therefore has two decisions to make, and they are recorded
+// differently because they mean different things. A module that never declared
+// fs:read gets a plain denial. A module that declared it and then reached outside
+// its own boundary gets an escalation, because asking past a grant is evidence
+// about the module in a way that mistyping an operation is not. Both are
+// *DeniedError, so IsDenied is true for both; the audit kind is what separates
+// them, and that is what this test pins.
 func TestFSCheckGateIsEnforced(t *testing.T) {
 	buf := stateQuiet(t)
 	k := stateBoot(t, kernel.BootLimits{})
@@ -893,35 +910,24 @@ func TestFSCheckGateIsEnforced(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "cache"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "cache", "blob"), []byte("x"), 0o600))
 
-	var readErr, writeErr, okReadErr error
+	// An in-scope path resolves for a module that declared the operation and the
+	// boundary covering it. This is the case that could not pass while scoped
+	// operations were refused at the ceiling before their scope was consulted.
 	var okPath string
+	var okReadErr, okWriteErr error
 	pid := stateLoad(t, k, "kvfsprobe", kernel.Manifest{
 		Require:    []kernel.Op{kernel.OpFSRead, kernel.OpFSWrite},
 		ReadPaths:  []string{"cache"},
 		WritePaths: []string{"cache"},
 	}, func(ctx kernel.SContext) error {
-		_, readErr = kernel.FSCheckRead(ctx, root, "cache/blob")
-		_, writeErr = kernel.FSCheckWrite(ctx, root, "cache/blob")
 		okPath, okReadErr = kernel.FSCheckRead(ctx, root, "cache/blob")
+		_, okWriteErr = kernel.FSCheckWrite(ctx, root, "cache/blob")
 		return nil
 	})
 	defer func() { _ = k.Unload(pid) }()
 
-	if kernel.IsDenied(readErr) {
-		// The gate is what refuses, which is today's behavior.
-		assert.True(t, kernel.IsDenied(writeErr))
-		assert.Contains(t, readErr.Error(), "avc: denied { fs:read }")
-		assert.Contains(t, writeErr.Error(), "avc: denied { fs:write }")
-		assert.Contains(t, stateDenialOps(), string(kernel.OpFSRead))
-		assert.Contains(t, stateDenialOps(), string(kernel.OpFSWrite))
-		assert.Positive(t, stateFaults(buf), "a denial must be visible as a fault")
-		return
-	}
-
-	// Scoped operations are being passed through to per-call enforcement, so the
-	// boundary is what decides. An in-scope path resolves; an out-of-scope one is
-	// refused as a boundary violation rather than silently allowed.
-	require.NoError(t, okReadErr)
+	require.NoError(t, okReadErr, "a declared operation inside its boundary must resolve")
+	require.NoError(t, okWriteErr)
 	assert.Equal(t, filepath.Join(root, "cache", "blob"), okPath)
 
 	var ctx kernel.SContext
@@ -934,13 +940,48 @@ func TestFSCheckGateIsEnforced(t *testing.T) {
 	})
 	defer func() { _ = k.Unload(pid2) }()
 
+	// Reaching past the boundary is a denial to the caller and an escalation on the
+	// chain. Note the sibling directory: cache-secret shares a prefix with cache, so
+	// a boundary matched by string prefix rather than by path segment would wrongly
+	// admit it.
 	_, err := kernel.FSCheckRead(ctx, root, "cache-secret/blob")
 	require.Error(t, err)
 	assert.True(t, kernel.IsDenied(err), "outside the declared boundary is a denial")
-	assert.Contains(t, stateDenialOps(), string(kernel.OpFSRead))
+	assert.Contains(t, stateEscalationOps(), string(kernel.OpFSRead),
+		"reaching past a grant is recorded as an escalation, not only as a denial")
+	assert.Positive(t, stateFaults(buf), "a boundary refusal must be visible as a fault")
 
 	_, err = kernel.FSCheckRead(ctx, root, "../secret")
 	require.Error(t, err, "containment is checked before the boundary")
+}
+
+// TestFSUndeclaredOperationIsAPlainDenial covers the other half of the gate. A
+// module that never declared fs:read is refused at the policy check, and the
+// refusal is a denial rather than an escalation: it made no attempt to act beyond a
+// grant, because it holds no grant at all.
+func TestFSUndeclaredOperationIsAPlainDenial(t *testing.T) {
+	stateQuiet(t)
+	k := stateBoot(t, kernel.BootLimits{})
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "cache"), 0o755))
+
+	var err error
+	pid := stateLoad(t, k, "kvnodecl", kernel.Manifest{
+		Name: "kvnodecl", Version: "1", MinKernelAPI: 1, MaxKernelAPI: 1,
+		Require: []kernel.Op{kernel.OpKVRead},
+	}, func(ctx kernel.SContext) error {
+		_, err = kernel.FSCheckRead(ctx, root, "cache/blob")
+		return nil
+	})
+	defer func() { _ = k.Unload(pid) }()
+
+	require.Error(t, err)
+	assert.True(t, kernel.IsDenied(err))
+	assert.Contains(t, stateDenialOps(), string(kernel.OpFSRead),
+		"an undeclared operation is a policy denial")
+	assert.NotContains(t, stateEscalationOps(), string(kernel.OpFSRead),
+		"a module with no grant made no attempt to exceed one")
 }
 
 // TestFSScopeIsPerModule asserts the boundary is installed per pid and dropped on
