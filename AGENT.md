@@ -38,7 +38,7 @@ records the substitute.
 ## Architecture
 
 ```
-main.go                      boot entry: kernel.Boot, report, Shutdown, -audit
+main.go                      boot entry: kernel.Boot, report, Shutdown, -audit, -crash
 kernel/                      EL1 trust root. No business logic, standard library only.
   kernel.go                  package doc, the ABI version, the one reset path
   context.go                 sealed SContext, identity, syscall groups, transition rule
@@ -125,7 +125,7 @@ policy operation that gates it, in the same change.
 | `kernel/qos.go` | kqos | token-bucket admission per uid and per domain; time comes from kclock only | none |
 | `kernel/cputime.go` | kcputime | accounting for kernel-supervised work, plus the budget breaker | none |
 | `kernel/kv.go` | kvfs | per-pid namespaced state; path resolution confined to a data root | none |
-| `kernel/shm.go` | kshm, kslab | shared buffers, sealed on grant, zeroed on release | none |
+| `kernel/shm.go` | kshm, kslab, kiommu | shared buffers, sealed on grant, zeroed on release. kiommu is not a separate file: its guarantee is the zero-fill before a slab buffer is reused, which shm.go performs | none |
 | `kernel/pipe.go` | kpipe | streaming between modules as bytes, with a latching abort | none |
 | `kernel/lock.go` | klock | locks the kernel owns: mandatory deadlines, arrival-order fairness, condemnation when the owner dies mid-critical-section | none |
 | `kernel/events.go` | kepoll | subscriptions over a closed set of kernel event names, bounded backlog that drops oldest | none |
@@ -164,7 +164,7 @@ is broken even when every test passes.
 | kfdtable | A handle is only resolvable inside the pid that opened it. An integer from another module's table is not a capability. Reclamation on unload closes everything, so no resource's only reference lives inside module code. |
 | kboot | The trust root is sealed once and cannot be rewritten afterwards. Resource ceilings come from it, so a module cannot raise the bound that applies to it. |
 | kvfs | One module cannot read or write another's state, and the reason is structural: the other module's key is not in its namespace. Path resolution cannot leave the data root, including through a symlink or a `..`. |
-| kshm | No call shape hands a reader a writable alias. A granted segment is sealed against everyone including its owner. A released buffer is zeroed before it can be reused, so recycling does not leak the previous tenant's payload. |
+| kshm | No call shape hands a reader a writable alias. A granted segment is sealed against everyone including its owner. A released buffer is zeroed before it can be reused, so recycling does not leak the previous tenant's payload. That zero-fill is the whole of kiommu's guarantee: sensitive memory is overwritten before another module can be handed it, and no separate subsystem holds it, because the party that owns the buffer is the one that can wipe it. |
 | kpipe | Data crosses as bytes and never as a Go value, so neither side can retain a reference into the other's heap. An abort latches and wakes blocked waiters. A chunk never arrives interleaved with another writer's. |
 | klock | The kernel owns the lock, so an owner that dies cannot strand its waiters. A clean unload releases it; a forced termination condemns it, because telling a waiter the work it waited for completed when it did not is the worst thing this path can do. Waits have mandatory deadlines and grants follow arrival order, so a noisy module cannot control a quiet one's latency. An exclusive lock is not re-entrant and every acquire queues: the kernel knows a pid, not a goroutine, so a same-pid shortcut hands one exclusive lock to two goroutines at once. Read locks may nest. |
 | kepoll | Delivery is bounded: a full backlog drops the oldest and counts the drop, so a module that stops draining cannot grow the kernel's heap. Event names are a closed kernel set, so a peer's claim is never indistinguishable from a kernel fact. |
