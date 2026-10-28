@@ -91,6 +91,12 @@ const KernelAPI = 1
 //
 // The console is cleared last so a reset can still report itself.
 func resetKernel() {
+	// The flush chain goes first, because a flush triggered during the rest of this
+	// teardown must not find the subsystems it reads already gone. It clears the
+	// previous boot's crash record and releases the guard; the notifiers themselves
+	// survive, for the reason resetPanic gives.
+	resetPanic()
+
 	// Accounting and admission.
 	resetUsage()
 	resetSlots()

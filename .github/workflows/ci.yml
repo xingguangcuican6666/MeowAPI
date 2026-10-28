@@ -150,8 +150,8 @@ jobs:
           fi
           # The floor rises as the suite grows and is never lowered. It is a guard
           # against the suite silently not running, not against a slow test day.
-          if [ "$passed" -lt 445 ]; then
-            echo "::error::expected at least 445 passing security tests, got $passed"
+          if [ "$passed" -lt 480 ]; then
+            echo "::error::expected at least 480 passing security tests, got $passed"
             echo "a guard against the suite silently not running"
             exit 1
           fi

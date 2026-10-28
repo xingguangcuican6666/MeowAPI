@@ -248,6 +248,22 @@ func (k *Kernel) Shutdown() error {
 	kaudit.record(AuditShutdown, k.initCtx, "kernel shutting down", map[string]any{
 		"unload_error": errString(err),
 	})
+
+	// Flush while the kernel is still live, before the record that says it stopped
+	// and before the reset that takes the state away. This is the planned exit and the
+	// one place a flush is guaranteed a kernel to read, so without it a clean shutdown
+	// would lose exactly what a crash loses - which is what makes the crash path look
+	// like the only one that matters.
+	//
+	// unloadAll above already closed each module's open meter requests, so what is
+	// left here is init's own and anything a module left behind by failing to unload.
+	// The flush is best-effort and its outcome is reported on the chain rather than
+	// returned: a shutdown that failed because the crash dump was incomplete would be
+	// the wrong trade, since the caller still needs to know whether the modules
+	// unloaded.
+	PanicRegisterBuiltins()
+	PanicFlush("clean shutdown")
+
 	k.initCtx.retire()
 	resetKernel()
 	booted.Store(false)

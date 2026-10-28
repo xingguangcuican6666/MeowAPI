@@ -347,15 +347,29 @@ func TestAuditSinkReceivesEveryEntry(t *testing.T) {
 	assert.Equal(t, -1, kernel.VerifyChain(collected, kernel.AuditGenesis),
 		"the sink's copy must be a valid chain, from genesis, without kernel memory")
 
-	// Shutdown writes one more entry, so the last sunk entry is the shutdown
-	// record and the one before it is the head reported while running. Asserting
-	// this ordering is what proves the sink is live to the end rather than
-	// flushed early and missing the tail.
-	last := collected[len(collected)-1]
-	assert.Equal(t, kernel.AuditShutdown, last.Kind)
-	require.GreaterOrEqual(t, len(collected), 2)
-	assert.Equal(t, headBeforeShutdown, collected[len(collected)-2].Hash,
+	// Shutdown writes the shutdown record and then flushes, so the chain continues
+	// past shutdown with the flush's own records. That is a stronger proof of sink
+	// liveness than the shutdown record being last would have been: entries were sunk
+	// after the kernel had already said it was stopping, so the sink cannot have been
+	// detached early.
+	shutdownAt := -1
+	for i, e := range collected {
+		if e.Kind == kernel.AuditShutdown {
+			shutdownAt = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, shutdownAt, "the shutdown record reached the sink")
+	require.GreaterOrEqual(t, shutdownAt, 1)
+	assert.Equal(t, headBeforeShutdown, collected[shutdownAt-1].Hash,
 		"the entry before shutdown must be the head the kernel reported")
+
+	assert.Greater(t, len(collected), shutdownAt+1,
+		"the flush that follows shutdown also reached the sink")
+	for _, e := range collected[shutdownAt+1:] {
+		assert.Equal(t, kernel.AuditPanic, e.Kind,
+			"only the shutdown flush writes after the shutdown record")
+	}
 }
 
 // TestAuditSinkFailureIsNotFatal asserts a broken sink degrades to a fault rather
