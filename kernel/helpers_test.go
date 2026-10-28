@@ -151,3 +151,26 @@ func containsOp(ops []kernel.Op, want kernel.Op) bool {
 	}
 	return false
 }
+
+// itoa renders a small integer for building unique module names in tests. It lives
+// here rather than in the file that first needed it, because several subsystem suites
+// share it and a helper whose definition is in one subsystem's file cannot be found
+// by a reader of another's.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	negative := n < 0
+	if negative {
+		n = -n
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	if negative {
+		b = append([]byte{'-'}, b...)
+	}
+	return string(b)
+}

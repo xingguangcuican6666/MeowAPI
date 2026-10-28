@@ -59,6 +59,11 @@ kernel/                      EL1 trust root. No business logic, standard library
   kv.go                      kvfs: namespaced module state and confined fs paths
   shm.go                     kshm and kslab: shared buffers, sealing, zeroing
   pipe.go                    kpipe: byte-only streaming channels with abort
+  lock.go                    klock: managed locks with deadlines and FIFO fairness
+  events.go                  kepoll: bounded subscriptions over closed event names
+  trace.go                   ktrace: spans whose ids the kernel mints
+  service.go                 kservice: the route table and dispatch under the handler
+  meter.go                   kmeter: per-request facts, never prices
   crypto.go                  kcrypto: randomness, hashing, signing, verification
   keyring.go                 kkeyring: custody by use; no plaintext to modules
   receipt.go                 kreceipt: canonical signed settlement receipts
@@ -102,6 +107,11 @@ policy operation that gates it, in the same change.
 | `kernel/kv.go` | kvfs | per-pid namespaced state; path resolution confined to a data root | none |
 | `kernel/shm.go` | kshm, kslab | shared buffers, sealed on grant, zeroed on release | none |
 | `kernel/pipe.go` | kpipe | streaming between modules as bytes, with a latching abort | none |
+| `kernel/lock.go` | klock | locks the kernel owns: mandatory deadlines, arrival-order fairness, condemnation when the owner dies mid-critical-section | none |
+| `kernel/events.go` | kepoll | subscriptions over a closed set of kernel event names, bounded backlog that drops oldest | none |
+| `kernel/trace.go` | ktrace | spans over kernel-minted trace ids; a module cannot name its own | none |
+| `kernel/service.go` | kservice | the route table; a dispatch runs under the handler's grants, never the caller's | none |
+| `kernel/meter.go` | kmeter | per-request facts validated by the same closed kind set usage.go enforces | none |
 | `kernel/crypto.go` | kcrypto | randomness, hashing, verification for everyone; signing for the kernel | none |
 | `kernel/keyring.go` | kkeyring | secret custody by use, prefix-scoped, plaintext only for `secret:read` | none |
 | `kernel/receipt.go` | kreceipt | signed settlement receipts over a canonical encoding | none |
@@ -114,6 +124,62 @@ policy operation that gates it, in the same change.
 | `kernel/bootconfig.go` | kboot | the sealed trust root, cluster roots, resource ceilings | none |
 | `kernel/console.go` | - | kernel console: JSON/text, level filter, retention, fault emitter | `console.java` |
 | `kernel/dump.go` | - | read-only kernel state rendering for debugging | none |
+
+### What each subsystem must guarantee
+
+The table above says what each file does. This section says what it must hold,
+because that is the part a reviewer needs and the part a test must assert. Each
+line is a property, not a description: if the property stops holding, something
+is broken even when every test passes.
+
+| Subsystem | Guarantee |
+| --- | --- |
+| kclock | Every duration and deadline in the kernel is measured on `Mono()`. A wall-clock step, an NTP correction or an operator changing the date cannot move a timeout, refill a bucket early or make a settled request look unsettled. |
+| kaudit | Records are hash-chained, so a deletion or an edit in the middle is detectable. Denials and refusals land on the chain before the error reaches the caller. |
+| kfdtable | A handle is only resolvable inside the pid that opened it. An integer from another module's table is not a capability. Reclamation on unload closes everything, so no resource's only reference lives inside module code. |
+| kboot | The trust root is sealed once and cannot be rewritten afterwards. Resource ceilings come from it, so a module cannot raise the bound that applies to it. |
+| kvfs | One module cannot read or write another's state, and the reason is structural: the other module's key is not in its namespace. Path resolution cannot leave the data root, including through a symlink or a `..`. |
+| kshm | No call shape hands a reader a writable alias. A granted segment is sealed against everyone including its owner. A released buffer is zeroed before it can be reused, so recycling does not leak the previous tenant's payload. |
+| kpipe | Data crosses as bytes and never as a Go value, so neither side can retain a reference into the other's heap. An abort latches and wakes blocked waiters. A chunk never arrives interleaved with another writer's. |
+| klock | The kernel owns the lock, so an owner that dies cannot strand its waiters. A clean unload releases it; a forced termination condemns it, because telling a waiter the work it waited for completed when it did not is the worst thing this path can do. Waits have mandatory deadlines and grants follow arrival order, so a noisy module cannot control a quiet one's latency. |
+| kepoll | Delivery is bounded: a full backlog drops the oldest and counts the drop, so a module that stops draining cannot grow the kernel's heap. Event names are a closed kernel set, so a peer's claim is never indistinguishable from a kernel fact. |
+| kcrypto | Key material does not cross the syscall boundary in either direction. Signing is reachable by no live context after boot. Randomness comes from `crypto/rand` alone, and a failed entropy read fails the call rather than returning a partially filled buffer. |
+| kkeyring | A module names an alias and an action and receives the result, never the credential. Scope is by declared prefix; an out-of-scope alias and an unknown one are indistinguishable, so the call is not an oracle for what a deployment holds. |
+| kreceipt | A receipt is signed over a canonical encoding, so verification recomputes rather than trusts. Sequence numbers are per boot and per node, so a cursor surviving a restart cannot repeat one or open a gap. |
+| krlimit | Both ceilings hold under concurrency, and the refusal is a typed saturation error rather than a policy denial, so a gateway answers 429 instead of 403. Slots held by a dying module come back, which is what stops one broken adapter becoming a gateway-wide outage. |
+| kqos | Refill is driven by the kernel clock and cannot be advanced by a caller. Policies are operator configuration and no module can raise its own rate. Buckets are bounded, so a key space a module influences is not a leak. |
+| kcputime | Work the kernel runs for a module is accounted to that module and charged even when it panics. A pid over budget is refused before doing more work, so a runaway cannot take one more full slice per call forever. Budgets are settable by the kernel and init only. |
+| ksched | Every goroutine the kernel starts for a module inherits that module's context, is accounted to its pid, is bounded by a deadline the module cannot raise, has its panic recovered by the kernel, and is cancellable without the module's cooperation. A module that starts its own goroutine with the standard library is not stopped by this and is a review and signing concern. |
+| ksignal | A signal is a request, not a stop. What is enforced is that a drained or condemned module cannot start new work, its supervised runs are cancelled, its handles are reclaimed and its process record is closed. The default action for an unhandled drain is termination, which is what makes unload safe rather than hopeful. |
+| kwatchdog | Overdue work is noticed by someone other than the party that missed the deadline, the evidence includes where the code was stuck, and the response does not depend on that party cooperating. It detects and reports; it does not preempt a goroutine the module started itself. |
+| ktrace | Trace and span ids are minted by the kernel, so a module cannot choose the identity of a request and cannot attach its work to a timeline it did not serve. An unended span is closed at teardown and marked abandoned, so its duration reads as the lower bound it is. |
+| kservice | A dispatch runs under the handler module's own context and grants, never the caller's, so a privileged caller does not lend its authority to whoever it calls. One handler per path and a second registration is refused, because silent replacement is how a module takes over another's route. A path must be declared in the manifest, so the table is bounded by what was reviewed. |
+| kmeter | The kernel records that a request was served and what it consumed. It never prices it: there is no unit price, ratio, discount or multiplier field, and the absence is the control. Facts pass the same closed kind set and per-event ceiling as usage.go, so nothing that bypassed validation on the way in can become an unbounded multiplier on the way out. |
+| usage | The kind set is closed and an unknown kind is refused rather than accumulated under a default branch. That is the specific hole the upstream project left open. |
+
+Three properties span the whole kernel and are worth stating once.
+
+No subsystem may reach another's state except through the kernel's own calls, which
+is what makes each file independently reviewable.
+
+Every syscall begins with the shared prologue `(*sContext).syscall(op)` in
+`context.go`, which checks liveness first and then calls `check()` in `policy.go`
+when `op` is non-empty. There is no path around it, and a subsystem that needs an
+exception needs a policy operation rather than a bypass.
+
+Nine syscalls pass `op == ""` and therefore get the liveness check only. That is
+deliberate and it is safe for one reason: each of them can only ever act on state
+the caller already owns, so there is no capability to grant. Closing or listing your
+own handles, releasing your own slot or your own lock, ending or marking your own
+span, reading your own pipe's counters, waiting on your own supervised run, reading
+your own subscription's backlog, and installing your own signal handler, which can
+only narrow your own response. The isolation is structural: the fd table is per pid,
+so a handle belonging to another module does not resolve at all, and the error a
+caller gets says the handle does not exist here rather than that access was refused.
+A tenth entry in this list must be self-scoped the same way or it must name an
+operation. `SyscallSpawn` passes `""` and is not in this category: `kscm.spawn`
+calls `check(ctx, OpProcessFork)` and the transition rule itself, so that both are
+enforced together and neither can be skipped by a future caller.
 
 ### The billing ABI
 
