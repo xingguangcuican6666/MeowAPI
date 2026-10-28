@@ -145,6 +145,29 @@ func isInstructionFile(rel string) bool {
 	return false
 }
 
+// isNestedCheckout reports whether dir is its own git checkout: it holds a .git
+// directory (an independent clone) or a .git file (a linked worktree, whose content
+// is "gitdir: <path>"). The scan root is excluded by the caller, since the
+// repository being scanned always has one.
+func isNestedCheckout(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, ".git"))
+	return err == nil
+}
+
+// isInstructionDirRoot reports whether rel is exactly one of the instruction
+// directories rather than merely a path beneath one. Those directories are never
+// prunable, because a prune keyed on a forgeable marker must not be able to exempt
+// the surface it exists to protect. .claude is such a root;
+// .claude/worktrees/agent-x is not, and is prunable.
+func isInstructionDirRoot(rel string) bool {
+	for _, d := range instructionDirs {
+		if rel == d {
+			return true
+		}
+	}
+	return false
+}
+
 func likelyBinary(b []byte) bool {
 	n := len(b)
 	if n > 8192 {
@@ -264,6 +287,9 @@ func lineContext(text string, line int) string {
 type Stats struct {
 	Scanned          int
 	InstructionFiles int
+	// NestedCheckouts counts directories pruned because they are a separate git
+	// checkout rather than part of this repository.
+	NestedCheckouts int
 }
 
 // Check walks root and returns every violation, sorted by path, line and column.
@@ -287,6 +313,34 @@ func Check(root string) ([]Finding, Stats, error) {
 			// Prune by name so a skipped directory is skipped at any depth, not
 			// only at the repository root.
 			if rel != "." && skipDirs[d.Name()] {
+				return fs.SkipDir
+			}
+			// A nested git checkout is a separate repository with its own tracked
+			// tree, its own review and its own scan. Scanning it from here reports
+			// another checkout's files as violations of this one, which is a false
+			// positive rather than a finding: the same content in the same relative
+			// path inside that checkout is already governed there.
+			//
+			// This matters concretely for agent working trees, which live under
+			// .claude/worktrees/ - a path that is itself an instruction directory, so
+			// without this prune every file in a nested checkout counts as an
+			// instruction file and a Go test fixture containing a deliberate
+			// homoglyph becomes a Rule A violation fourteen times over.
+			//
+			// The prune is keyed on a directory being its own checkout, so it has to
+			// be keyed on something an attacker cannot forge. A file named .git is
+			// trivially forgeable, which is why isInstructionDirRoot excludes the
+			// instruction directories themselves: planting .claude/.git does not
+			// exempt .claude/settings.json, because .claude is not prunable. What the
+			// prune exempts is a nested checkout's own copy of the tree, and that copy
+			// is by construction untracked by this repository, so it can never be
+			// committed and is not part of the surface this check defends.
+			//
+			// The CI job does not rely on this prune at all. Its independent ASCII
+			// assertion walks `git ls-files`, which never lists a nested checkout's
+			// contents, so a forged .git anywhere has no effect on the job.
+			if rel != "." && isNestedCheckout(p) && !isInstructionDirRoot(rel) {
+				st.NestedCheckouts++
 				return fs.SkipDir
 			}
 			return nil
@@ -351,12 +405,20 @@ func main() {
 		})
 	} else if len(findings) == 0 {
 		if !*quiet {
-			fmt.Printf("instrcheck: OK (%d files scanned, %d instruction files, 0 violations)\n",
-				st.Scanned, st.InstructionFiles)
+			nested := ""
+			if st.NestedCheckouts > 0 {
+				nested = fmt.Sprintf(", %d nested checkout(s) pruned", st.NestedCheckouts)
+			}
+			fmt.Printf("instrcheck: OK (%d files scanned, %d instruction files, 0 violations%s)\n",
+				st.Scanned, st.InstructionFiles, nested)
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "instrcheck: %d violation(s), %d files scanned, %d instruction files\n\n",
-			len(findings), st.Scanned, st.InstructionFiles)
+		nested := ""
+		if st.NestedCheckouts > 0 {
+			nested = fmt.Sprintf(", %d nested checkout(s) pruned", st.NestedCheckouts)
+		}
+		fmt.Fprintf(os.Stderr, "instrcheck: %d violation(s), %d files scanned, %d instruction files%s\n\n",
+			len(findings), st.Scanned, st.InstructionFiles, nested)
 		for _, f := range findings {
 			fmt.Fprintln(os.Stderr, "  "+f.String())
 		}

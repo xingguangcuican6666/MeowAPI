@@ -213,6 +213,108 @@ func TestSkippedDirAtDepthPrunesByName(t *testing.T) {
 	assert.Empty(t, checkRoot(t, root))
 }
 
+// TestNestedCheckoutIsPruned covers a separate git checkout living inside the scan
+// root. It is a different repository with its own tracked tree and its own review, so
+// its files are not this repository's instruction surface. The realistic case is an
+// agent working tree under .claude/worktrees/, which is an instruction directory: every
+// file in the nested checkout would otherwise count as an instruction file, and a Go
+// test fixture holding a deliberate homoglyph would be reported as a Rule A violation
+// once per checkout.
+func TestNestedCheckoutIsPruned(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		git  string
+	}{
+		{"linked worktree", "gitdir: /elsewhere/.git/worktrees/x\n"},
+		{"independent clone", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			write(t, root, "AGENT.md", "# ok\n")
+
+			nested := filepath.Join(root, ".claude/worktrees/agent-x")
+			require.NoError(t, os.MkdirAll(nested, 0o755))
+			if c.git == "" {
+				require.NoError(t, os.MkdirAll(filepath.Join(nested, ".git"), 0o755))
+			} else {
+				require.NoError(t, os.WriteFile(filepath.Join(nested, ".git"),
+					[]byte(c.git), 0o644))
+			}
+			// A file that would be a Rule A violation if it were scanned: it sits
+			// under an instruction directory and holds a Cyrillic homoglyph.
+			write(t, root, ".claude/worktrees/agent-x/tools/x/x_test.go",
+				"var _ = \"n\u0435w\"\n")
+
+			findings, st, err := Check(root)
+			require.NoError(t, err)
+			assert.Empty(t, findings, "a nested checkout is not this repository's instruction surface")
+			assert.Equal(t, 1, st.NestedCheckouts, "the prune must be counted, not silent")
+		})
+	}
+}
+
+// TestNestedCheckoutPruneDoesNotExemptRealInstructionSurface is the other half, and
+// it is the one that keeps the prune honest. The prune is keyed on a directory being
+// its own checkout, so an instruction file that is part of THIS repository must still
+// be reported even when it sits in the same .claude/ tree that contains the nested
+// checkouts.
+func TestNestedCheckoutPruneDoesNotExemptRealInstructionSurface(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "AGENT.md", "# ok\n")
+
+	// A real, tracked instruction file in this repository.
+	write(t, root, ".claude/settings.json", "{\"model\": \"n\u0435w\"}\n")
+
+	// A nested checkout beside it, holding the same payload.
+	nested := filepath.Join(root, ".claude/worktrees/agent-y")
+	require.NoError(t, os.MkdirAll(filepath.Join(nested, ".git"), 0o755))
+	write(t, root, ".claude/worktrees/agent-y/.claude/settings.json",
+		"{\"model\": \"n\u0435w\"}\n")
+
+	findings, st, err := Check(root)
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "only this repository's own file is a finding")
+	assert.Contains(t, findings[0].Path, ".claude/settings.json")
+	assert.NotContains(t, findings[0].Path, "worktrees")
+	assert.Equal(t, 1, st.NestedCheckouts)
+}
+
+// TestForgedGitInsideAnInstructionDirDoesNotExemptIt is the abuse case, and it is the
+// reason the prune is keyed on isInstructionDirRoot. The prune marker is a file named
+// .git, which is forgeable, so a planted one must not be able to exempt the directory
+// it sits in when that directory is itself instruction surface.
+func TestForgedGitInsideAnInstructionDirDoesNotExemptIt(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "AGENT.md", "# ok\n")
+
+	// .claude is an instruction directory. Planting a .git marker inside it must not
+	// make its own contents unscannable.
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".claude"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".claude/.git"),
+		[]byte("gitdir: /forged\n"), 0o644))
+	write(t, root, ".claude/settings.json", "{\"model\": \"n\u0435w\"}\n")
+
+	findings, st, err := Check(root)
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "an instruction directory is never prunable")
+	assert.Contains(t, findings[0].Path, ".claude/settings.json")
+	assert.Zero(t, st.NestedCheckouts, "a forged marker must not be counted as a prune")
+}
+
+// TestScanRootIsNotPrunedAsNested pins the one exclusion the walk makes: the root
+// being scanned is always this repository, so its own .git must not cause the whole
+// scan to prune itself away and report a vacuous pass.
+func TestScanRootIsNotPrunedAsNested(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+	write(t, root, "AGENT.md", "# z n\u0435w\n")
+
+	findings, st, err := Check(root)
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "the scan root must be scanned even though it holds .git")
+	assert.Zero(t, st.NestedCheckouts)
+}
+
 // TestBinaryFilesAreSkipped prevents false positives on images, archives and
 // compiled artifacts, which legitimately contain bytes above 0x7E.
 func TestBinaryFilesAreSkipped(t *testing.T) {

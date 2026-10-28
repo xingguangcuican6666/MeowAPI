@@ -67,6 +67,7 @@ kernel/                      EL1 trust root. No business logic, standard library
   crypto.go                  kcrypto: randomness, hashing, signing, verification
   keyring.go                 kkeyring: custody by use; no plaintext to modules
   receipt.go                 kreceipt: canonical signed settlement receipts
+  verifier.go                kverifier: manifest appraisal against a signature
   sched.go                   ksched: supervised jobs and timers with deadlines
   signal.go                  ksignal: reload, drain, kill and stream abort
   watchdog.go                kwatchdog: overdue-work detection and stack capture
@@ -157,6 +158,7 @@ is broken even when every test passes.
 | kcrypto | Key material does not cross the syscall boundary in either direction. Signing is reachable by no live context after boot. Randomness comes from `crypto/rand` alone, and a failed entropy read fails the call rather than returning a partially filled buffer. |
 | kkeyring | A module names an alias and an action and receives the result, never the credential. Scope is by declared prefix; an out-of-scope alias and an unknown one are indistinguishable, so the call is not an oracle for what a deployment holds. |
 | kreceipt | A receipt is signed over a canonical encoding, so verification recomputes rather than trusts. Sequence numbers are per boot and per node, so a cursor surviving a restart cannot repeat one or open a gap. |
+| kverifier | A manifest is appraised against a signature before any module code runs, so a declaration that was reviewed cannot be widened between review and deployment. The signature binds name, version and digest together, so one minted for a module cannot be replayed onto another or onto a widened copy of itself. There is no signing entry point anywhere in the kernel: a package-level signer would be an oracle any in-process module could call to appraise its own widened declaration, which is the attack this subsystem exists to stop. The posture can only tighten once a boot has appraised anything, and it is derived from the sealed trust root when the host has not chosen one. |
 | krlimit | Both ceilings hold under concurrency, and the refusal is a typed saturation error rather than a policy denial, so a gateway answers 429 instead of 403. Slots held by a dying module come back, which is what stops one broken adapter becoming a gateway-wide outage. |
 | kqos | Refill is driven by the kernel clock and cannot be advanced by a caller. Policies are operator configuration and no module can raise its own rate. Buckets are bounded, so a key space a module influences is not a leak. |
 | kcputime | Work the kernel runs for a module is accounted to that module and charged even when it panics. A pid over budget is refused before doing more work, so a runaway cannot take one more full slice per call forever. Budgets are settable by the kernel and init only. |
