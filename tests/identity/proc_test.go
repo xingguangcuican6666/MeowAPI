@@ -1,6 +1,7 @@
-package kernel_test
+package identity
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,8 +13,8 @@ import (
 // TestProcessTableRecordsProvenance asserts the audit trail carries what an
 // investigation needs: parentage, domain, uid allocation, artifact and digest.
 func TestProcessTableRecordsProvenance(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
@@ -41,8 +42,8 @@ func TestProcessTableRecordsProvenance(t *testing.T) {
 // TestPIDsAreNeverReused proves the audit log cannot be confused: after an
 // unload, the next load gets a new pid rather than recycling the old one.
 func TestPIDsAreNeverReused(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid1, err := k.Load(diag.Manifest())
 	require.NoError(t, err)

@@ -2,6 +2,7 @@ package kernel_test
 
 import (
 	"errors"
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -56,8 +57,8 @@ var auditProbeCounter int
 // that asked, which is an information channel between modules that the metadata
 // store deliberately does not have either.
 func TestModuleCannotReachTheAuditChainAtAll(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	for _, op := range []kernel.Op{kernel.OpAuditRead, kernel.OpAuditAppend} {
 		assert.False(t, kernel.Allowed(kernel.DomainPlugin, op),
@@ -91,7 +92,7 @@ func TestModuleCannotReachTheAuditChainAtAll(t *testing.T) {
 
 	require.Error(t, p.appendErr)
 	assert.True(t, kernel.IsDenied(p.appendErr))
-	assert.NotEmpty(t, faults(buf), "both denials must be recorded on the console")
+	assert.NotEmpty(t, harness.Faults(buf), "both denials must be recorded on the console")
 
 	denials := kernel.AuditQuery(kernel.AuditFilter{Kind: kernel.AuditDenial})
 	require.NotEmpty(t, denials, "both denials must reach the audit chain")
@@ -101,8 +102,8 @@ func TestModuleCannotReachTheAuditChainAtAll(t *testing.T) {
 // restriction that still applies to it is the kind restriction: the kinds that
 // describe kernel decisions are refused even to a holder.
 func TestInitCanAppendAudit(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 	ctx := k.InitContext()
 
 	e, err := ctx.SyscallAuditAppend(kernel.AuditRequest, "trace-init", "init note", nil)
@@ -139,8 +140,8 @@ func TestInitCanAppendAudit(t *testing.T) {
 // checkpoint before a deployment so a later investigation can prove the trail was
 // intact to that point.
 func TestAuditCheckpointAnchorsAnInvestigation(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
@@ -197,8 +198,8 @@ func (m *captureModule) OnUnload() error                  { return nil }
 func TestRegisteredListsFactories(t *testing.T) {
 	before := kernel.Registered()
 
-	kernel.Register("zeta-probe", func() (kernel.Module, error) { return &noopModule{}, nil })
-	kernel.Register("alpha-probe", func() (kernel.Module, error) { return &noopModule{}, nil })
+	kernel.Register("zeta-probe", func() (kernel.Module, error) { return &harness.NoopModule{}, nil })
+	kernel.Register("alpha-probe", func() (kernel.Module, error) { return &harness.NoopModule{}, nil })
 	t.Cleanup(func() {
 		kernel.Unregister("zeta-probe")
 		kernel.Unregister("alpha-probe")
@@ -223,7 +224,7 @@ func TestRegisteredListsFactories(t *testing.T) {
 // TestRegisterPanicsOnSupplyChainDefects covers the three cases that must fail
 // loudly at init rather than resolve silently at load time.
 func TestRegisterPanicsOnSupplyChainDefects(t *testing.T) {
-	f := func() (kernel.Module, error) { return &noopModule{}, nil }
+	f := func() (kernel.Module, error) { return &harness.NoopModule{}, nil }
 
 	assert.PanicsWithValue(t, "kernel: Register with empty module name",
 		func() { kernel.Register("", f) })
@@ -245,8 +246,8 @@ func TestRegisterPanicsOnSupplyChainDefects(t *testing.T) {
 // panics. Reclamation runs during teardown, and teardown is exactly when a broken
 // module is most likely to misbehave.
 func TestCloseResourceContainsPanics(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	m := &panicCloseProbe{}
 	pid := loadFDProbeNamed(t, k, m, "panicclose")
@@ -293,8 +294,8 @@ func loadFDProbeNamed(t *testing.T, k *kernel.Kernel, m kernel.Module, name stri
 // TestReclaimFDsReportsCloseErrors covers the non-panic failure path, so a resource
 // that fails to close is reported rather than silently dropped from the table.
 func TestReclaimFDsReportsCloseErrors(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	m := &errorCloseProbe{}
 	pid := loadFDProbeNamed(t, k, m, "errorclose")
@@ -321,8 +322,8 @@ func (m *errorCloseProbe) OnUnload() error { return nil }
 // TestIdentityAccessorsAreKernelSet covers the fields a module can read about
 // itself, and that none of them is chosen by the module.
 func TestIdentityAccessorsAreKernelSet(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	init := k.InitContext()
 	assert.Equal(t, kernel.PID(1), init.PID())
@@ -368,8 +369,8 @@ func (m *captureModule2) OnUnload() error { return nil }
 // kcrypto's precondition: the node signing key exists in the sealed trust root and
 // there is no exported accessor for it.
 func TestSigningKeyIsUnreachableFromTheModuleSurface(t *testing.T) {
-	quietConsole(t)
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: bootTrust()})
+	harness.QuietConsole(t)
+	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 

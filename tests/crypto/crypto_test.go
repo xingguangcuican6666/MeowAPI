@@ -1,4 +1,4 @@
-package kernel_test
+package crypto
 
 import (
 	"bytes"
@@ -421,9 +421,15 @@ func TestCryptoClusterVerifyWithNoRootsIsAnError(t *testing.T) {
 // randomness source is crypto/rand and that math/rand appears nowhere. A token
 // minted from math/rand is guessable, and the source is a property of the file
 // rather than of any one call, so it is checked at the file level.
+// kernelDir is the kernel package's directory relative to this suite's. go test sets
+// the working directory to the package directory, so this path is stable. The suite
+// reads kernel sources because the property under test is about which package the
+// kernel imports, and that is not observable through any call.
+const kernelDir = "../../kernel"
+
 func TestCryptoSourceIsCryptoRand(t *testing.T) {
 	fset := token.NewFileSet()
-	entries, err := os.ReadDir(".")
+	entries, err := os.ReadDir(kernelDir)
 	require.NoError(t, err)
 
 	sawCryptoRand := false
@@ -432,7 +438,7 @@ func TestCryptoSourceIsCryptoRand(t *testing.T) {
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		f, err := parser.ParseFile(fset, filepath.Join(".", name), nil, parser.ImportsOnly)
+		f, err := parser.ParseFile(fset, filepath.Join(kernelDir, name), nil, parser.ImportsOnly)
 		require.NoError(t, err, "cannot parse %s", name)
 		for _, imp := range f.Imports {
 			path := strings.Trim(imp.Path.Value, `"`)

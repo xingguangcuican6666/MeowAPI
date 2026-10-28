@@ -1,4 +1,4 @@
-package kernel_test
+package state
 
 import (
 	"bytes"

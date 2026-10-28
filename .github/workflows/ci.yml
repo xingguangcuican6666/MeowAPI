@@ -105,6 +105,22 @@ jobs:
           fi
           echo "kernel dependency hygiene: clean"
 
+      # tests/harness is the one non-test package under tests/, so go build ./...
+      # builds it and a third-party import there would reach a production build.
+      - name: harness dependency hygiene
+        run: |
+          set -euo pipefail
+          self="$(go list -m)"
+          deps="$(go list -deps ./tests/harness \
+            | grep -E '^[a-z0-9.-]+\.[a-z]{2,}/' \
+            | grep -v "^${self}/" || true)"
+          if [ -n "$deps" ]; then
+            echo "::error::tests/harness must import the kernel and the standard library only:"
+            echo "$deps"
+            exit 1
+          fi
+          echo "harness dependency hygiene: clean"
+
   test:
     name: test (race)
     runs-on: ubuntu-latest
@@ -124,7 +140,7 @@ jobs:
       - name: assert the security suite actually ran
         run: |
           set -euo pipefail
-          out="$(go test -count=1 -v ./kernel/ ./internal/... ./tools/... 2>&1)"
+          out="$(go test -count=1 -v ./kernel/ ./tests/... ./internal/... ./tools/... 2>&1)"
           passed="$(printf '%s' "$out" | grep -c '^--- PASS' || true)"
           failed="$(printf '%s' "$out" | grep -c '^--- FAIL' || true)"
           echo "passed=$passed failed=$failed"
@@ -134,8 +150,8 @@ jobs:
           fi
           # The floor rises as the suite grows and is never lowered. It is a guard
           # against the suite silently not running, not against a slow test day.
-          if [ "$passed" -lt 320 ]; then
-            echo "::error::expected at least 320 passing security tests, got $passed"
+          if [ "$passed" -lt 330 ]; then
+            echo "::error::expected at least 330 passing security tests, got $passed"
             echo "a guard against the suite silently not running"
             exit 1
           fi

@@ -1,7 +1,8 @@
-package kernel_test
+package admission
 
 import (
 	"errors"
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"sync"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ var admissionProbeCounter int
 func loadAdmissionProbe(t *testing.T, k *kernel.Kernel, m kernel.Module, ops ...kernel.Op) (kernel.PID, kernel.SContext) {
 	t.Helper()
 	admissionProbeCounter++
-	name := "adm" + itoa(admissionProbeCounter)
+	name := "adm" + harness.Itoa(admissionProbeCounter)
 	kernel.Register(name, func() (kernel.Module, error) { return m, nil })
 	t.Cleanup(func() { kernel.Unregister(name) })
 
@@ -61,8 +62,8 @@ func (p *slotProbe) OnUnload() error { return nil }
 // TestSlotRequiresGrant is the denial half of admission. A module that did not
 // declare slot:acquire cannot take concurrency capacity from the shared pool.
 func TestSlotRequiresGrant(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	p := &slotProbe{want: 1}
 	pid, _ := loadAdmissionProbe(t, k, p, kernel.OpLogWrite)
@@ -73,14 +74,14 @@ func TestSlotRequiresGrant(t *testing.T) {
 	assert.Contains(t, p.lastErr.Error(), "slot:acquire")
 	assert.Empty(t, p.got)
 	assert.Contains(t, kernel.DenialReason(p.lastErr), "not declared in the manifest")
-	assert.NotEmpty(t, faults(buf), "a denied acquire must be recorded")
+	assert.NotEmpty(t, harness.Faults(buf), "a denied acquire must be recorded")
 	assert.Zero(t, kernel.SlotStatsSnapshot().Total)
 }
 
 // TestPerModuleSlotCeiling proves the ceiling comes from the sealed trust root and
 // is enforced at acquire time rather than being advisory.
 func TestPerModuleSlotCeiling(t *testing.T) {
-	buf := quietConsole(t)
+	buf := harness.QuietConsole(t)
 	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
 		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 3, MaxTotalSlots: 100},
 	}})
@@ -96,7 +97,7 @@ func TestPerModuleSlotCeiling(t *testing.T) {
 	assert.ErrorIs(t, p.lastErr, kernel.ErrNoSlot,
 		"the refusal must be a distinct typed error, so a gateway can answer 429 rather than 500")
 	assert.Contains(t, p.lastErr.Error(), "3 of 3")
-	assert.NotEmpty(t, faults(buf))
+	assert.NotEmpty(t, harness.Faults(buf))
 
 	st := kernel.SlotStatsSnapshot()
 	assert.Equal(t, 3, st.Total)
@@ -134,7 +135,7 @@ func TestTotalSlotCeilingIsAcrossModules(t *testing.T) {
 // that dies holding slots must not strand them, because stranded slots are how one
 // broken adapter becomes a gateway-wide outage.
 func TestSlotsAreReleasedOnUnload(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
 		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 5, MaxTotalSlots: 5},
 	}})
@@ -165,7 +166,7 @@ func TestSlotsAreReleasedOnUnload(t *testing.T) {
 // matters: a module that panics after taking capacity is exactly the module whose
 // capacity must come back.
 func TestSlotsAreReleasedWhenOnLoadPanics(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
 		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 3, MaxTotalSlots: 3},
 	}})
@@ -173,7 +174,7 @@ func TestSlotsAreReleasedWhenOnLoadPanics(t *testing.T) {
 	defer func() { _ = k.Shutdown() }()
 
 	admissionProbeCounter++
-	name := "slotpanic" + itoa(admissionProbeCounter)
+	name := "slotpanic" + harness.Itoa(admissionProbeCounter)
 	kernel.Register(name, func() (kernel.Module, error) { return &slotPanics{}, nil })
 	t.Cleanup(func() { kernel.Unregister(name) })
 
@@ -208,7 +209,7 @@ func (m *slotPanics) OnUnload() error { return nil }
 // TestExplicitSlotReleaseIsNotDoubleCounted covers the module-driven path and the
 // idempotence that makes reclamation safe to run afterwards.
 func TestExplicitSlotReleaseIsNotDoubleCounted(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
 		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 2, MaxTotalSlots: 2},
 	}})
@@ -236,7 +237,7 @@ func TestExplicitSlotReleaseIsNotDoubleCounted(t *testing.T) {
 // TestReleaseSlotRejectsForeignHandles covers the handle-isolation property from the
 // admission side: a slot handle is not a capability that can be passed around.
 func TestReleaseSlotRejectsForeignHandles(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
 		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 2, MaxTotalSlots: 4},
 	}})
@@ -276,8 +277,8 @@ func (m *slotThief) OnUnload() error { return nil }
 // TestReleaseSlotRejectsNonSlotHandles proves the kind check, so closing a pipe
 // handle through the slot API cannot release a slot that was never taken.
 func TestReleaseSlotRejectsNonSlotHandles(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	p := &kindProbe{}
 	pid, _ := loadAdmissionProbe(t, k, p, kernel.OpSlotAcquire, kernel.OpPipeOpen)
@@ -316,7 +317,7 @@ func (p *kindProbe) OnUnload() error { return nil }
 // The ceiling must hold exactly: a check-then-act race admits one slot past it, and
 // the suite runs under -race.
 func TestConcurrentSlotAcquireIsRaceFree(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
 		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 40, MaxTotalSlots: 40},
 	}})
@@ -356,7 +357,7 @@ func TestConcurrentSlotAcquireIsRaceFree(t *testing.T) {
 
 // TestSlotsResetAcrossRestart is the reset-path assertion.
 func TestSlotsResetAcrossRestart(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	k1, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
 		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 4, MaxTotalSlots: 4},
@@ -381,8 +382,8 @@ func TestSlotsResetAcrossRestart(t *testing.T) {
 
 // TestQosRequiresGrant is the denial half of rate limiting.
 func TestQosRequiresGrant(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	p := &qosProbe{}
 	pid, _ := loadAdmissionProbe(t, k, p, kernel.OpLogWrite)
@@ -391,7 +392,7 @@ func TestQosRequiresGrant(t *testing.T) {
 	require.Error(t, p.err)
 	assert.True(t, kernel.IsDenied(p.err))
 	assert.Contains(t, p.err.Error(), "qos:admit")
-	assert.NotEmpty(t, faults(buf))
+	assert.NotEmpty(t, harness.Faults(buf))
 }
 
 type qosProbe struct {
@@ -415,7 +416,7 @@ func (p *qosProbe) OnUnload() error { return nil }
 // TestQosRefusesPastTheCeiling is the core limiter assertion, and the one that
 // proves time comes from the kernel rather than from the caller.
 func TestQosRefusesPastTheCeiling(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	// One request per minute, no burst allowance beyond the rate.
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 2}))
@@ -454,7 +455,7 @@ func TestQosRefusesPastTheCeiling(t *testing.T) {
 // one large request can exhaust a token budget while leaving the request budget
 // untouched.
 func TestQosTokenCeilingIsSeparate(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{
 		RequestsPerMinute: 1000, TokensPerMinute: 100,
@@ -482,7 +483,7 @@ func TestQosTokenCeilingIsSeparate(t *testing.T) {
 // TestQosNegativeCostIsRefused covers the input validation. A negative cost would
 // add tokens to the bucket, which is how a limiter gets defeated by its own caller.
 func TestQosNegativeCostIsRefused(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 1}))
 	t.Cleanup(func() { _ = kernel.SetQosPolicy("uid", kernel.QosPolicy{}) })
 
@@ -510,7 +511,7 @@ func TestQosNegativeCostIsRefused(t *testing.T) {
 // TestQosBucketRefillsOnTheKernelClock proves refill is driven by kclock. This is
 // the property that a caller-supplied timestamp would destroy.
 func TestQosBucketRefillsOnTheKernelClock(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 	// 6000 requests per minute refills one request every 10ms, so a short sleep is
 	// enough to observe refill without making the suite slow.
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 6000}))
@@ -563,7 +564,7 @@ func TestQosPolicyIsNotModuleWritable(t *testing.T) {
 // TestQosBucketCountIsBounded covers the memory-leak side. An unbounded key space a
 // module can influence is a leak, so the bucket map has a ceiling and evicts.
 func TestQosBucketCountIsBounded(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 10}))
 	t.Cleanup(func() { _ = kernel.SetQosPolicy("uid", kernel.QosPolicy{}) })
 
@@ -587,7 +588,7 @@ func TestQosBucketCountIsBounded(t *testing.T) {
 // TestQosResetsAcrossRestart covers the reset path. Policies survive, because they
 // are operator configuration; buckets do not, because they are accounting.
 func TestQosResetsAcrossRestart(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 1}))
 
 	k1, err := kernel.Boot(kernel.BootConfig{})
@@ -623,8 +624,8 @@ func (m *ctxCapture) OnUnload() error                  { return nil }
 
 // TestCPUStatRequiresGrant is the denial half of accounting.
 func TestCPUStatRequiresGrant(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	p := &cpuProbe{}
 	pid, _ := loadAdmissionProbe(t, k, p, kernel.OpLogWrite)
@@ -633,7 +634,7 @@ func TestCPUStatRequiresGrant(t *testing.T) {
 	require.Error(t, p.err)
 	assert.True(t, kernel.IsDenied(p.err))
 	assert.Contains(t, p.err.Error(), "cputime:read")
-	assert.NotEmpty(t, faults(buf))
+	assert.NotEmpty(t, harness.Faults(buf))
 }
 
 type cpuProbe struct {
@@ -657,8 +658,8 @@ func (p *cpuProbe) OnUnload() error { return nil }
 // TestCPUStatIsScopedToTheCaller proves one module cannot read another's burn rate,
 // which is an information channel the metadata store deliberately does not have.
 func TestCPUStatIsScopedToTheCaller(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	p := &cpuProbe{}
 	pid, _ := loadAdmissionProbe(t, k, p, kernel.OpCPUTimeRead)
@@ -692,8 +693,8 @@ func TestCPUStatIsScopedToTheCaller(t *testing.T) {
 // raise a budget, and a module-domain caller is refused even through the exported
 // function.
 func TestCPUBudgetIsNotModuleWritable(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	capture := &ctxCapture{}
 	pid, _ := loadAdmissionProbe(t, k, capture, kernel.OpCPUTimeRead)
@@ -719,8 +720,8 @@ func TestCPUBudgetIsNotModuleWritable(t *testing.T) {
 // burns its budget is refused further supervised work rather than being allowed to
 // take another slice per call forever.
 func TestCPUBudgetBreaksARunaway(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	const pid = kernel.PID(4242)
 	require.NoError(t, kernel.SetCPUBudget(k.InitContext(), pid, time.Nanosecond))
@@ -738,8 +739,8 @@ func TestCPUBudgetBreaksARunaway(t *testing.T) {
 
 // TestCPUStatsListsEveryAccount covers the dump surface.
 func TestCPUStatsListsEveryAccount(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	p1 := &cpuProbe{}
 	pid1, _ := loadAdmissionProbe(t, k, p1, kernel.OpCPUTimeRead)
@@ -768,7 +769,7 @@ func TestCPUStatsListsEveryAccount(t *testing.T) {
 
 // TestCPUResetsAcrossRestart is the reset-path assertion.
 func TestCPUResetsAcrossRestart(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	k1, err := kernel.Boot(kernel.BootConfig{})
 	require.NoError(t, err)
@@ -790,7 +791,7 @@ func TestCPUResetsAcrossRestart(t *testing.T) {
 // TestErrNoSlotIsCheckable pins the contract a gateway depends on: it must be able
 // to distinguish saturation from a fault with errors.Is.
 func TestErrNoSlotIsCheckable(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
 		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 1, MaxTotalSlots: 1},
 	}})

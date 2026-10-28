@@ -1,6 +1,7 @@
-package kernel_test
+package security
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"strings"
 	"testing"
 
@@ -14,14 +15,14 @@ import (
 // cannot do from inside OnLoad: write kernel metadata, emit a fault record,
 // spawn a kernel-domain child, or gain an operation its domain lacks.
 func TestPluginCannotEscalateOrForge(t *testing.T) {
-	buf := quietConsole(t)
+	buf := harness.QuietConsole(t)
 
-	k := bootOne(t)
+	k := harness.BootOne(t)
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
 	defer func() { _ = k.Unload(pid) }()
 
-	fs := faults(buf)
+	fs := harness.Faults(buf)
 	require.NotEmpty(t, fs, "the diag plugin deliberately trips metadata:write")
 
 	var sawWriteDenial bool
@@ -44,12 +45,12 @@ func TestPluginCannotEscalateOrForge(t *testing.T) {
 // would make every security test below silently wrong on the second boot, which is
 // the failure mode the reset path exists to prevent.
 func TestResetKernelIsComplete(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	k1, err := kernel.Boot(kernel.BootConfig{})
 	require.NoError(t, err)
 
-	registerProbe(t, "leaky", &probeModule{onLoad: func(ctx kernel.SContext) error {
+	harness.RegisterProbe(t, "leaky", &harness.Probe{Load: func(ctx kernel.SContext) error {
 		return ctx.SyscallUsageEmit(kernel.UsageFact{Kind: kernel.UsageTokensIn, Quantity: 42})
 	}})
 	pid, err := k1.Load(kernel.Manifest{

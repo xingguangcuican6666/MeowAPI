@@ -1,6 +1,7 @@
-package kernel_test
+package identity
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,27 +10,17 @@ import (
 	"github.com/xingguangcuican6666/MeowAPI/plugins/diag"
 )
 
-// bootTrust is a minimal valid trust root for tests.
-func bootTrust() kernel.BootTrustRoot {
-	return kernel.BootTrustRoot{
-		NodeID:          "node-test",
-		ClusterRootKeys: []string{"root-key-a", "root-key-b"},
-		SigningKeyPEM:   "SECRET-KEY-MATERIAL",
-		Extra:           map[string]string{"region": "local"},
-	}
-}
-
 // TestTrustRootSealsOnBoot is the whole point of kboot. Configuration that can be
 // changed after modules start is configuration a compromised module can change, and
 // a swapped cluster root key would make every later signature check verify against
 // the attacker's key while still passing.
 func TestTrustRootSealsOnBoot(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	require.False(t, kernel.BootSealed(), "an unbooted kernel has no sealed root")
 	require.NoError(t, kernel.BootSet("pre.boot", "writable"))
 
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: bootTrust()})
+	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -63,14 +54,14 @@ func TestTrustRootSealsOnBoot(t *testing.T) {
 // happened at the end of boot, a module loaded during boot could observe the
 // unsealed root and the guarantee would depend on load order.
 func TestTrustRootIsSealedBeforeModulesRun(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	var sealedDuringOnLoad bool
 	var sawNodeID string
 	var sawSigningKey bool
 
 	kernel.Register("sealprobe", func() (kernel.Module, error) {
-		return &sealProbe{onLoad: func(ctx kernel.SContext) error {
+		return &harness.Probe{Load: func(ctx kernel.SContext) error {
 			sealedDuringOnLoad = kernel.BootSealed()
 			sawNodeID, _ = ctx.SyscallBootGet("node.id")
 			// The signing key is not in the configuration map at all, so there is
@@ -94,7 +85,7 @@ func TestTrustRootIsSealedBeforeModulesRun(t *testing.T) {
 	t.Cleanup(func() { kernel.Unregister("sealprobe") })
 
 	k, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: bootTrust(),
+		TrustRoot: harness.BootTrust(),
 		Modules:   []kernel.Manifest{{Name: "sealprobe", Version: "1", MinKernelAPI: 1, MaxKernelAPI: 1}},
 	})
 	require.NoError(t, err)
@@ -108,20 +99,20 @@ func TestTrustRootIsSealedBeforeModulesRun(t *testing.T) {
 // TestTrustRootDigestIsStableAndCoversConfig makes the digest usable as a
 // deployment record: the same root hashes the same, and any change changes it.
 func TestTrustRootDigestIsStableAndCoversConfig(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{TrustRoot: bootTrust()})
+	k1, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	d1 := kernel.BootDigest()
 	require.NoError(t, k1.Shutdown())
 	assert.Len(t, d1, 64)
 
-	k2, err := kernel.Boot(kernel.BootConfig{TrustRoot: bootTrust()})
+	k2, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	assert.Equal(t, d1, kernel.BootDigest(), "the same root must hash identically across boots")
 	require.NoError(t, k2.Shutdown())
 
-	mutated := bootTrust()
+	mutated := harness.BootTrust()
 	mutated.ClusterRootKeys = []string{"root-key-a", "root-key-EVIL"}
 	k3, err := kernel.Boot(kernel.BootConfig{TrustRoot: mutated})
 	require.NoError(t, err)
@@ -133,7 +124,7 @@ func TestTrustRootDigestIsStableAndCoversConfig(t *testing.T) {
 // TestTrustRootValidationRejectsGarbage covers the failure modes that would
 // otherwise produce a kernel with no identity.
 func TestTrustRootValidationRejectsGarbage(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	cases := []struct {
 		name string
@@ -149,7 +140,7 @@ func TestTrustRootValidationRejectsGarbage(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			tr := bootTrust()
+			tr := harness.BootTrust()
 			c.mut(&tr)
 			// Boot substitutes "local" for an empty node id, so drive the loader
 			// through Boot for the key cases and assert the outcome.
@@ -177,7 +168,7 @@ func TestTrustRootValidationRejectsGarbage(t *testing.T) {
 // TestLimitsComeFromSealedRootAndHaveDefaults covers the quota source. A ceiling
 // that comes from a module declaration or a mutable setting is not a ceiling.
 func TestLimitsComeFromSealedRootAndHaveDefaults(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	k, err := kernel.Boot(kernel.BootConfig{})
 	require.NoError(t, err)
@@ -214,7 +205,7 @@ func TestLimitsComeFromSealedRootAndHaveDefaults(t *testing.T) {
 
 // TestModuleLimitIsEnforced proves the ceiling is applied at load time.
 func TestModuleLimitIsEnforced(t *testing.T) {
-	buf := quietConsole(t)
+	buf := harness.QuietConsole(t)
 
 	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
 		NodeID: "n", Limits: kernel.BootLimits{MaxModules: 2},
@@ -226,13 +217,13 @@ func TestModuleLimitIsEnforced(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = k.Unload(pid1) }()
 
-	kernel.Register("second", func() (kernel.Module, error) { return &noopModule{}, nil })
+	kernel.Register("second", func() (kernel.Module, error) { return &harness.NoopModule{}, nil })
 	t.Cleanup(func() { kernel.Unregister("second") })
 	pid2, err := k.Load(kernel.Manifest{Name: "second", Version: "1", MinKernelAPI: 1, MaxKernelAPI: 1})
 	require.NoError(t, err)
 	defer func() { _ = k.Unload(pid2) }()
 
-	kernel.Register("third", func() (kernel.Module, error) { return &noopModule{}, nil })
+	kernel.Register("third", func() (kernel.Module, error) { return &harness.NoopModule{}, nil })
 	t.Cleanup(func() { kernel.Unregister("third") })
 	pid3, err := k.Load(kernel.Manifest{Name: "third", Version: "1", MinKernelAPI: 1, MaxKernelAPI: 1})
 	require.Error(t, err, "loading past MaxModules must be refused")
@@ -240,7 +231,7 @@ func TestModuleLimitIsEnforced(t *testing.T) {
 	assert.Equal(t, kernel.PID(0), pid3)
 	assert.Len(t, kernel.LoadedModules(), 2)
 
-	assert.NotEmpty(t, faults(buf), "a quota refusal must be visible as a fault")
+	assert.NotEmpty(t, harness.Faults(buf), "a quota refusal must be visible as a fault")
 
 	rejects := kernel.AuditQuery(kernel.AuditFilter{Kind: kernel.AuditReject})
 	require.NotEmpty(t, rejects, "a quota refusal must reach the audit chain")
@@ -254,30 +245,13 @@ func TestModuleLimitIsEnforced(t *testing.T) {
 	defer func() { _ = k.Unload(pid3) }()
 }
 
-type noopModule struct{}
-
-func (noopModule) OnLoad(kernel.SContext) error { return nil }
-func (noopModule) OnUnload() error              { return nil }
-
-type sealProbe struct {
-	onLoad func(ctx kernel.SContext) error
-}
-
-func (p *sealProbe) OnLoad(ctx kernel.SContext) error {
-	if p.onLoad != nil {
-		return p.onLoad(ctx)
-	}
-	return nil
-}
-func (p *sealProbe) OnUnload() error { return nil }
-
 // TestBootConfigIsResetBetweenBoots covers the reset-path half of kboot: a restart
 // must re-read its own root rather than inherit the previous one, and must not keep
 // a previous boot's digest.
 func TestBootConfigIsResetBetweenBoots(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{TrustRoot: bootTrust()})
+	k1, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	d1 := kernel.BootDigest()
 	require.NoError(t, k1.Shutdown())
@@ -301,9 +275,9 @@ func TestBootConfigIsResetBetweenBoots(t *testing.T) {
 
 // TestBootAllIsACopySortedAndSecretFree pins the shape of the exported view.
 func TestBootAllIsACopySortedAndSecretFree(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: bootTrust()})
+	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -327,14 +301,14 @@ func TestBootAllIsACopySortedAndSecretFree(t *testing.T) {
 // TestModuleReadsTrustRoot drives the syscall surface, which is what a module
 // actually uses.
 func TestModuleReadsTrustRoot(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	var nodeID, digest string
 	var limits kernel.BootLimits
 	var allCount int
 
 	kernel.Register("rootreader", func() (kernel.Module, error) {
-		return &sealProbe{onLoad: func(ctx kernel.SContext) error {
+		return &harness.Probe{Load: func(ctx kernel.SContext) error {
 			nodeID, _ = ctx.SyscallBootGet("node.id")
 			digest = ctx.SyscallBootDigest()
 			limits = ctx.SyscallBootLimits()
@@ -344,7 +318,7 @@ func TestModuleReadsTrustRoot(t *testing.T) {
 	})
 	t.Cleanup(func() { kernel.Unregister("rootreader") })
 
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: bootTrust()})
+	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 

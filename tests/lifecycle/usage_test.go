@@ -1,6 +1,7 @@
-package kernel_test
+package lifecycle
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"strings"
 	"testing"
 
@@ -12,10 +13,10 @@ import (
 // TestUsageEmitAcceptsTokenCounts covers the kernel's half of the billing ABI:
 // it counts quantities. Pricing is a module concern and appears nowhere here.
 func TestUsageEmitAcceptsTokenCounts(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
-	registerProbe(t, "billable", &probeModule{onLoad: func(ctx kernel.SContext) error {
+	harness.RegisterProbe(t, "billable", &harness.Probe{Load: func(ctx kernel.SContext) error {
 		if err := ctx.SyscallUsageEmit(kernel.UsageFact{Kind: kernel.UsageTokensIn, Quantity: 1200, Label: "gpt-x"}); err != nil {
 			return err
 		}
@@ -44,8 +45,8 @@ func TestUsageEmitAcceptsTokenCounts(t *testing.T) {
 // TestUsageEmitRejections covers the boundary the upstream project left open.
 // Each case must be refused and counted, not accumulated.
 func TestUsageEmitRejections(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	cases := []struct {
 		name string
@@ -65,7 +66,7 @@ func TestUsageEmitRejections(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			fact := c.fact
-			registerProbe(t, "rejector", &probeModule{onLoad: func(ctx kernel.SContext) error {
+			harness.RegisterProbe(t, "rejector", &harness.Probe{Load: func(ctx kernel.SContext) error {
 				usageErr = ctx.SyscallUsageEmit(fact)
 				return nil
 			}})
@@ -95,10 +96,10 @@ var usageErr error
 // TestUsageRequiresGrant asserts usage:emit is policy-checked like any other
 // operation: a module that did not declare it cannot report billing facts.
 func TestUsageRequiresGrant(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
-	registerProbe(t, "nogrant", &probeModule{onLoad: func(ctx kernel.SContext) error {
+	harness.RegisterProbe(t, "nogrant", &harness.Probe{Load: func(ctx kernel.SContext) error {
 		usageErr = ctx.SyscallUsageEmit(kernel.UsageFact{Kind: kernel.UsageTokensIn, Quantity: 10})
 		return nil
 	}})
@@ -119,10 +120,10 @@ func TestUsageRequiresGrant(t *testing.T) {
 // TestUsageSnapshotIsACopy proves accounting cannot be mutated from outside the
 // kernel through the snapshot a caller is handed.
 func TestUsageSnapshotIsACopy(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
-	registerProbe(t, "counter", &probeModule{onLoad: func(ctx kernel.SContext) error {
+	harness.RegisterProbe(t, "counter", &harness.Probe{Load: func(ctx kernel.SContext) error {
 		return ctx.SyscallUsageEmit(kernel.UsageFact{Kind: kernel.UsageTokensIn, Quantity: 5})
 	}})
 	pid, err := k.Load(kernel.Manifest{
@@ -143,12 +144,12 @@ func TestUsageSnapshotIsACopy(t *testing.T) {
 // TestUsageIsScopedPerModule asserts one module's usage cannot be attributed to
 // another: totals are keyed by pid, and the pid is the kernel's, not a parameter.
 func TestUsageIsScopedPerModule(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	for _, name := range []string{"ua", "ub"} {
 		n := name
-		registerProbe(t, n, &probeModule{onLoad: func(ctx kernel.SContext) error {
+		harness.RegisterProbe(t, n, &harness.Probe{Load: func(ctx kernel.SContext) error {
 			return ctx.SyscallUsageEmit(kernel.UsageFact{Kind: kernel.UsageTokensOut, Quantity: 10})
 		}})
 	}

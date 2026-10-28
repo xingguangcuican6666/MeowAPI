@@ -1,7 +1,8 @@
-package kernel_test
+package evidence
 
 import (
 	"bytes"
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"strings"
 	"testing"
 
@@ -14,10 +15,10 @@ import (
 // or flooded by a module. A plugin that could emit fault records could bury a
 // real denial in noise or fabricate evidence.
 func TestPluginCannotEmitFaultRecord(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
-	probe := &faultProbe{}
+	probe := &harness.FaultProbe{}
 	kernel.Register("faultprobe", func() (kernel.Module, error) { return probe, nil })
 	t.Cleanup(func() { kernel.Unregister("faultprobe") })
 
@@ -28,11 +29,11 @@ func TestPluginCannotEmitFaultRecord(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = k.Unload(pid) }()
 
-	require.Error(t, probe.err, "a plugin emitting a fault-level record must be refused")
-	assert.True(t, kernel.IsDenied(probe.err), "the refusal must be a denial, got %v", probe.err)
+	require.Error(t, probe.Err, "a plugin emitting a fault-level record must be refused")
+	assert.True(t, kernel.IsDenied(probe.Err), "the refusal must be a denial, got %v", probe.Err)
 
 	var sawReserved bool
-	for _, r := range faults(buf) {
+	for _, r := range harness.Faults(buf) {
 		if strings.Contains(r.Msg, "fault level reserved") || strings.Contains(r.Msg, "emit fault record from unprivileged domain") {
 			sawReserved = true
 		}
@@ -43,12 +44,12 @@ func TestPluginCannotEmitFaultRecord(t *testing.T) {
 // TestConsoleRetentionIsBounded proves the diagnostic stream cannot grow
 // without limit. The process table is the audit log; the console is not.
 func TestConsoleRetentionIsBounded(t *testing.T) {
-	buf := quietConsole(t)
+	buf := harness.QuietConsole(t)
 	c := kernel.KernelConsole()
 	c.SetLimit(8)
 	t.Cleanup(func() { c.SetLimit(4096) })
 
-	k := bootOne(t)
+	k := harness.BootOne(t)
 	for i := range 40 {
 		require.NoError(t, k.InitContext().SyscallLog(kernel.LogInfo, "noise"))
 		_ = i
@@ -62,11 +63,9 @@ func TestConsoleRetentionIsBounded(t *testing.T) {
 // TestConsoleTextFormat asserts the human-readable rendering is aligned and
 // carries every field the JSON form does, minus structure.
 func TestConsoleTextFormat(t *testing.T) {
-	var buf lockedBuffer
 	inner := &bytes.Buffer{}
-	buf.buf = inner
 	c := kernel.KernelConsole()
-	c.SetOutput(&buf)
+	c.SetOutput(harness.Locked(inner))
 	c.SetFormat(kernel.FormatText)
 	t.Cleanup(func() {
 		c.SetFormat(kernel.FormatJSON)
@@ -97,9 +96,8 @@ func TestConsoleTextFormat(t *testing.T) {
 // A developer quiets debug noise; the fault history must survive intact.
 func TestConsoleLevelFilter(t *testing.T) {
 	inner := &bytes.Buffer{}
-	sink := &lockedBuffer{buf: inner}
 	c := kernel.KernelConsole()
-	c.SetOutput(sink)
+	c.SetOutput(harness.Locked(inner))
 	c.SetLevel(kernel.LogError)
 	t.Cleanup(func() {
 		c.SetLevel(kernel.LogDebug)

@@ -1,6 +1,7 @@
-package kernel_test
+package lifecycle
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"sync"
 	"testing"
 
@@ -13,8 +14,8 @@ import (
 // TestUnloadIsIdempotent matches the prototype: unloading an unknown pid is a
 // no-op, so a boot path that unwinds a partial failure cannot fail twice.
 func TestUnloadIsIdempotent(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
@@ -41,8 +42,8 @@ func TestUnloadIsIdempotent(t *testing.T) {
 // sharing a name, which would make the process table and any name-based lookup
 // ambiguous.
 func TestDoubleLoadSameNameIsRefused(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
@@ -58,10 +59,10 @@ func TestDoubleLoadSameNameIsRefused(t *testing.T) {
 // a live entry behind: it is terminated in the table and absent from the live
 // set. A half-loaded module is worse than no module.
 func TestLoadFailureUnwinds(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
-	kernel.Register("failload", func() (kernel.Module, error) { return &failLoad{}, nil })
+	kernel.Register("failload", func() (kernel.Module, error) { return &harness.FailLoad{}, nil })
 	t.Cleanup(func() { kernel.Unregister("failload") })
 
 	pid, err := k.Load(kernel.Manifest{
@@ -84,10 +85,10 @@ func TestLoadFailureUnwinds(t *testing.T) {
 	require.NotNil(t, rec, "the attempted load must still be recorded")
 	assert.Equal(t, kernel.ProcRejected, rec.State)
 	assert.NotEmpty(t, rec.ManifestDigest, "the record must carry the manifest digest it was loaded from")
-	assert.NotEmpty(t, faults(buf))
+	assert.NotEmpty(t, harness.Faults(buf))
 
 	// The name is free again: a failed load must not poison the registry.
-	kernel.Register("failload2", func() (kernel.Module, error) { return &diagOK{}, nil })
+	kernel.Register("failload2", func() (kernel.Module, error) { return &harness.DiagOK{}, nil })
 	t.Cleanup(func() { kernel.Unregister("failload2") })
 	pid2, err := k.Load(kernel.Manifest{
 		Name: "failload2", Version: "0.1.0", MinKernelAPI: 1, MaxKernelAPI: 1,
@@ -99,10 +100,10 @@ func TestLoadFailureUnwinds(t *testing.T) {
 // TestPanickingModuleDoesNotKillKernel asserts crash containment: a module that
 // panics during unload is reported and abandoned, and the kernel keeps running.
 func TestPanickingModuleDoesNotKillKernel(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
-	kernel.Register("panics", func() (kernel.Module, error) { return &panics{}, nil })
+	kernel.Register("panics", func() (kernel.Module, error) { return &harness.Panics{}, nil })
 	t.Cleanup(func() { kernel.Unregister("panics") })
 
 	pid, err := k.Load(kernel.Manifest{
@@ -121,8 +122,8 @@ func TestPanickingModuleDoesNotKillKernel(t *testing.T) {
 // TestEffectiveOpsAreNarrowed asserts that what a module is granted is the
 // request intersected with what its domain can hold.
 func TestEffectiveOpsAreNarrowed(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
@@ -139,13 +140,13 @@ func TestEffectiveOpsAreNarrowed(t *testing.T) {
 // TestConcurrentLoadIsRaceFree drives parallel loads and unloads. Run with
 // -race; this is the test that catches unsynchronized kernel state.
 func TestConcurrentLoadIsRaceFree(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	for i := range 8 {
 		name := "conc" + string(rune('a'+i))
 		n := name
-		kernel.Register(n, func() (kernel.Module, error) { return &diagOK{}, nil })
+		kernel.Register(n, func() (kernel.Module, error) { return &harness.DiagOK{}, nil })
 		t.Cleanup(func() { kernel.Unregister(n) })
 	}
 
@@ -197,10 +198,10 @@ func TestConcurrentLoadIsRaceFree(t *testing.T) {
 // as a panic in OnUnload is: the load fails, the record is rejected, and the
 // kernel stays usable.
 func TestPanickingOnLoadDoesNotKillKernel(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
-	registerProbe(t, "boom", &probeModule{onLoad: func(kernel.SContext) error {
+	harness.RegisterProbe(t, "boom", &harness.Probe{Load: func(kernel.SContext) error {
 		panic("module exploded during OnLoad")
 	}})
 
@@ -222,7 +223,7 @@ func TestPanickingOnLoadDoesNotKillKernel(t *testing.T) {
 	require.NotNil(t, rec)
 	assert.Equal(t, kernel.ProcRejected, rec.State)
 	assert.Empty(t, kernel.LoadedModules())
-	assert.NotEmpty(t, faults(buf))
+	assert.NotEmpty(t, harness.Faults(buf))
 
 	// The kernel still works.
 	pid2, err := k.Load(diag.Manifest())

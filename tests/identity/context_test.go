@@ -1,6 +1,7 @@
-package kernel_test
+package identity
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,9 +12,9 @@ import (
 // TestDomainTransitionToKernelIsRefused asserts the privilege-escalation
 // boundary: no context, at any domain, can spawn into u:r:kernel:s0.
 func TestDomainTransitionToKernelIsRefused(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
-	k := bootOne(t)
+	k := harness.BootOne(t)
 	ctx := k.InitContext()
 
 	child, err := ctx.SyscallSpawn(kernel.DomainKernel, "escalate")
@@ -25,12 +26,12 @@ func TestDomainTransitionToKernelIsRefused(t *testing.T) {
 // TestContextExposesName asserts the diagnostic label a module can read about
 // itself is the kernel's, not one the module chose.
 func TestContextExposesName(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	assert.Equal(t, "init", k.InitContext().Name())
 
-	registerProbe(t, "named", &probeModule{onLoad: func(ctx kernel.SContext) error {
+	harness.RegisterProbe(t, "named", &harness.Probe{Load: func(ctx kernel.SContext) error {
 		nameResult = ctx.Name()
 		return nil
 	}})

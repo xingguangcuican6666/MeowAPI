@@ -23,6 +23,16 @@ import (
 // another that asked first, and the starved module's own deadline then fires, so the
 // noisy module effectively controls the quiet one's latency. A FIFO queue removes
 // that channel.
+//
+// An exclusive lock is NOT re-entrant, and every acquire goes through the queue. The
+// kernel identifies a caller by pid and a pid is a module running many goroutines, so
+// "the same pid already holds this" cannot tell a nested call on one goroutine from a
+// second goroutine arriving concurrently. Granting the second one anyway hands one
+// exclusive lock to two goroutines at once, which is not re-entrancy but the absence
+// of mutual exclusion. A module that nests on one exclusive lock gets
+// ErrLockTimeout at its deadline: a loud failure it can fix, rather than a silent
+// hole that only appears under concurrency. Read locks may nest, because readers are
+// concurrent by design and an extra read hold violates nothing.
 
 // ErrLockTimeout is returned when the deadline passed before the lock was granted.
 var ErrLockTimeout = errors.New("kernel: lock acquisition timed out")
@@ -77,10 +87,10 @@ func newLockState(name string) *lockState {
 type lockRegistry struct {
 	mu    sync.RWMutex
 	locks map[string]*lockState
-	// held counts outstanding holds per pid per lock name, not a bool. A lock is
-	// re-entrant, so a pid can hold one name twice, and a bool would lose the second
-	// hold on the first release: unload would then walk a registry that no longer
-	// mentions it and leave the lock held forever.
+	// held counts outstanding holds per pid per lock name, not a bool. A reader may
+	// hold one name more than once, and a bool would lose the second hold on the
+	// first release: unload would then walk a registry that no longer mentions it
+	// and leave the lock held forever.
 	held map[PID]map[string]int
 }
 
@@ -152,22 +162,30 @@ func (r *lockRegistry) acquire(ctx *sContext, name string, exclusive bool, deadl
 		return noFD, fmt.Errorf("kernel: pid %d holds the maximum of %d locks", pid, maxLocksPerModule)
 	}
 
-	// Re-entrant acquire: a pid that already holds the lock gets it again. This is
-	// a reader-count increment or a no-op for a writer, and it matters because a
-	// module's call graph can legitimately pass through the same lock twice.
-	if exclusive && l.held && l.owner == pid {
-		l.taken++
-		l.mu.Unlock()
-		r.recordHold(pid, name, 1)
-		return r.install(name, pid)
-	}
-	if !exclusive && l.readers[pid] > 0 {
-		l.readers[pid]++
-		l.taken++
-		l.mu.Unlock()
-		r.recordHold(pid, name, 1)
-		return r.install(name, pid)
-	}
+	// There is deliberately no re-entrant shortcut here, and removing one is the
+	// fix rather than a simplification.
+	//
+	// The kernel identifies a caller by pid. A pid is a module, and a module runs
+	// many goroutines, so "the same pid already holds this" cannot distinguish a
+	// nested call on one goroutine from a second goroutine arriving concurrently.
+	// Granting the second one anyway - which is what a re-entrant branch does -
+	// hands the same exclusive lock to two goroutines at once. That is not
+	// re-entrancy, it is the absence of mutual exclusion, and it fails only under
+	// concurrency, which is the one condition a lock exists for.
+	//
+	// So every acquire goes through the queue. A module whose call graph nests on
+	// one exclusive lock gets ErrLockTimeout at its deadline instead of a grant: a
+	// loud failure the author can fix by restructuring or by using a second lock
+	// name. That is the same tradeoff POSIX makes for a recursive lock on a
+	// non-recursive mutex, and it is only survivable because deadlines here are
+	// mandatory rather than optional.
+	//
+	// A reader may still take a second hold on the same name, through the queue:
+	// readers are concurrent by design, so an extra read hold violates nothing. It
+	// queues rather than bypassing, so it cannot starve a writer waiting behind it.
+	// The consequence is the classic one - a reader that re-acquires while a writer
+	// waits will block until its deadline - and it is a real deadlock in the
+	// module's own logic, surfaced rather than hidden.
 
 	// Queue in arrival order. Appending before the wait loop rather than after a
 	// failed attempt is what makes the order real: a waiter that retries in a tight
@@ -324,9 +342,9 @@ func (r *lockRegistry) releaseAll(pid PID) {
 	delete(r.held, pid)
 	r.mu.Unlock()
 
-	// Once per outstanding hold, not once per name: a re-entrant holder took the
-	// lock n times and must give it back n times, or the lock stays held by a pid
-	// that no longer exists.
+	// Once per outstanding hold, not once per name: a holder that took the lock n
+	// times must give it back n times, or the lock stays held by a pid that no
+	// longer exists.
 	for _, h := range holds {
 		for range h.n {
 			r.release(h.name, pid)

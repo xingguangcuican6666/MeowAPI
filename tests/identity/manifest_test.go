@@ -1,6 +1,7 @@
-package kernel_test
+package identity
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"strings"
 	"testing"
 
@@ -13,10 +14,10 @@ import (
 // TestUntrustedDomainGetsNothing proves an unknown or rejected domain is denied
 // every operation, including the ones plugins do hold.
 func TestUntrustedDomainGetsNothing(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
-	probe := &metadataProbe{}
+	probe := &harness.MetadataProbe{}
 	kernel.Register("untrustedprobe", func() (kernel.Module, error) { return probe, nil })
 	t.Cleanup(func() { kernel.Unregister("untrustedprobe") })
 
@@ -42,8 +43,8 @@ func TestUntrustedDomainGetsNothing(t *testing.T) {
 		}
 	}
 	assert.True(t, sawRejected, "a rejected module must appear in the process table")
-	assert.Nil(t, probe.ctx, "a rejected module must never receive a context")
-	assert.NotEmpty(t, faults(buf), "a rejection must emit a fault record")
+	assert.Nil(t, probe.Ctx, "a rejected module must never receive a context")
+	assert.NotEmpty(t, harness.Faults(buf), "a rejection must emit a fault record")
 }
 
 // TestManifestValidation is the boundary test for the plugin declaration. Each
@@ -181,16 +182,16 @@ func TestManifestDigestIsStable(t *testing.T) {
 // it from its manifest must be denied at runtime even though its domain would
 // allow it. Without this, a manifest is documentation.
 func TestManifestNarrowsDomainCeiling(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
-	narrow := &probeModule{}
-	narrow.onLoad = func(ctx kernel.SContext) error {
+	narrow := &harness.Probe{}
+	narrow.Load = func(ctx kernel.SContext) error {
 		_, err := ctx.SyscallMetadataGet("anything")
 		narrowResult = err
 		return nil
 	}
-	registerProbe(t, "narrow", narrow)
+	harness.RegisterProbe(t, "narrow", narrow)
 
 	pid, err := k.Load(kernel.Manifest{
 		Name: "narrow", Version: "0.1.0", MinKernelAPI: 1, MaxKernelAPI: 1,
@@ -207,7 +208,7 @@ func TestManifestNarrowsDomainCeiling(t *testing.T) {
 		"DenialReason must expose the manifest narrowing so a module author can fix the declaration")
 
 	var sawReason bool
-	for _, r := range faults(buf) {
+	for _, r := range harness.Faults(buf) {
 		if strings.Contains(r.Msg, "metadata:read") {
 			sawReason = true
 		}
@@ -225,11 +226,11 @@ var narrowResult error
 // that declares nothing can do nothing, which is the correct reading of an empty
 // declaration rather than of an absent one.
 func TestUndeclaredEverythingDeniesEverything(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var readErr, logErr error
-	registerProbe(t, "silent", &probeModule{onLoad: func(ctx kernel.SContext) error {
+	harness.RegisterProbe(t, "silent", &harness.Probe{Load: func(ctx kernel.SContext) error {
 		_, readErr = ctx.SyscallMetadataGet("k")
 		logErr = ctx.SyscallLog(kernel.LogInfo, "hello")
 		return nil
@@ -294,7 +295,7 @@ func TestIsScopedMatchesTheScopedSet(t *testing.T) {
 	for _, op := range kernel.AllOps {
 		assert.False(t, seen[op], "%s appears twice in AllOps", op)
 		seen[op] = true
-		assert.True(t, containsOp(accounted, op),
+		assert.True(t, harness.ContainsOp(accounted, op),
 			"%s is neither in this test's scoped list nor in AllOps as unscoped", op)
 	}
 	assert.Len(t, kernel.AllOps, len(seen))

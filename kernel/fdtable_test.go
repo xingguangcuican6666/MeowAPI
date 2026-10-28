@@ -3,6 +3,7 @@ package kernel_test
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"sync"
 	"testing"
 
@@ -77,8 +78,8 @@ func loadFDProbe(t *testing.T, k *kernel.Kernel, m kernel.Module) kernel.PID {
 // capability it was granted by handing another module a pointer to a kernel object.
 // With integers, the receiving module's lookup simply fails.
 func TestHandlesArePerPidIsTheIsolationProperty(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	owner := &fdProbeModule{open: 3}
 	pidOwner := loadFDProbe(t, k, owner)
@@ -123,8 +124,8 @@ func (m *thiefModule) OnUnload() error { return nil }
 // resource's only reference lives inside module code, so unloading closes all of
 // them. A module that panics or hangs during teardown must not leak.
 func TestHandlesAreReclaimedOnUnload(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	m := &fdProbeModule{open: 5}
 	pid := loadFDProbe(t, k, m)
@@ -139,8 +140,8 @@ func TestHandlesAreReclaimedOnUnload(t *testing.T) {
 // module that opens handles and then fails to load. Its cleanup must be as complete
 // as a successful unload's.
 func TestHandlesAreReclaimedWhenOnLoadFails(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	m := &fdProbeModule{open: 4}
 	const name = "fdpartial"
@@ -178,8 +179,8 @@ func (m *failingAfterOpen) OnUnload() error { return nil }
 // TestHandlesAreReclaimedWhenOnLoadPanics is the crash path. A module that panics
 // after taking resources is exactly the module whose resources most need closing.
 func TestHandlesAreReclaimedWhenOnLoadPanics(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	m := &fdProbeModule{open: 3}
 	const name = "fdpanic"
@@ -219,7 +220,7 @@ func (m *panicsAfterOpen) OnUnload() error { return nil }
 // can argue with, and that exhausting it fails cleanly rather than corrupting the
 // table.
 func TestHandleCeilingComesFromSealedRoot(t *testing.T) {
-	buf := quietConsole(t)
+	buf := harness.QuietConsole(t)
 
 	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
 		NodeID: "n", Limits: kernel.BootLimits{MaxOpenFDsPerModule: 4},
@@ -237,13 +238,13 @@ func TestHandleCeilingComesFromSealedRoot(t *testing.T) {
 	assert.Contains(t, m.openErr.Error(), "maximum")
 	assert.Len(t, m.got, 4, "exactly the ceiling's worth of handles were granted")
 	assert.Equal(t, 4, kernel.FDCount(pid))
-	assert.NotEmpty(t, faults(buf), "hitting a ceiling should be visible")
+	assert.NotEmpty(t, harness.Faults(buf), "hitting a ceiling should be visible")
 }
 
 // TestExplicitCloseIsDistinctFromReclaim covers the module-driven path.
 func TestExplicitCloseIsDistinctFromReclaim(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	m := &fdProbeModule{open: 3, closeOne: 2}
 	pid := loadFDProbe(t, k, m)
@@ -269,8 +270,8 @@ func TestExplicitCloseIsDistinctFromReclaim(t *testing.T) {
 
 // TestFDListIsSortedAndDescriptive covers the diagnostic view.
 func TestFDListIsSortedAndDescriptive(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	m := &fdProbeModule{open: 6}
 	pid := loadFDProbe(t, k, m)
@@ -299,8 +300,8 @@ func TestFDListIsSortedAndDescriptive(t *testing.T) {
 // repetition is the isolation: two modules each holding handle 1 are holding
 // unrelated resources, which is what makes a handle untransferable.
 func TestClosedHandlesAreNeverReissuedInPid(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	// One module closes three handles and then opens three more, so both sets live
 	// in the same table and the numbering is directly comparable.
@@ -371,8 +372,8 @@ func (m *reopenProbe) OnUnload() error { return nil }
 // TestConcurrentHandleUseIsRaceFree drives the table from several goroutines. The
 // suite runs under -race, so this is the assertion.
 func TestConcurrentHandleUseIsRaceFree(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	m := &fdProbeModule{open: 40}
 	pid := loadFDProbe(t, k, m)
@@ -401,7 +402,7 @@ func TestConcurrentHandleUseIsRaceFree(t *testing.T) {
 // TestFDTablesAreClearedAcrossRestart is the reset-path assertion for this
 // subsystem, so a stale table cannot survive into a second boot.
 func TestFDTablesAreClearedAcrossRestart(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	k1, err := kernel.Boot(kernel.BootConfig{})
 	require.NoError(t, err)

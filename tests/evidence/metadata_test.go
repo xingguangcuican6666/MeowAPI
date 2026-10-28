@@ -1,6 +1,7 @@
-package kernel_test
+package evidence
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,10 +15,10 @@ import (
 // prototype, where a single global store was readable by every plugin, which
 // made one plugin's state visible to all the others.
 func TestMetadataIsScopedPerModule(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
-	reader := &metaReader{}
+	reader := &harness.MetaReader{}
 	kernel.Register("metareader", func() (kernel.Module, error) { return reader, nil })
 	t.Cleanup(func() { kernel.Unregister("metareader") })
 
@@ -33,11 +34,11 @@ func TestMetadataIsScopedPerModule(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = k.Unload(pid) }()
 
-	assert.Equal(t, "test-boot", reader.published,
+	assert.Equal(t, "test-boot", reader.Published,
 		"a kernel-published value must be readable under metadata:read")
-	assert.Nil(t, reader.initPrivate,
+	assert.Nil(t, reader.InitPrivate,
 		"a module must not read metadata owned by another pid")
-	assert.NoError(t, reader.err)
+	assert.NoError(t, reader.Err)
 
 	// The exported snapshot only ever exposes published entries, so a
 	// diagnostic dump cannot leak a module's private state.

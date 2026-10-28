@@ -1,6 +1,7 @@
-package kernel_test
+package channels
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"strings"
 	"sync"
 	"testing"
@@ -34,7 +35,7 @@ var chCounter int
 func chLoad(t *testing.T, k *kernel.Kernel, run func(kernel.SContext) error, ops ...kernel.Op) (kernel.PID, *chProbe) {
 	t.Helper()
 	chCounter++
-	name := "ch" + itoa(chCounter)
+	name := "ch" + harness.Itoa(chCounter)
 	m := &chProbe{run: run}
 	kernel.Register(name, func() (kernel.Module, error) { return m, nil })
 	defer kernel.Unregister(name)
@@ -53,8 +54,8 @@ func chLoad(t *testing.T, k *kernel.Kernel, run func(kernel.SContext) error, ops
 // TestPipeRequiresGrants is the denial half, and it covers all three operations
 // because a grant with no denial test is an untested grant.
 func TestPipeRequiresGrants(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var openErr error
 	pid, _ := chLoad(t, k, func(ctx kernel.SContext) error {
@@ -79,8 +80,8 @@ func TestPipeRequiresGrants(t *testing.T) {
 // through a module that holds pipe:open but not the operation under test, so the
 // denial names the operation that was actually missing.
 func TestPipeWriteAndReadRequireTheirOwnGrants(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var writeErr, readErr error
 	pid, m := chLoad(t, k, nil, kernel.OpPipeOpen)
@@ -107,8 +108,8 @@ func TestPipeWriteAndReadRequireTheirOwnGrants(t *testing.T) {
 // on. A module that could hand another module a slice would be handing it a live
 // reference into its own heap.
 func TestPipeCarriesBytesNotReferences(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	sent := []byte("original-payload")
 	var got []byte
@@ -145,8 +146,8 @@ func TestPipeCarriesBytesNotReferences(t *testing.T) {
 // producer wants to lose a metric rather than stall a request, and that requires a
 // refusal the caller can recognize.
 func TestPipeNonBlockingRefusesWhenFull(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpPipeOpen, kernel.OpPipeWrite, kernel.OpPipeRead)
 	defer func() { _ = k.Unload(pid) }()
@@ -183,8 +184,8 @@ func TestPipeNonBlockingRefusesWhenFull(t *testing.T) {
 // write of a chunk that can never fit would wait forever, so it must be refused up
 // front rather than at the deadline.
 func TestPipeChunkLargerThanCapacityIsRefused(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpPipeOpen, kernel.OpPipeWrite)
 	defer func() { _ = k.Unload(pid) }()
@@ -204,8 +205,8 @@ func TestPipeChunkLargerThanCapacityIsRefused(t *testing.T) {
 // streaming response wants backpressure to propagate to the producer rather than to
 // drop its output.
 func TestPipeBlockingWriteWaitsForTheReader(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpPipeOpen, kernel.OpPipeWrite, kernel.OpPipeRead)
 	defer func() { _ = k.Unload(pid) }()
@@ -242,8 +243,8 @@ func TestPipeBlockingWriteWaitsForTheReader(t *testing.T) {
 
 // TestPipeDeadlineIsOnTheKernelClock covers the read side of deadlines.
 func TestPipeDeadlineIsOnTheKernelClock(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpPipeOpen, kernel.OpPipeRead, kernel.OpPipeWrite)
 	defer func() { _ = k.Unload(pid) }()
@@ -265,8 +266,8 @@ func TestPipeDeadlineIsOnTheKernelClock(t *testing.T) {
 // TestPipeAbortIsLatching covers client-disconnect handling. A cancellation that can
 // be missed is not a cancellation.
 func TestPipeAbortIsLatching(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpPipeOpen, kernel.OpPipeWrite, kernel.OpPipeRead)
 	defer func() { _ = k.Unload(pid) }()
@@ -304,8 +305,8 @@ func TestPipeAbortIsLatching(t *testing.T) {
 
 // TestPipeAbortWakesABlockedReader covers the hang the abort exists to prevent.
 func TestPipeAbortWakesABlockedReader(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpPipeOpen, kernel.OpPipeWrite, kernel.OpPipeRead)
 	defer func() { _ = k.Unload(pid) }()
@@ -339,8 +340,8 @@ func TestPipeAbortWakesABlockedReader(t *testing.T) {
 // TestPipeHandlesArePerPid is the capability property: an integer is not a
 // capability until it is scoped to a table.
 func TestPipeHandlesArePerPid(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	ownerPid, owner := chLoad(t, k, nil, kernel.OpPipeOpen, kernel.OpPipeWrite, kernel.OpPipeRead)
 	defer func() { _ = k.Unload(ownerPid) }()
@@ -369,8 +370,8 @@ func TestPipeHandlesArePerPid(t *testing.T) {
 // TestPipeClosedOnUnload covers the leak that matters: a module that dies must not
 // leave a peer blocked forever.
 func TestPipeClosedOnUnload(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var fd kernel.FD
 	ownerPid, owner := chLoad(t, k, func(ctx kernel.SContext) error {
@@ -408,8 +409,8 @@ func TestPipeClosedOnUnload(t *testing.T) {
 
 // TestPipeEmptyWriteAndClosedSink covers the degenerate inputs.
 func TestPipeEmptyWriteAndClosedSink(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpPipeOpen, kernel.OpPipeWrite, kernel.OpPipeRead)
 	defer func() { _ = k.Unload(pid) }()
@@ -443,8 +444,8 @@ func TestPipeEmptyWriteAndClosedSink(t *testing.T) {
 // TestPipeConcurrentWritersAreNotInterleaved covers the serialization guarantee. A
 // torn chunk would be indistinguishable from corruption at the consumer.
 func TestPipeConcurrentWritersAreNotInterleaved(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpPipeOpen, kernel.OpPipeWrite, kernel.OpPipeRead)
 	defer func() { _ = k.Unload(pid) }()
@@ -502,8 +503,8 @@ func TestPipeConcurrentWritersAreNotInterleaved(t *testing.T) {
 
 // TestLockRequiresGrant is the denial half.
 func TestLockRequiresGrant(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var err error
 	pid, _ := chLoad(t, k, func(ctx kernel.SContext) error {
@@ -521,8 +522,8 @@ func TestLockRequiresGrant(t *testing.T) {
 // TestLockSerializesTwoModules is the reason the kernel owns locks rather than
 // letting modules use sync.Mutex.
 func TestLockSerializesTwoModules(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var mu sync.Mutex
 	var order []string
@@ -585,8 +586,8 @@ func TestLockSerializesTwoModules(t *testing.T) {
 // TestLockIsReleasedWhenTheOwnerDies is the property a plain mutex cannot provide,
 // and the one that stops a broken adapter becoming a gateway-wide outage.
 func TestLockIsReleasedWhenTheOwnerDies(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	ownerPid, owner := chLoad(t, k, func(ctx kernel.SContext) error {
 		_, err := ctx.SyscallLockTake("stranded", true, kernel.KernelClock().Deadline(time.Second))
@@ -632,8 +633,8 @@ func TestLockIsReleasedWhenTheOwnerDies(t *testing.T) {
 // TestLockDeadlineIsEnforced covers the mandatory-deadline rule. An untimed wait is
 // how a module turns a contended lock into an outage.
 func TestLockDeadlineIsEnforced(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	holderPid, _ := chLoad(t, k, func(ctx kernel.SContext) error {
 		_, err := ctx.SyscallLockTake("contended", true, kernel.KernelClock().Deadline(time.Second))
@@ -667,8 +668,8 @@ func TestLockDeadlineIsEnforced(t *testing.T) {
 // A timeout means retry or shed load; a dead owner means the serialized work never
 // completed and the waiter should fail its request.
 func TestLockTimeoutIsNotOwnerGone(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	holderPid, _ := chLoad(t, k, func(ctx kernel.SContext) error {
 		_, err := ctx.SyscallLockTake("abandoned", true, kernel.KernelClock().Deadline(time.Second))
@@ -710,19 +711,109 @@ func TestLockTimeoutIsNotOwnerGone(t *testing.T) {
 
 // TestLockIsReentrant covers the legitimate case where a module's call graph passes
 // through the same lock twice.
-func TestLockIsReentrant(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+// TestExclusiveLockIsNotReentrant is the mutual-exclusion property, and it is the
+// test that caught a real defect. An earlier version granted a second exclusive hold
+// to the same pid without queueing, which looks like re-entrancy but is not: the
+// kernel identifies a caller by pid and a pid is a module running many goroutines, so
+// the branch handed one exclusive lock to two goroutines at once. It passed every
+// single-goroutine test and failed only under concurrency.
+//
+// What the contract says instead: a nested acquire of an exclusive lock the caller
+// already holds blocks until its deadline and returns ErrLockTimeout. That is a loud
+// failure the module author can act on, rather than a silent absence of mutual
+// exclusion.
+func TestExclusiveLockIsNotReentrant(t *testing.T) {
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
+
+	pid, m := chLoad(t, k, nil, kernel.OpLockTake)
+	defer func() { _ = k.Unload(pid) }()
+
+	fd1, err := m.ctx.SyscallLockTake("nesting", true, kernel.KernelClock().Deadline(time.Second))
+	require.NoError(t, err)
+
+	start := time.Now()
+	_, err = m.ctx.SyscallLockTake("nesting", true, kernel.KernelClock().Deadline(40*time.Millisecond))
+	require.Error(t, err, "a nested exclusive acquire must not be granted")
+	assert.ErrorIs(t, err, kernel.ErrLockTimeout)
+	assert.GreaterOrEqual(t, time.Since(start), 40*time.Millisecond,
+		"the nested acquire must queue and wait, not fail fast on a self-check")
+
+	// The first hold survived the refused second one: it is still held by this pid
+	// and releasing it still works.
+	snap := kernel.LockSnapshot()
+	require.Len(t, snap, 1)
+	assert.True(t, snap[0].Held)
+	assert.Equal(t, pid, snap[0].Owner)
+	assert.Equal(t, int64(1), snap[0].Taken, "a refused acquire must not count as a take")
+
+	require.NoError(t, m.ctx.SyscallLockRelease(fd1))
+	assert.False(t, kernel.LockSnapshot()[0].Held)
+}
+
+// TestExclusiveLockIsExclusiveAcrossGoroutinesOfOneModule is the defect directly. Two
+// goroutines of the SAME module must not both hold the lock, which is what the
+// re-entrancy shortcut allowed.
+func TestExclusiveLockIsExclusiveAcrossGoroutinesOfOneModule(t *testing.T) {
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
+
+	pid, m := chLoad(t, k, nil, kernel.OpLockTake)
+	defer func() { _ = k.Unload(pid) }()
+
+	var (
+		mu         sync.Mutex
+		inside     int
+		overlapped bool
+		wg         sync.WaitGroup
+	)
+	const each = 20
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range each {
+				fd, err := m.ctx.SyscallLockTake("same-pid", true,
+					kernel.KernelClock().Deadline(10*time.Second))
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				inside++
+				if inside > 1 {
+					overlapped = true
+				}
+				mu.Unlock()
+
+				mu.Lock()
+				inside--
+				mu.Unlock()
+				require.NoError(t, m.ctx.SyscallLockRelease(fd))
+			}
+		}()
+	}
+	wg.Wait()
+
+	assert.False(t, overlapped,
+		"two goroutines of one module must never hold the same exclusive lock at once")
+	assert.False(t, kernel.LockSnapshot()[0].Held)
+}
+
+// TestReadLocksMayNest covers the half of re-entrancy that is legitimate. Readers are
+// concurrent by design, so a second read hold by the same pid violates nothing, and a
+// module whose call graph nests through a read lock keeps working.
+func TestReadLocksMayNest(t *testing.T) {
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpLockTake)
 	defer func() { _ = k.Unload(pid) }()
 
 	deadline := kernel.KernelClock().Deadline(time.Second)
-	fd1, err := m.ctx.SyscallLockTake("reentrant", true, deadline)
+	fd1, err := m.ctx.SyscallLockTake("nested-read", false, deadline)
 	require.NoError(t, err)
-
-	fd2, err := m.ctx.SyscallLockTake("reentrant", true, deadline)
-	require.NoError(t, err, "the same pid must be able to take a lock it already holds")
+	fd2, err := m.ctx.SyscallLockTake("nested-read", false, deadline)
+	require.NoError(t, err, "a reader may take a second read hold on the same name")
 	assert.NotEqual(t, fd1, fd2, "each hold gets its own handle, so each release balances")
 
 	require.NoError(t, m.ctx.SyscallLockRelease(fd2))
@@ -730,14 +821,14 @@ func TestLockIsReentrant(t *testing.T) {
 
 	snap := kernel.LockSnapshot()
 	require.Len(t, snap, 1)
-	assert.False(t, snap[0].Held, "two holds and two releases must balance")
+	assert.Zero(t, snap[0].Readers, "two holds and two releases must balance")
 	assert.Equal(t, int64(2), snap[0].Taken)
 }
 
 // TestReadLocksAreSharedButWriteLocksAreNot covers the two modes.
 func TestReadLocksAreSharedButWriteLocksAreNot(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pidA, mA := chLoad(t, k, nil, kernel.OpLockTake)
 	pidB, mB := chLoad(t, k, nil, kernel.OpLockTake)
@@ -774,8 +865,8 @@ func TestReadLocksAreSharedButWriteLocksAreNot(t *testing.T) {
 // starves another that asked first, and the starved module's deadline then fires - so
 // the noisy module effectively controls the quiet one's latency.
 func TestLockIsFIFO(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	holderPid, holder := chLoad(t, k, func(ctx kernel.SContext) error {
 		_, err := ctx.SyscallLockTake("fifo", true, kernel.KernelClock().Deadline(time.Second))
@@ -826,14 +917,14 @@ func TestLockIsFIFO(t *testing.T) {
 
 // TestLockCeilingIsPerModule covers the leak bound.
 func TestLockCeilingIsPerModule(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var firstErr error
 	held := 0
 	pid, m := chLoad(t, k, func(ctx kernel.SContext) error {
 		for range 400 {
-			_, err := ctx.SyscallLockTake("leak-"+itoa(held), true, kernel.KernelClock().Deadline(time.Second))
+			_, err := ctx.SyscallLockTake("leak-"+harness.Itoa(held), true, kernel.KernelClock().Deadline(time.Second))
 			if err != nil {
 				firstErr = err
 				return nil
@@ -861,8 +952,8 @@ func TestLockCeilingIsPerModule(t *testing.T) {
 
 // TestLockHandleIsKindChecked covers the fd-table discipline from the lock side.
 func TestLockHandleIsKindChecked(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var releaseErr error
 	pid, _ := chLoad(t, k, func(ctx kernel.SContext) error {
@@ -880,8 +971,8 @@ func TestLockHandleIsKindChecked(t *testing.T) {
 // TestLockNameIsRequired covers the input validation. An unnamed lock cannot be
 // diagnosed from a dump.
 func TestLockNameIsRequired(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var err error
 	pid, _ := chLoad(t, k, func(ctx kernel.SContext) error {
@@ -897,8 +988,8 @@ func TestLockNameIsRequired(t *testing.T) {
 // TestConcurrentLockAcquireIsRaceFree drives the lock from many goroutines under
 // -race. The invariant is that the critical section never holds two of them.
 func TestConcurrentLockAcquireIsRaceFree(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpLockTake)
 	defer func() { _ = k.Unload(pid) }()
@@ -946,8 +1037,8 @@ func TestConcurrentLockAcquireIsRaceFree(t *testing.T) {
 
 // TestEventRequiresGrant is the denial half.
 func TestEventRequiresGrant(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	// Only the subscribe is attempted. The wait cannot be reached once the
 	// subscription is denied, so capturing its error would capture a variable that
@@ -970,8 +1061,8 @@ func TestEventRequiresGrant(t *testing.T) {
 // module may wait on a name; it may not invent one, or a peer's claim would be
 // indistinguishable from a kernel fact.
 func TestEventNameSetIsClosed(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	names := kernel.KernelEvents()
 	require.NotEmpty(t, names)
@@ -1007,8 +1098,8 @@ func TestEventNameSetIsClosed(t *testing.T) {
 
 // TestEventDeliveryIsScopedToSubscribers covers the routing.
 func TestEventDeliveryIsScopedToSubscribers(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpEventWait)
 	defer func() { _ = k.Unload(pid) }()
@@ -1044,8 +1135,8 @@ func TestEventDeliveryIsScopedToSubscribers(t *testing.T) {
 
 // TestEventSubscriptionOnlyReceivesWhatItAskedFor covers the filter.
 func TestEventSubscriptionOnlyReceivesWhatItAskedFor(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpEventWait)
 	defer func() { _ = k.Unload(pid) }()
@@ -1067,8 +1158,8 @@ func TestEventSubscriptionOnlyReceivesWhatItAskedFor(t *testing.T) {
 // unbounded queue behind a slow consumer is a leak whose timing the consumer
 // controls.
 func TestEventBacklogIsBoundedAndDropsOldest(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpEventWait)
 	defer func() { _ = k.Unload(pid) }()
@@ -1082,7 +1173,7 @@ func TestEventBacklogIsBoundedAndDropsOldest(t *testing.T) {
 
 	// Post well past the bound without draining.
 	for i := range bound + 50 {
-		kernel.PostEvent(kernel.EventConfigReloaded, pid, "e"+itoa(i))
+		kernel.PostEvent(kernel.EventConfigReloaded, pid, "e"+harness.Itoa(i))
 	}
 
 	pending, dropped, err := m.ctx.SyscallEventPending(fd)
@@ -1096,7 +1187,7 @@ func TestEventBacklogIsBoundedAndDropsOldest(t *testing.T) {
 	// Oldest dropped, newest kept: the newest event is the one a consumer can still
 	// act on.
 	assert.Equal(t, "e50", got[0].Detail)
-	assert.Equal(t, "e"+itoa(bound+49), got[len(got)-1].Detail)
+	assert.Equal(t, "e"+harness.Itoa(bound+49), got[len(got)-1].Detail)
 
 	stats := kernel.EventStatsSnapshot()
 	assert.Equal(t, int64(50), stats.Dropped)
@@ -1105,8 +1196,8 @@ func TestEventBacklogIsBoundedAndDropsOldest(t *testing.T) {
 
 // TestEventPostWakesABlockedWaiter covers the reason this exists instead of polling.
 func TestEventPostWakesABlockedWaiter(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpEventWait)
 	defer func() { _ = k.Unload(pid) }()
@@ -1142,8 +1233,8 @@ func TestEventPostWakesABlockedWaiter(t *testing.T) {
 // TestEventSubscriptionIsDroppedOnUnload covers the leak: a dead module must stop
 // accumulating a backlog nobody will read.
 func TestEventSubscriptionIsDroppedOnUnload(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpEventWait)
 	fd, err := m.ctx.SyscallEventSubscribe([]kernel.KernelEventName{kernel.EventConfigReloaded})
@@ -1166,8 +1257,8 @@ func TestEventSubscriptionIsDroppedOnUnload(t *testing.T) {
 
 // TestEventSubscriptionCeilingIsPerModule covers the bound.
 func TestEventSubscriptionCeilingIsPerModule(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var ceilingErr error
 	opened := 0
@@ -1192,8 +1283,8 @@ func TestEventSubscriptionCeilingIsPerModule(t *testing.T) {
 
 // TestEventHandleIsKindChecked covers the fd discipline.
 func TestEventHandleIsKindChecked(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var waitErr, pendingErr error
 	pid, _ := chLoad(t, k, func(ctx kernel.SContext) error {
@@ -1215,21 +1306,21 @@ func TestEventHandleIsKindChecked(t *testing.T) {
 // posts a name nobody defined would otherwise produce a subscription that never
 // fires, with nothing to explain why.
 func TestUndefinedEventNameIsAFault(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 	defer func() { _ = k.Shutdown() }()
 
-	before := len(faults(buf))
+	before := len(harness.Faults(buf))
 	kernel.PostEvent("not.a.kernel.event", 0, "x")
-	assert.Greater(t, len(faults(buf)), before,
+	assert.Greater(t, len(harness.Faults(buf)), before,
 		"posting an undefined event name must be a visible kernel defect, not a silent no-op")
 	assert.Contains(t, buf.String(), "undefined kernel event name")
 }
 
 // TestEventPostToPidIsTargeted covers the narrow delivery path.
 func TestEventPostToPidIsTargeted(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pidA, mA := chLoad(t, k, nil, kernel.OpEventWait)
 	pidB, mB := chLoad(t, k, nil, kernel.OpEventWait)
@@ -1255,8 +1346,8 @@ func TestEventPostToPidIsTargeted(t *testing.T) {
 // into audit lines and console output verbatim, so an unbounded one is a way to
 // smuggle content into a log.
 func TestEventDetailIsBounded(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, m := chLoad(t, k, nil, kernel.OpEventWait)
 	defer func() { _ = k.Unload(pid) }()
@@ -1275,7 +1366,7 @@ func TestEventDetailIsBounded(t *testing.T) {
 
 // TestEventResetsAcrossRestart is the reset-path assertion.
 func TestEventResetsAcrossRestart(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	k1, err := kernel.Boot(kernel.BootConfig{})
 	require.NoError(t, err)
@@ -1302,7 +1393,7 @@ func TestEventResetsAcrossRestart(t *testing.T) {
 // TestLocksAndPipesResetAcrossRestart covers the reset path for both channel
 // subsystems in one boot cycle.
 func TestLocksAndPipesResetAcrossRestart(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	k1, err := kernel.Boot(kernel.BootConfig{})
 	require.NoError(t, err)

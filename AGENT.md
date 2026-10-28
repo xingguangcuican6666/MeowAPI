@@ -72,6 +72,17 @@ kernel/                      EL1 trust root. No business logic, standard library
   watchdog.go                kwatchdog: overdue-work detection and stack capture
   console.go                 kernel console, retention, the canonical fault emitter
   dump.go                    read-only kernel state rendering
+tests/                       external test suites, one package per architectural layer
+  harness/                   the shared fixtures: boot, console sink, probe modules
+  identity/                  context, policy, manifest, proc, boot, bootconfig
+  lifecycle/                 module load/unload, the usage ABI
+  admission/                 krlimit slots, kqos buckets, kcputime budgets
+  state/                     kvfs namespaces, kshm and kslab
+  channels/                  kpipe, klock, kepoll
+  crypto/                    kcrypto, kkeyring, kreceipt
+  supervision/               ksched, ksignal, kwatchdog
+  evidence/                  kaudit, the console, dump, metadata visibility
+  security/                  the mandatory invariants every change must keep green
 internal/auditfile/          the durable audit sink: JSON Lines, per-boot segments
 plugins/                     one directory per module. Each is independently buildable.
   diag/                      reference module: the smallest conforming plugin
@@ -141,7 +152,7 @@ is broken even when every test passes.
 | kvfs | One module cannot read or write another's state, and the reason is structural: the other module's key is not in its namespace. Path resolution cannot leave the data root, including through a symlink or a `..`. |
 | kshm | No call shape hands a reader a writable alias. A granted segment is sealed against everyone including its owner. A released buffer is zeroed before it can be reused, so recycling does not leak the previous tenant's payload. |
 | kpipe | Data crosses as bytes and never as a Go value, so neither side can retain a reference into the other's heap. An abort latches and wakes blocked waiters. A chunk never arrives interleaved with another writer's. |
-| klock | The kernel owns the lock, so an owner that dies cannot strand its waiters. A clean unload releases it; a forced termination condemns it, because telling a waiter the work it waited for completed when it did not is the worst thing this path can do. Waits have mandatory deadlines and grants follow arrival order, so a noisy module cannot control a quiet one's latency. |
+| klock | The kernel owns the lock, so an owner that dies cannot strand its waiters. A clean unload releases it; a forced termination condemns it, because telling a waiter the work it waited for completed when it did not is the worst thing this path can do. Waits have mandatory deadlines and grants follow arrival order, so a noisy module cannot control a quiet one's latency. An exclusive lock is not re-entrant and every acquire queues: the kernel knows a pid, not a goroutine, so a same-pid shortcut hands one exclusive lock to two goroutines at once. Read locks may nest. |
 | kepoll | Delivery is bounded: a full backlog drops the oldest and counts the drop, so a module that stops draining cannot grow the kernel's heap. Event names are a closed kernel set, so a peer's claim is never indistinguishable from a kernel fact. |
 | kcrypto | Key material does not cross the syscall boundary in either direction. Signing is reachable by no live context after boot. Randomness comes from `crypto/rand` alone, and a failed entropy read fails the call rather than returning a partially filled buffer. |
 | kkeyring | A module names an alias and an action and receives the result, never the credential. Scope is by declared prefix; an out-of-scope alias and an unknown one are indistinguishable, so the call is not an oracle for what a deployment holds. |
@@ -601,22 +612,55 @@ billing invariant, or a regression path.
   `assert` for non-fatal checks. Test-only dependencies belong in the plugin or
   test module, never in the kernel.
 
-Kernel security tests are mandatory, not optional, and they live in
-`kernel/kernel_test.go` as an external test package (`package kernel_test`) so
-they can only use the surface a real module gets. At minimum, and currently
-covered: every denial in the policy matrix is asserted against `Allowed()` and
-against runtime behavior; the boot re-entrancy guard fires on a second
-concurrent boot; a boot after `Shutdown` is fresh and does not inherit the
-previous process table; nothing can spawn into the kernel domain; a module
-cannot write kernel metadata, cannot emit a fault record, and cannot see another
-pid's metadata; unload is idempotent and unloading an unknown pid is a no-op; a
-manifest that fails validation lands a `rejected` record under
-`u:r:untrusted:s0` with the manifest digest; a failed or panicking `OnLoad` /
-`OnUnload` unwinds cleanly and leaves the kernel usable; pids are never reused;
-and concurrent load and unload is race-free under `-race`.
+### Where tests live
 
-When adding an operation, a domain or a syscall, add the corresponding denial
-case here in the same change. A grant with no denial test is an untested grant.
+Suites are external test packages under `tests/`, one package per architectural
+layer, and they import `tests/harness` for the fixtures they share. A suite that
+needs a boot, a console sink or a probe module takes one from the harness rather
+than defining its own: duplicated fixtures are how two suites end up asserting
+different things about the same property.
+
+The layer names are the layers of the kernel, not a filing convenience, so a new
+subsystem's tests go to the package that already owns that layer. A subsystem that
+introduces a new layer adds a package and a line in the file map.
+
+| Package | Layer | Suites |
+| --- | --- | --- |
+| `tests/harness` | shared fixtures | no tests of its own; imports the kernel and the standard library only |
+| `tests/identity` | who a caller is and what it may ask for | `context`, `policy`, `manifest`, `proc`, `boot`, `bootconfig` |
+| `tests/lifecycle` | what a module is allowed to be | `module`, `usage` |
+| `tests/admission` | how much work the kernel will carry | `admission` (krlimit, kqos, kcputime) |
+| `tests/state` | what a module may remember | `kv`, `shm` |
+| `tests/channels` | how modules reach each other | `channels` (kpipe, klock, kepoll) |
+| `tests/crypto` | what the kernel holds on a module's behalf | `crypto`, `keyring`, `receipt` |
+| `tests/supervision` | work the kernel runs instead of the module | `sched`, `signal`, `watchdog` |
+| `tests/evidence` | what is recorded about all of it | `audit_clock`, `console`, `dump`, `metadata` |
+| `tests/security` | the invariants that must never regress | `kernel` |
+
+Four files stay in `kernel/` rather than moving, and the reason is a property worth
+keeping: `kernel/export_test.go` is `package kernel` and exposes package-private
+internals as `Probe*` functions, compiled into the kernel's own test binary and
+unreachable from any module. `kernel/fdtable_test.go` and
+`kernel/audit_syscall_test.go` use those probes, and `install()` is private on
+purpose because a handle is only meaningful inside the pid that owns it. Moving
+them under `tests/` would mean exporting a way to mint a bare handle, which is the
+one thing the fd table exists to prevent.
+
+Kernel security tests are mandatory, not optional. They live in
+`tests/security/kernel_test.go` as an external test package so they can only use
+the surface a real module gets. At minimum, and currently covered: every denial in
+the policy matrix is asserted against `Allowed()` and against runtime behavior; the
+boot re-entrancy guard fires on a second concurrent boot; a boot after `Shutdown`
+is fresh and does not inherit the previous process table; nothing can spawn into
+the kernel domain; a module cannot write kernel metadata, cannot emit a fault
+record, and cannot see another pid's metadata; unload is idempotent and unloading
+an unknown pid is a no-op; a manifest that fails validation lands a `rejected`
+record under `u:r:untrusted:s0` with the manifest digest; a failed or panicking
+`OnLoad` / `OnUnload` unwinds cleanly and leaves the kernel usable; pids are never
+reused; and concurrent load and unload is race-free under `-race`.
+
+When adding an operation, a domain or a syscall, add the corresponding denial case
+in the same change. A grant with no denial test is an untested grant.
 
 ### Documentation files
 
@@ -785,10 +829,11 @@ mistake them for intent:
   headers as you go. Its conventions do NOT apply to new work.
 - The module path is `github.com/xingguangcuican6666/MeowAPI`, matching the git
   remote.
-- testify v1.12.1 is the one third-party dependency and it is test-only
-  (`kernel/kernel_test.go`, `tools/instrcheck/instrcheck_test.go`). The kernel
-  package imports nothing outside the standard library, and CI fails if it ever
-  does. Offline resolution is available from the local module cache via
+- testify v1.12.1 is the one third-party dependency and it is test-only. The
+  kernel package imports nothing outside the standard library, and CI fails if it
+  ever does. `tests/harness` is the one non-test package under `tests/` and it
+  imports the kernel plus the standard library only, so no production build path
+  reaches an assertion library. Offline resolution is available from the local module cache via
   `GOPROXY="file://$(go env GOMODCACHE)/cache/download" GOSUMDB=off go test ./...`.
 - CI is `.github/workflows/ci.yml`: instruction-file integrity (`instrcheck` plus
   an independent `grep -P` assertion so a weakened tool cannot pass the job),

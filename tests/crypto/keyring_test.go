@@ -1,4 +1,4 @@
-package kernel_test
+package crypto
 
 import (
 	"crypto/hmac"

@@ -1,6 +1,7 @@
-package kernel_test
+package identity
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 // TestBootReentrancyGuard asserts the first invariant from the prototype: a
 // second concurrent boot is a loud failure, not a silent no-op.
 func TestBootReentrancyGuard(t *testing.T) {
-	buf := quietConsole(t)
+	buf := harness.QuietConsole(t)
 
 	k1, err := kernel.Boot(kernel.BootConfig{})
 	require.NoError(t, err, "first boot must succeed")
@@ -25,7 +26,7 @@ func TestBootReentrancyGuard(t *testing.T) {
 	assert.Contains(t, err.Error(), "already booted")
 
 	var found bool
-	for _, r := range records(t, buf) {
+	for _, r := range harness.Records(t, buf) {
 		if r.Level == kernel.LogFault && strings.Contains(r.Msg, "Re-entrant or duplicate boot") {
 			found = true
 		}
@@ -37,7 +38,7 @@ func TestBootReentrancyGuard(t *testing.T) {
 // boot does not inherit the first boot's process table. Without this, the
 // security invariants below would only be testable once per process.
 func TestBootAfterShutdownIsFresh(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	k1, err := kernel.Boot(kernel.BootConfig{})
 	require.NoError(t, err)
@@ -58,7 +59,7 @@ func TestBootAfterShutdownIsFresh(t *testing.T) {
 // TestRootContextHandoffIsOnceOnly is the second prototype invariant: the root
 // context can be transferred exactly once.
 func TestRootContextHandoffIsOnceOnly(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	k, err := kernel.Boot(kernel.BootConfig{})
 	require.NoError(t, err)

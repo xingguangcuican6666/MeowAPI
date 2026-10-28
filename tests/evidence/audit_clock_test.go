@@ -1,6 +1,7 @@
-package kernel_test
+package evidence
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"testing"
 	"time"
 
@@ -78,11 +79,11 @@ func TestClockWallIsNotTheAuthority(t *testing.T) {
 // TestModuleReadsKernelTime drives the syscall path, which is what a module
 // actually uses.
 func TestModuleReadsKernelTime(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	var got kernel.KernelTime
-	registerProbe(t, "clockreader", &probeModule{onLoad: func(ctx kernel.SContext) error {
+	harness.RegisterProbe(t, "clockreader", &harness.Probe{Load: func(ctx kernel.SContext) error {
 		got = ctx.SyscallNow()
 		return nil
 	}})
@@ -101,8 +102,8 @@ func TestModuleReadsKernelTime(t *testing.T) {
 // TestAuditChainVerifies is the tamper-evidence property. A chain that verifies
 // proves nothing was edited between the first entry and the last.
 func TestAuditChainVerifies(t *testing.T) {
-	buf := quietConsole(t)
-	k := bootOne(t)
+	buf := harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
@@ -127,8 +128,8 @@ func TestAuditChainVerifies(t *testing.T) {
 // Each mutation is the kind of thing an attacker with write access to the audit
 // file would attempt, and each must be detected.
 func TestAuditChainDetectsTampering(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
 	defer func() { _ = k.Unload(pid) }()
@@ -219,8 +220,8 @@ func TestAuditChainDetectsTampering(t *testing.T) {
 // TestAuditChainLinksSequenceNumbers asserts the chain is contiguous, so a
 // deleted entry is detectable even if an attacker recomputed every hash after it.
 func TestAuditChainLinksSequenceNumbers(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 	defer func() { _ = k.Shutdown() }()
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
@@ -238,8 +239,8 @@ func TestAuditChainLinksSequenceNumbers(t *testing.T) {
 // TestAuditQueryFilters asserts the filter fields work, since an investigation
 // that cannot select by trace or pid is not usable.
 func TestAuditQueryFilters(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
 	defer func() { _ = k.Unload(pid) }()
@@ -275,8 +276,8 @@ func TestAuditQueryFilters(t *testing.T) {
 // TestAuditRecordsLifecycleAndDenials asserts the specific events an investigation
 // needs are actually recorded: what loaded, what was refused, what escalated.
 func TestAuditRecordsLifecycleAndDenials(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	// A successful load.
 	pid, err := k.Load(diag.Manifest())
@@ -362,7 +363,7 @@ func TestAuditSinkReceivesEveryEntry(t *testing.T) {
 // dies because its log target is unwritable is worse, and the fault line plus the
 // resulting gap in sequence numbers makes the loss detectable.
 func TestAuditSinkFailureIsNotFatal(t *testing.T) {
-	buf := quietConsole(t)
+	buf := harness.QuietConsole(t)
 	calls := 0
 	sink := kernel.AuditSinkFunc(func(kernel.AuditEntry) error {
 		calls++
@@ -378,7 +379,7 @@ func TestAuditSinkFailureIsNotFatal(t *testing.T) {
 	defer func() { _ = k.Unload(pid) }()
 
 	assert.Positive(t, calls)
-	assert.NotEmpty(t, faults(buf), "each sink failure must be recorded as a fault")
+	assert.NotEmpty(t, harness.Faults(buf), "each sink failure must be recorded as a fault")
 
 	// The in-memory chain is intact regardless of the sink.
 	assert.Equal(t, -1, kernel.VerifyChain(kernel.AuditQuery(kernel.AuditFilter{}), kernel.AuditGenesis))
@@ -388,8 +389,8 @@ func TestAuditSinkFailureIsNotFatal(t *testing.T) {
 // genesis after Boot, because booting is itself audited: the chain starts with the
 // boot record and the spawn of init.
 func TestAuditHeadAdvances(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	head0 := kernel.AuditHead()
 	assert.NotEqual(t, kernel.AuditGenesis, head0,
@@ -419,7 +420,7 @@ func TestAuditHeadAdvances(t *testing.T) {
 // the important half: a window of zero would discard every entry before anything
 // could read it, which is not a smaller buffer but no audit trail.
 func TestAuditWindowIsConfigurableAndFloored(t *testing.T) {
-	quietConsole(t)
+	harness.QuietConsole(t)
 
 	k, err := kernel.Boot(kernel.BootConfig{AuditWindow: 24})
 	require.NoError(t, err)

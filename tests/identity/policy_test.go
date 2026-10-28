@@ -1,6 +1,7 @@
-package kernel_test
+package identity
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"sort"
 	"testing"
 
@@ -14,8 +15,8 @@ import (
 // runtime. This is the "every denial in the matrix is asserted" requirement:
 // the test derives expectations from Allowed() and then proves check() agrees.
 func TestPolicyMatrixDenials(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 	ctx := k.InitContext()
 
 	// Metadata is the only operation pair the test can drive directly from a
@@ -83,7 +84,7 @@ func TestOpsForMatchesAllowed(t *testing.T) {
 	for _, dom := range domains {
 		held := kernel.OpsFor(dom)
 		for _, op := range kernel.AllOps {
-			assert.Equal(t, kernel.Allowed(dom, op), containsOp(held, op),
+			assert.Equal(t, kernel.Allowed(dom, op), harness.ContainsOp(held, op),
 				"OpsFor(%s) and Allowed(%s, %s) must agree", dom, dom, op)
 		}
 		assert.True(t, sort.SliceIsSorted(held, func(i, j int) bool { return held[i] < held[j] }),

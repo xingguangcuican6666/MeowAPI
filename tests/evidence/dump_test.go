@@ -1,7 +1,8 @@
-package kernel_test
+package evidence
 
 import (
 	"bytes"
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,20 +15,20 @@ import (
 // questions an operator asks: what is loaded, under which grants, what was
 // denied.
 func TestDumpIsReadOnlyAndComplete(t *testing.T) {
-	quietConsole(t)
-	k := bootOne(t)
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
 
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)
 
 	// Manufacture a denial so the fault section is non-empty.
-	probe := &probeModule{}
-	probe.onLoad = func(ctx kernel.SContext) error {
+	probe := &harness.Probe{}
+	probe.Load = func(ctx kernel.SContext) error {
 		_, derr := ctx.SyscallMetadataGet("x")
 		_ = derr
 		return nil
 	}
-	registerProbe(t, "dumper", probe)
+	harness.RegisterProbe(t, "dumper", probe)
 	pid2, err := k.Load(kernel.Manifest{
 		Name: "dumper", Version: "0.1.0", MinKernelAPI: 1, MaxKernelAPI: 1,
 	})

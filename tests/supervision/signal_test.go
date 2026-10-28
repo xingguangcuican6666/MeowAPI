@@ -1,4 +1,4 @@
-package kernel_test
+package supervision
 
 // Tests for ksignal, control signals to a pid.
 //
