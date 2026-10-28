@@ -100,6 +100,11 @@ func resetKernel() {
 	// Module state and shared memory.
 	resetKVFS()
 	resetFSScopes()
+	// resetFS clears where the data roots are; resetFSScopes above clears what each
+	// pid may touch inside one. Both must be empty before a new boot installs its
+	// own, because a root surviving a restart would point a fresh module at a
+	// directory the previous boot chose.
+	resetFS()
 	resetShm()
 
 	// Channels and coordination. Locks before the fd table they hand out handles

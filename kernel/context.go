@@ -90,6 +90,7 @@ type SContext interface {
 	SyscallEvent
 	SyscallTrace
 	SyscallRoute
+	SyscallFS
 	SyscallPeer
 	SyscallRequest
 	SyscallSlashing
