@@ -123,6 +123,11 @@ func resetKernel() {
 	resetRoutes()
 	resetPeers()
 	resetMeter()
+	// Token accounting goes with metering: the measurement exists to corroborate the
+	// report, so a ledger surviving a restart would compare this boot's reports against
+	// last boot's numbers. The strictness setting is deployment configuration and
+	// survives, for the reason resetTokenizer gives.
+	resetTokenizer()
 
 	// Crypto caches hold parsed key material, so they go with the secrets.
 	resetCrypto()

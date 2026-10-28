@@ -204,6 +204,24 @@ func Dump(w io.Writer) error {
 	b.WriteString(fmt.Sprintf("retained=%d open=%d requests=%d tokens:in=%d tokens:out=%d abandoned=%d evicted=%d\n",
 		mt.Retained, mt.Open, mt.Requests, mt.TokensIn, mt.TokensOut, mt.Abandoned, mt.Evicted))
 
+	b.WriteString("\n--- token accounting ---\n")
+	// The measurement side of billing: what the kernel computed about bytes that
+	// crossed it, beside what modules reported about them. Rendering the two together
+	// is the point, because either half alone is not a finding.
+	tok := TokenStatsSnapshot()
+	strict := "non-strict"
+	if tok.StrictFloor {
+		strict = "strict"
+	}
+	b.WriteString(fmt.Sprintf("checked=%d consistent=%d suspicious=%d impossible=%d retained=%d evicted=%d (max %d) floor=%s\n",
+		tok.Checked, tok.Consistent, tok.Suspicious, tok.Impossible,
+		tok.Retained, tok.Evicted, tok.MaxRecords, strict))
+	for _, m := range TokenTotalsByModule() {
+		b.WriteString(fmt.Sprintf("  pid=%-4d %-20s checked=%-5d consistent=%-5d suspicious=%-4d impossible=%-4d flow=%dB/%dtok\n",
+			m.PID, m.Module, m.Checked, m.Consistent, m.Suspicious, m.Impossible,
+			m.FlowBytes, m.FlowTokens))
+	}
+
 	b.WriteString("\n--- secrets ---\n")
 	// Aliases and their use counts only. A value is never rendered, and neither is
 	// a header name that would let an operator's terminal scrollback become a place

@@ -93,6 +93,7 @@ type SContext interface {
 	SyscallFS
 	SyscallPeer
 	SyscallRequest
+	SyscallTokenizer
 	SyscallSlashing
 	SyscallTTY
 

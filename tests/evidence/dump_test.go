@@ -2,8 +2,10 @@ package evidence
 
 import (
 	"bytes"
-	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
+	"strings"
 	"testing"
+
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -57,4 +59,69 @@ func TestDumpIsReadOnlyAndComplete(t *testing.T) {
 	require.NoError(t, k.Unload(pid2))
 
 	assert.Error(t, kernel.Dump(nil), "a nil writer is a caller error")
+}
+
+// TestDumpRendersEverySectionItDeclares pins the operator-facing section list.
+//
+// The list is written out here rather than read from dump.go, and that choice is the
+// whole test. Deriving the expectation from the source would make the two agree by
+// construction: delete a section from dump.go and the expectation shrinks with it, so
+// the test stays green while the dump silently loses a subsystem. Verified that way,
+// this test passes with the token accounting section removed.
+//
+// What an operator can see in a dump is a contract, so adding a subsystem without
+// adding its section should fail here and make that a deliberate act. The reverse -
+// a section rendering nothing - is caught by asserting the header appears in the
+// output, and a section that panics fails the whole test.
+func TestDumpRendersEverySectionItDeclares(t *testing.T) {
+	harness.QuietConsole(t)
+	harness.BootOne(t)
+
+	// One entry per subsystem the kernel has state worth rendering. Sections whose
+	// data is empty still render their header, because an operator reading a dump
+	// cannot otherwise tell "empty" from "not implemented".
+	sections := []string{
+		"process table",
+		"loaded modules",
+		"usage",
+		"policy",
+		"admission",
+		"cpu accounting",
+		"channels",
+		"routes",
+		"peers",
+		"slashing",
+		"shared memory",
+		"tracing",
+		"metering",
+		"token accounting",
+		"secrets",
+		"receipts",
+		"console",
+		"supervision",
+		"handles",
+	}
+
+	var out bytes.Buffer
+	require.NoError(t, kernel.Dump(&out))
+	text := out.String()
+
+	for _, s := range sections {
+		assert.Contains(t, text, "--- "+s,
+			"the dump must render a %q section; an operator cannot otherwise see that state", s)
+	}
+
+	// The faults header carries a count, so it is matched separately.
+	assert.Regexp(t, `--- faults \(\d+\) ---`, text)
+
+	// And the sections appear in the order dump.go writes them, because a dump is read
+	// top to bottom and a reordering that moved faults above the process table would
+	// make the first thing an operator reads the least informative part.
+	prev := -1
+	for _, s := range sections {
+		at := strings.Index(text, "--- "+s)
+		require.NotEqual(t, -1, at, "%q is missing", s)
+		assert.Greater(t, at, prev, "%q appears out of order", s)
+		prev = at
+	}
 }
