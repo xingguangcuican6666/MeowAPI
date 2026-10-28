@@ -21,9 +21,16 @@ const (
 	OpProcessFork   Op = "process:fork"
 	OpModuleLoad    Op = "module:load"
 	OpModuleUnload  Op = "module:unload"
-	OpIPCBind       Op = "ipc:bind"
-	OpIPCCall       Op = "ipc:call"
-	OpLogWrite      Op = "log:write"
+	// ipc:bind and ipc:call are reserved and gate nothing. No syscall checks either
+	// one; the live module-to-module mechanism is kservice's route:register and
+	// route:call. They stay declared because they are granted to two domains and a
+	// manifest in the wild may require one, so removing them is a policy surface
+	// change rather than a cleanup. Do not add a check against them without first
+	// deciding what they mean, because a check nobody reasoned about is a refusal
+	// nobody can diagnose.
+	OpIPCBind  Op = "ipc:bind"
+	OpIPCCall  Op = "ipc:call"
+	OpLogWrite Op = "log:write"
 
 	// kaudit: the tamper-evident record. Distinct from log:write, because an
 	// audit entry is evidence and a log line is commentary.
@@ -271,7 +278,15 @@ var enforcedScopedOps = map[Op]bool{
 	OpFSRead:    true, // kv.go: FSCheckRead consults the manifest's ReadPaths
 	OpFSWrite:   true, // kv.go: FSCheckWrite consults the manifest's WritePaths
 	OpSecretUse: true, // keyring.go: secretPrefixesFor and aliasInScope per call
+	OpPeerDial:  true, // peer.go: peerEndpointAllowed consults the manifest's AllowedHosts
 }
+
+// OpNetDial and OpNetListen are scoped in manifest.go and deliberately absent here.
+// Neither has a per-call check against the declared boundary yet, so passing them
+// through the ceiling would make the manifest declaration the only thing deciding and
+// nothing would check the call against it. Same for OpSecretRead, which is scoped but
+// must stay unreachable from a module at any scope: no module sees a plaintext
+// credential, and that refusal is the point of kkeyring rather than an omission in it.
 
 // granted is the effective decision: the domain ceiling, then the module's own
 // declaration. The reason distinguishes "your domain lacks this", which only a

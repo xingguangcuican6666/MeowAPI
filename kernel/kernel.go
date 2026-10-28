@@ -110,6 +110,7 @@ func resetKernel() {
 	resetEvents()
 	resetTraces()
 	resetRoutes()
+	resetPeers()
 	resetMeter()
 
 	// Crypto caches hold parsed key material, so they go with the secrets.
@@ -130,8 +131,13 @@ func resetKernel() {
 	kmeta.reset()
 	kscm.reset()
 	kaudit.reset()
+	resetSlashing()
 
-	// Secrets, then the root they derive from.
+	// Secrets, then the root they derive from. The console credential is
+	// host-installed credential material, so it is wiped with the secrets and before
+	// the root it was installed under: an operator session's console key must not
+	// survive the operator's decision to restart.
+	resetTTYs()
 	resetKeyring()
 	resetReceipts()
 	kboot.reset()

@@ -148,6 +148,45 @@ func Dump(w io.Writer) error {
 	b.WriteString(fmt.Sprintf("dispatches=%d misses=%d registrations-refused=%d (max %d per module)\n",
 		rs.Calls, rs.Misses, rs.Denied, rs.MaxPerModule))
 
+	b.WriteString("\n--- peers ---\n")
+	peers := PeerTableSnapshot()
+	if len(peers) == 0 {
+		b.WriteString("(none in the mesh table)\n")
+	}
+	for _, pe := range peers {
+		state := "open"
+		if pe.Closed {
+			state = "closed"
+		}
+		// Endpoint and label are operator-supplied names, already validated to carry
+		// no control characters, so rendering them cannot forge a line.
+		b.WriteString(fmt.Sprintf("%-20s %-24s %-6s rtt=%-10dns samples=%-4d timeouts=%-3d fwd=%-4d refused=%d\n",
+			pe.NodeID, pe.Endpoint, state, pe.LastRTTNanos, pe.Samples,
+			pe.Timeouts, pe.Forwarded, pe.Refused))
+	}
+	ps := PeerStatsSnapshot()
+	b.WriteString(fmt.Sprintf("peers=%d/%d announced=%d accepted=%d refused=%d probes=%d probe-timeouts=%d forwarded=%d forward-refused=%d events=%d evicted=%d\n",
+		ps.Peers, ps.MaxPeers, ps.Announced, ps.Accepted, ps.Refused, ps.Probes,
+		ps.ProbeTimeouts, ps.Forwarded, ps.ForwardRefused, ps.Events, ps.EventEvicted))
+
+	b.WriteString("\n--- slashing ---\n")
+	// A fraud case is named by its evidence rather than by its reporter's prose, so
+	// the note is rendered bounded and only for pending cases: a decided one has a
+	// finding on the audit chain, and echoing reporter text into an operator's
+	// terminal makes the dump a place unvalidated input can reach.
+	slashes := SlashLedger()
+	if len(slashes) == 0 {
+		b.WriteString("(no fraud proofs filed)\n")
+	}
+	for _, s := range slashes {
+		b.WriteString(fmt.Sprintf("%-18s %-14s node=%-20s verdict=%-10s reporters=%d\n",
+			s.ID, s.Kind, s.NodeID, s.Verdict, len(s.Reporters)))
+	}
+	ss := SlashStatsSnapshot()
+	b.WriteString(fmt.Sprintf("pending=%d confirmed=%d unproven=%d filed=%d corroborated=%d refused=%d records=%d/%d evicted=%d\n",
+		ss.Pending, ss.Confirmed, ss.Unproven, ss.Filed, ss.Corroborated,
+		ss.Refused, ss.Records, ss.MaxRecords, ss.RecordEvicted))
+
 	b.WriteString("\n--- shared memory ---\n")
 	shm := ShmSnapshot()
 	b.WriteString(fmt.Sprintf("segments=%d pool=%dB cached=%dB allocs=%d reused=%d evictions=%d refused=%d zeroed=%d\n",
@@ -186,6 +225,20 @@ func Dump(w io.Writer) error {
 	for _, node := range sortedNodes(rc.Cursor) {
 		b.WriteString(fmt.Sprintf("  node %-20s cursor=%d\n", node, rc.Cursor[node]))
 	}
+
+	b.WriteString("\n--- console ---\n")
+	// Whether a credential is installed, and nothing else about it. The value is
+	// never rendered and neither is its length, for the reason the secrets section
+	// gives: a dump is read by whoever has the host's console or its log access, and
+	// a length narrows a brute-force search that would otherwise be the whole
+	// key space.
+	ts := TTYStatsSnapshot()
+	cred := "not installed"
+	if ts.Credential {
+		cred = "installed"
+	}
+	b.WriteString(fmt.Sprintf("handles=%d credential=%s issued=%d refused=%d reads=%d writes=%d (max %d handles per pid)\n",
+		ts.Open, cred, ts.Issued, ts.Refused, ts.Reads, ts.Writes, ts.MaxPerPID))
 
 	b.WriteString("\n--- supervision ---\n")
 	events, sweeps, detected := WatchdogSnapshot()

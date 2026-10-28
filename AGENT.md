@@ -71,6 +71,9 @@ kernel/                      EL1 trust root. No business logic, standard library
   sched.go                   ksched: supervised jobs and timers with deadlines
   signal.go                  ksignal: reload, drain, kill and stream abort
   watchdog.go                kwatchdog: overdue-work detection and stack capture
+  peer.go                    kpeer: mesh handshake, probes and forwarding
+  slashing.go                kslashing: fraud proofs over signed receipts
+  tty.go                     ktty: credential-gated operator console
   console.go                 kernel console, retention, the canonical fault emitter
   dump.go                    read-only kernel state rendering
 tests/                       external test suites, one package per architectural layer
@@ -82,7 +85,8 @@ tests/                       external test suites, one package per architectural
   channels/                  kpipe, klock, kepoll
   crypto/                    kcrypto, kkeyring, kreceipt
   supervision/               ksched, ksignal, kwatchdog
-  evidence/                  kaudit, the console, dump, metadata visibility
+  evidence/                  kaudit, the console, dump, metadata visibility, ktty
+  mesh/                      kpeer and kslashing
   security/                  the mandatory invariants every change must keep green
 internal/auditfile/          the durable audit sink: JSON Lines, per-boot segments
 plugins/                     one directory per module. Each is independently buildable.
@@ -130,6 +134,9 @@ policy operation that gates it, in the same change.
 | `kernel/sched.go` | ksched | supervised jobs and timers, deadline clamped to the sealed ceiling | none |
 | `kernel/signal.go` | ksignal | reload, drain, kill, abort, with termination as the default for drain | none |
 | `kernel/watchdog.go` | kwatchdog | detects overdue kernel-run work, captures a stack, asks for termination | none |
+| `kernel/peer.go` | kpeer | mesh table, signed handshake, latency probes, cross-node forwarding | none |
+| `kernel/slashing.go` | kslashing | fraud proofs against peer receipts, decided by recomputation | none |
+| `kernel/tty.go` | ktty | the operator console: credential-gated load, unload and process inspection | `console.java` |
 | `kernel/clock.go` | kclock | the monotonic time authority: no rewind, no setter | none |
 | `kernel/audit.go` | kaudit | the hash-chained audit record, sink support, `VerifyChain` | none |
 | `kernel/fdtable.go` | kfdtable | per-pid integer handles; reclamation on unload | none |
@@ -167,6 +174,9 @@ is broken even when every test passes.
 | kwatchdog | Overdue work is noticed by someone other than the party that missed the deadline, the evidence includes where the code was stuck, and the response does not depend on that party cooperating. It detects and reports; it does not preempt a goroutine the module started itself. |
 | ktrace | Trace and span ids are minted by the kernel, so a module cannot choose the identity of a request and cannot attach its work to a timeline it did not serve. An unended span is closed at teardown and marked abandoned, so its duration reads as the lower bound it is. |
 | kservice | A dispatch runs under the handler module's own context and grants, never the caller's, so a privileged caller does not lend its authority to whoever it calls. One handler per path and a second registration is refused, because silent replacement is how a module takes over another's route. A path must be declared in the manifest, so the table is bounded by what was reviewed. |
+| kpeer | A peer's identity is accepted only after it signs both nonces of this exchange with a key in the sealed cluster roots, and the signature covers the endpoint it claims, so a captured handshake cannot be replayed at another address. The epoch is inside that signed payload, which is what lets an honest restart that restarts its sequence numbers be told apart from a replay of a captured announcement. The mesh table refuses a new peer when full rather than evicting one, because silent eviction is how an attacker empties an honest mesh. This node is not an open relay: a frame addressed to another node is refused, hops and route are inside the signed envelope, and an inbound body is bounded before it is decoded. Every call to the host transport runs under the kernel's own deadline, and closing a session wakes its in-flight calls at once. The host's own code cannot be aborted, so what is guaranteed is refusal once saturated, not cancellation. |
+| kslashing | A fraud claim is decided by recomputation rather than by believing the accuser. Signatures are verified against the sealed roots first, so forged evidence cannot confirm fraud against the node it names - the verdict is unproven. A configuration that cannot verify is an error and not a verdict, and the case stays pending rather than being recorded as unproven. A decision is final within a boot. No live context holds both `slash:report` and `slash:adjudicate`, so a reporter cannot write its own verdict, and init cannot adjudicate because mesh governance must not be reachable from the context that decides what code runs. Frauds that receipt issuance already prevents are not re-argued here: a check that can never fire is not a control, and presenting one as a control is how a reviewer stops looking for the real hole. |
+| ktty | The console credential is a string no module can obtain: installed only by the host through the `Kernel` handle, returned by no syscall, absent from the audit chain, the console, the dump and every error message, and compared in constant time against a copy taken under the lock. Wrong, absent and uninstalled are indistinguishable, so the call is not an oracle for whether a credential exists. Every privileged act lands on the chain before the caller sees the result, so a console that can load a module is never a console that can erase the fact that it did. A handle is a view, not a key: reading returns what an operator could already see, writing rides the same level rules as `log:write` so a console is not a way around fault retention, and load and unload re-check `module:load` and `module:unload` independently of the credential. |
 | kmeter | The kernel records that a request was served and what it consumed. It never prices it: there is no unit price, ratio, discount or multiplier field, and the absence is the control. Facts pass the same closed kind set and per-event ceiling as usage.go, so nothing that bypassed validation on the way in can become an unbounded multiplier on the way out. |
 | usage | The kind set is closed and an unknown kind is refused rather than accumulated under a default branch. That is the specific hole the upstream project left open. |
 
@@ -298,7 +308,7 @@ be read by anyone who knows SELinux and so that denials are legible:
 | --- | --- | --- |
 | `u:r:kernel:s0` | pid 0 only, retired the moment init is spawned | all operations |
 | `u:r:init:s0` | the init sequence | `process:fork`, `module:load`, `module:unload`, `metadata:read`, `metadata:write`, `log:write` |
-| `u:r:plugin:s0` | a validated, loaded module | `metadata:read`, `log:write`, `ipc:call`, `usage:emit`, plus scoped operations its manifest declares |
+| `u:r:plugin:s0` | a validated, loaded module | `metadata:read`, `log:write`, `route:register`, `route:call`, `usage:emit`, plus scoped operations its manifest declares |
 | `u:r:untrusted:s0` | anything that failed validation | none. Load aborts. |
 
 The domain transition rule is separate from the operation grant, because
@@ -312,7 +322,11 @@ Operations are `class:permission` strings. The set:
 - `metadata:read`, `metadata:write` - kernel state store
 - `process:fork` - create a child context
 - `module:load`, `module:unload` - module lifecycle
-- `ipc:bind`, `ipc:call` - module-to-module calls
+- `route:register`, `route:call` - module-to-module calls
+- `ipc:bind`, `ipc:call` - reserved. Both are declared and granted but no syscall
+  checks either one, so they gate nothing today; kservice's `route:*` pair is the
+  live mechanism. They are kept because removing a granted operation is a policy
+  surface change and a manifest in the wild may declare one
 - `net:listen`, `net:dial` - sockets; `net:dial` is always host-scoped
 - `fs:read`, `fs:write` - always path-scoped
 - `secret:read` - always key-prefix-scoped
@@ -488,7 +502,7 @@ is drawn where it is:
   constructs its own client escapes every control above. This holds once the
   network syscall exists; it is the reason an out-of-process tier may be needed
   for modules that require real network access.
-- **Cross-module calls go through `ipc:call`.** No module imports another
+- **Cross-module calls go through `route:call`.** No module imports another
   module's package. This keeps every module independently buildable and makes
   the call graph visible to policy.
 

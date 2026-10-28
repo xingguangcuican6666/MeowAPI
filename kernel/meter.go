@@ -68,6 +68,17 @@ type MeterRecord struct {
 	// Module is that module's name, for logs.
 	Module string `json:"module,omitempty"`
 	// Caller is the module that asked, when the call crossed a route.
+	//
+	// It identifies a local context, not an originating party. A request forwarded
+	// in from another mesh node is dispatched by kpeer under init's context, so
+	// Caller reads as init's pid. Nothing about a MeterRecord says whether the work
+	// was local or inbound, and that is deliberate rather than an oversight: adding
+	// an origin field would let a module attribute its own traffic to somewhere
+	// else, and a field a module can influence is not evidence. The distinction
+	// lives on the audit chain, where kpeer records "peer forward accepted" with
+	// the sending node's id before dispatch, so an investigator can join the two by
+	// trace id. Code that reads Caller as "the module that decided to make this
+	// request" is wrong for inbound traffic and should join on the chain instead.
 	Caller PID `json:"caller,omitempty"`
 	// Opened and Closed are Mono() readings. The interval is measured on the
 	// kernel clock so an NTP step cannot change a billable duration.

@@ -352,6 +352,12 @@ func UnloadModule(ctx SContext, pid PID) error {
 	// closed the resources above; this clears the index so a snapshot does not keep
 	// reporting a pipe whose owner has been gone since the last restart.
 	DropPipesFor(pid)
+	// Console handles held by this pid are dropped for the same reason. No module can
+	// hold one today, because tty:open is refused to the plugin domain and init never
+	// reaches UnloadModule, so this is a backstop rather than a live path: if the
+	// console is ever opened to another domain, reclamation is already correct
+	// instead of silently leaking a registry entry for a session that is gone.
+	dropTTYsFor(pid)
 	// Routes this module served are unregistered, so a call cannot resolve to a
 	// handler whose module is gone.
 	unregisterRoutesFor(pid)
