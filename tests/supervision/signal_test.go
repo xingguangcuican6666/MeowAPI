@@ -11,6 +11,7 @@ package supervision
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -621,6 +622,26 @@ func TestSignalConcurrencyIsRaceFree(t *testing.T) {
 
 	const senders = 8
 	const perSender = 20
+
+	// Every send is attempted and the accepted ones are counted, because a refusal
+	// here is legitimate kernel behaviour rather than a failure of this test.
+	//
+	// Delivery to one endpoint is serial - one worker, POSIX reading - and the pending
+	// queue is bounded at maxPendingSignalsPerPID so that a module which stops
+	// consuming signals cannot grow kernel memory by being signalled faster than it
+	// reacts. This test sends senders*perSender signals from that many goroutines into
+	// one endpoint, which on a loaded runner is precisely the condition the bound
+	// exists for: the senders outpace the drainer and the queue fills. Asserting that
+	// no send is ever refused would make the test depend on the machine being fast
+	// enough, which is the kind of assertion AGENT.md forbids, and it would be wrong
+	// anyway - a full-queue refusal is a typed, visible, audited answer, not a lost
+	// signal.
+	//
+	// So the property under test is the one this test has always claimed in its own
+	// failure message: every ACCEPTED signal is delivered exactly once. That is a
+	// statement about race-freedom, and it holds whether or not the queue filled.
+	var accepted atomic.Int64
+	var refused atomic.Int64
 	var wg sync.WaitGroup
 	for range senders {
 		wg.Add(1)
@@ -628,8 +649,14 @@ func TestSignalConcurrencyIsRaceFree(t *testing.T) {
 			defer wg.Done()
 			for range perSender {
 				// Init and the module itself, concurrently, at one endpoint.
-				if err := k.InitContext().SyscallSignalSend(pid, kernel.SignalReload); err != nil {
-					assert.NoError(t, err)
+				err := k.InitContext().SyscallSignalSend(pid, kernel.SignalReload)
+				switch {
+				case err == nil:
+					accepted.Add(1)
+				case kernel.IsSignalQueueFull(err):
+					refused.Add(1)
+				default:
+					assert.NoError(t, err, "an unexpected refusal is not a full queue")
 					return
 				}
 			}
@@ -637,12 +664,20 @@ func TestSignalConcurrencyIsRaceFree(t *testing.T) {
 	}
 	wg.Wait()
 
-	require.True(t, schedAwait(t, 20*time.Second, func() bool {
-		return sent.count() == senders*perSender
-	}), "every accepted signal must be delivered exactly once, got %d of %d",
-		sent.count(), senders*perSender)
-	assert.Zero(t, kernel.SignalPending(pid))
+	require.Equal(t, int64(senders*perSender), accepted.Load()+refused.Load(),
+		"every attempt either landed in the queue or was refused by the bound")
 
+	want := accepted.Load()
+	require.True(t, schedAwait(t, 20*time.Second, func() bool {
+		return int64(sent.count()) == want
+	}), "every accepted signal must be delivered exactly once, got %d of %d",
+		sent.count(), want)
+	assert.Zero(t, kernel.SignalPending(pid), "nothing is left queued after delivery")
+
+	// The bound is real under contention, and it is not a property this test forces:
+	// a fast runner drains quickly and refuses nothing. What must hold either way is
+	// that a refusal is the typed one and that the accepted signals all arrived.
+	t.Logf("signal concurrency: %d accepted, %d refused by the queue bound", want, refused.Load())
 	for _, info := range sent.snapshot() {
 		assert.Equal(t, kernel.SignalReload, info.Kind)
 		assert.Equal(t, kernel.PID(1), info.From)
