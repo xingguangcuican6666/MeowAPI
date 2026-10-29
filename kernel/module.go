@@ -352,6 +352,12 @@ func UnloadModule(ctx SContext, pid PID) error {
 	// closed the resources above; this clears the index so a snapshot does not keep
 	// reporting a pipe whose owner has been gone since the last restart.
 	DropPipesFor(pid)
+	// Pooled sockets held by this pid are dropped for the same reason. reclaimFDs above
+	// already closed every descriptor, and netConn.Close removes itself from the pool, so
+	// this is the backstop that clears the pool's own indexes if a socket was pooled under
+	// a pid whose table is being torn down by a path that did not go through Close. An idle
+	// entry naming a socket that no longer exists would be handed to a later caller.
+	netDropAllFor(pid)
 	// Console handles held by this pid are dropped for the same reason. No module can
 	// hold one today, because tty:open is refused to the plugin domain and init never
 	// reaches UnloadModule, so this is a backstop rather than a live path: if the

@@ -91,6 +91,7 @@ type SContext interface {
 	SyscallTrace
 	SyscallRoute
 	SyscallFS
+	SyscallNet
 	SyscallPeer
 	SyscallRequest
 	SyscallTokenizer

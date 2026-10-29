@@ -148,6 +148,31 @@ func Dump(w io.Writer) error {
 	b.WriteString(fmt.Sprintf("dispatches=%d misses=%d registrations-refused=%d (max %d per module)\n",
 		rs.Calls, rs.Misses, rs.Denied, rs.MaxPerModule))
 
+	b.WriteString("\n--- egress ---\n")
+	// Reachability, beside the mesh section that also describes it. The address a dial
+	// actually reached is rendered rather than only the hostname, because a name resolving
+	// somewhere unexpected is the thing an operator needs to be able to see here.
+	ns := NetStatsSnapshot()
+	b.WriteString(fmt.Sprintf("dialed=%d refused=%d blocked=%d pooled=%d/%d listeners=%d/%d retained=%d evicted=%d (max %d per module, %d pooled)\n",
+		ns.Dialed, ns.Refused, ns.Blocked, ns.Pooled, ns.MaxPooled,
+		ns.Listeners, ns.MaxPerPID, ns.Retained, ns.Evicted, ns.MaxPerPID, ns.MaxPooled))
+	if ranges := NetPrivateRanges(); len(ranges) > 0 {
+		b.WriteString(fmt.Sprintf("private ranges permitted by the host: %s\n", strings.Join(ranges, ", ")))
+	} else {
+		b.WriteString("private ranges: none permitted, so every private address is refused\n")
+	}
+	sockets := 0
+	for _, p := range ProcTable() {
+		for _, s := range NetSockets(p.PID) {
+			sockets++
+			b.WriteString(fmt.Sprintf("  pid=%-4d fd=%-3d %-28s %s pooled=%t in=%dB out=%dB\n",
+				s.PID, s.FD, s.Remote, s.Label, s.Pooled, s.BytesIn, s.BytesOut))
+		}
+	}
+	if sockets == 0 {
+		b.WriteString("(no sockets open)\n")
+	}
+
 	b.WriteString("\n--- peers ---\n")
 	peers := PeerTableSnapshot()
 	if len(peers) == 0 {

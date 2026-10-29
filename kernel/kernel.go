@@ -121,6 +121,9 @@ func resetKernel() {
 	resetEvents()
 	resetTraces()
 	resetRoutes()
+	// resetNet before resetFDs: the pool holds fds, and closing them goes through the fd
+	// table, so that table must still be intact when the pool is drained.
+	resetNet()
 	resetPeers()
 	resetMeter()
 	// Token accounting goes with metering: the measurement exists to corroborate the

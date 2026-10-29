@@ -279,14 +279,19 @@ var enforcedScopedOps = map[Op]bool{
 	OpFSWrite:   true, // kv.go: FSCheckWrite consults the manifest's WritePaths
 	OpSecretUse: true, // keyring.go: secretPrefixesFor and aliasInScope per call
 	OpPeerDial:  true, // peer.go: peerEndpointAllowed consults the manifest's AllowedHosts
+	OpNetDial:   true, // net.go: NetHostAllowed consults the manifest's AllowedHosts
+	OpNetListen: true, // net.go: netListen matches the manifest's ListenAddr exactly
 }
 
-// OpNetDial and OpNetListen are scoped in manifest.go and deliberately absent here.
-// Neither has a per-call check against the declared boundary yet, so passing them
-// through the ceiling would make the manifest declaration the only thing deciding and
-// nothing would check the call against it. Same for OpSecretRead, which is scoped but
-// must stay unreachable from a module at any scope: no module sees a plaintext
-// credential, and that refusal is the point of kkeyring rather than an omission in it.
+// OpSecretRead is scoped in manifest.go and deliberately absent here: it must stay
+// unreachable from a module at any scope, because no module sees a plaintext credential
+// and that refusal is the point of kkeyring rather than an omission in it.
+//
+// OpNetDial and OpNetListen were absent for the same reason - no per-call check against
+// the declared boundary existed - and joined once net.go provided one. What makes the
+// pass-through safe there is that the check is against a declaration a reviewer signed,
+// and that it refuses when the declaration cannot be consulted: a context with no live
+// manifest gets "no declared network boundary" rather than a permit.
 
 // granted is the effective decision: the domain ceiling, then the module's own
 // declaration. The reason distinguishes "your domain lacks this", which only a

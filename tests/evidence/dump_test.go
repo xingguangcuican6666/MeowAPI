@@ -89,6 +89,7 @@ func TestDumpRendersEverySectionItDeclares(t *testing.T) {
 		"cpu accounting",
 		"channels",
 		"routes",
+		"egress",
 		"peers",
 		"slashing",
 		"shared memory",
