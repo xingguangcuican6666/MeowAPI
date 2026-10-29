@@ -44,12 +44,14 @@ import (
 // seccomp-bpf's to the syscall table - the table says which calls exist and who may make
 // them, the filter says what those calls may be pointed at.
 //
-// It is NOT Linux seccomp-bpf and does not touch the process's syscall filter. A module
-// in this kernel is Go code in the same address space, and there is no instruction it can
-// be prevented from executing; kernel/sandbox.go is the file that hardens the host
-// process, and it is a different mechanism with different limits. What this file filters
-// is the kernel's own syscall surface, which is the surface that matters for the
-// guarantees this kernel makes.
+// It is NOT Linux seccomp-bpf and does not touch the process's syscall filter. A module in
+// this kernel is Go code in the same address space, and there is no instruction it can be
+// prevented from executing: a module that calls the standard library directly is stopped by
+// nothing here, and no other file in this package changes that. What this filters is the
+// kernel's own syscall surface, which is the surface the kernel's guarantees are made over.
+// AGENT.md states the same limit in its own terms - this is a mandatory access control
+// kernel, not a sandbox - and a real instruction-level boundary needs the out-of-process
+// module tier that file defers rather than something this file could add.
 //
 // The one invariant, and the reason the design is shaped the way it is.
 //
