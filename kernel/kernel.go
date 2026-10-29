@@ -167,6 +167,9 @@ func resetKernel() {
 	// Grants and the module registry, then the handle table they reference.
 	resetGrants()
 	resetModules()
+	// resetOom after resetModules: a late sweep that started a termination would otherwise
+	// have no module table left to tear down against.
+	resetOom()
 	resetFDTables()
 
 	// Identity and evidence.

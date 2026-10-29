@@ -33,6 +33,34 @@ import (
 // readable through ProcTable, LoadedModules, UsageSnapshot and the console
 // history, so it grants no privilege. It exists so an operator can answer "what
 // is loaded, under which grants, and what has been denied" in one screen.
+// oomBytes renders a byte count for the dump, in binary units. The capacities here are ones
+// the operator set in binary units, so rendering 64MiB as 67.1MB would show a ceiling that
+// looks like something nobody configured.
+func oomBytes(b uint64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1fGiB", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1fMiB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1fKiB", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", b)
+	}
+}
+
+// oomTrunc shortens a name to fit its column, so one long module name cannot push every
+// following field out of alignment in a table an operator is reading during an incident.
+func oomTrunc(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n < 2 {
+		return s[:n]
+	}
+	return s[:n-1] + "~"
+}
+
 func Dump(w io.Writer) error {
 	if w == nil {
 		return errors.New("kernel: Dump requires a writer")
@@ -167,6 +195,45 @@ func Dump(w io.Writer) error {
 	rs := RouteStatsSnapshot()
 	b.WriteString(fmt.Sprintf("dispatches=%d misses=%d registrations-refused=%d (max %d per module)\n",
 		rs.Calls, rs.Misses, rs.Denied, rs.MaxPerModule))
+
+	b.WriteString("\n--- memory pressure ---\n")
+	// The per-source breakdown is rendered rather than a single total, because a total
+	// tells an operator that a module is large and the breakdown tells them which of three
+	// different fixes applies: accumulated state, reserved pipe capacity, or held shared
+	// segments. Only the largest few are listed; the full tally is OomTallies().
+	ost := OomStatsSnapshot()
+	pr := OomPressureSnapshot()
+	b.WriteString(fmt.Sprintf("heap=%s reserved=%s accounted=%s sweeps=%d kills=%d warns=%d no-victim=%d\n",
+		oomBytes(pr.HeapInUse), oomBytes(pr.TotalReserved), oomBytes(uint64(pr.Accounted)),
+		ost.Sweeps, ost.Kills, ost.Warns, ost.NoVictim))
+	if pr.OomHostPressureKnown() {
+		b.WriteString(fmt.Sprintf("host=%s total, %d.%02d%% reserved by this process (warn %d.%02d%%, kill %d.%02d%%)\n",
+			oomBytes(pr.HostTotal), pr.HostFraction/100, pr.HostFraction%100,
+			EffectiveOomThresholds().HostWarnBP/100, EffectiveOomThresholds().HostWarnBP%100,
+			ost.HostKillBP/100, ost.HostKillBP%100))
+	} else {
+		b.WriteString("host total: no sampler installed, so the host-pressure path is disabled and only the accounted ceilings are enforced\n")
+	}
+	b.WriteString(fmt.Sprintf("per-module accounted ceiling %s   retained=%d evicted=%d\n",
+		oomBytes(uint64(ost.MaxPerModule)), ost.Retained, ost.Evicted))
+	shown := 0
+	for _, ty := range pr.Tallies {
+		if ty.Total() == 0 && ty.Handles == 0 {
+			continue
+		}
+		if shown >= 8 {
+			b.WriteString(fmt.Sprintf("  ... %d more pid(s) accounted\n", len(pr.Tallies)-shown))
+			break
+		}
+		shown++
+		b.WriteString(fmt.Sprintf("  pid=%-4d %-20s %-18s total=%-9s state=%-9s pipes=%-9s segments=%-9s handles=%d\n",
+			ty.PID, oomTrunc(ty.Module, 20), ty.Domain, oomBytes(uint64(ty.Total())),
+			oomBytes(uint64(ty.StateBytes)), oomBytes(uint64(ty.PipeBytes)),
+			oomBytes(uint64(ty.SegmentBytes)), ty.Handles))
+	}
+	if shown == 0 {
+		b.WriteString("(no accounted memory)\n")
+	}
 
 	b.WriteString("\n--- instance filters ---\n")
 	// Per-instance argument filters, rendered with their patterns. The dump is host-side

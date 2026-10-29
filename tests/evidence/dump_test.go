@@ -109,6 +109,7 @@ func TestDumpRendersEverySectionItDeclares(t *testing.T) {
 		"cpu accounting",
 		"channels",
 		"routes",
+		"memory pressure",
 		"instance filters",
 		"egress",
 		"peers",

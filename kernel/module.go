@@ -381,6 +381,9 @@ func UnloadModule(ctx SContext, pid PID) error {
 	// An instance filter dies with its pid. Pids restart at 1 on a fresh boot, so a filter
 	// that outlived its module would end up applied to init.
 	seccompDropFor(pid)
+	// A condemnation mark outlives the teardown on purpose, so it is released here, once the
+	// process record is gone rather than when the sweep returned.
+	oomReleaseCondemned(pid)
 	// Console handles held by this pid are dropped for the same reason. No module can
 	// hold one today, because tty:open is refused to the plugin domain and init never
 	// reaches UnloadModule, so this is a backstop rather than a live path: if the

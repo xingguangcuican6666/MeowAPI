@@ -178,8 +178,18 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 		k.modules = append(k.modules, pid)
 	}
 
+	// The memory patrol starts with the boot rather than lazily on first pressure, and it
+	// starts AFTER the configured modules are loaded. Before them there is nothing to tally
+	// and a sweep would run against an empty process table; lazily, on the other hand, would
+	// mean the detector's liveness depended on a module having already asked for memory,
+	// which is the criticism watchdog.go makes of a detector that starts on first
+	// registration. resetOom stops it again on shutdown, so a restart does not leave two
+	// patrols sweeping one set of tallies.
+	oomEnsureRunning()
+
 	kconsole.Emit(LogInfo, initCtx.pid, initCtx.dom, "boot complete", map[string]any{
-		"modules": len(k.modules),
+		"modules":    len(k.modules),
+		"oom_patrol": "running",
 	})
 	return k, nil
 }
