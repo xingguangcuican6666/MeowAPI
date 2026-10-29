@@ -1359,6 +1359,114 @@ func TestPeerAnnouncementRefusesASequenceRewind(t *testing.T) {
 	assert.True(t, saw, "a rewind is an escalation, not a peer fact")
 }
 
+// TestPeerFieldValidationRefusesForgedLines pins the log-forgery filters on the three
+// fields that reach audit lines and console output verbatim.
+//
+// These are the controls that stop a peer from writing a second log line inside one
+// record, and they had no test: mutation-testing this suite showed that deleting
+// peerLabel's line-break check and peerMethodField's rune filter entirely left every
+// existing test green. A filter nobody asserts on is a filter that can be removed by
+// accident, so each one is driven through the public entry point that validates it.
+//
+// The three are deliberately not the same rule, and the test pins the difference rather
+// than flattening it. A node id and an endpoint are identifiers: they index the mesh
+// table, appear in avc-shaped fault lines, and are compared for equality by peers, so
+// they get the strict filter. A label is prose an operator typed - "peer one", "us-east
+// fallback" - and refusing a space in it would make the field useless for its only
+// purpose, so it is bounded and line-break-free only. An inbound method is chosen by a
+// remote peer, not by an operator, so it gets the identifier filter even though it is
+// only a label in the record.
+func TestPeerFieldValidationRefusesForgedLines(t *testing.T) {
+	harness.QuietConsole(t)
+	k, selfID, peerPriv := meshBoot(t)
+	require.NoError(t, k.PeerSetTransport(&fakeTransport{}))
+
+	// --- the label: an operator's prose field. A space is fine, a newline is not. ---
+	// The accepted case needs a transport that answers the handshake, because the dial
+	// has to complete for the label to be observable on the session. The refused cases
+	// below need none: validation runs before the transport is consulted, which is
+	// itself worth knowing - a malformed label never reaches the host.
+	const labelEndpoint = "label.example"
+	require.NoError(t, k.PeerSetTransport(&fakeTransport{
+		handshake: func(req kernel.PeerHandshake) (kernel.PeerHandshake, error) {
+			return signPeerHandshake(t, peerPriv, peerNodeName("mesh-label"),
+				labelEndpoint, req.Initiator, req.NonceA), nil
+		},
+	}))
+	okSess, err := k.PeerDial(kernel.PeerDialSpec{
+		Endpoint: labelEndpoint, Label: "us-east fallback, primary",
+	})
+	require.NoError(t, err, "a label with spaces and punctuation must be accepted")
+	assert.Equal(t, "us-east fallback, primary", okSess.Label)
+
+	for _, tc := range []struct{ name, label string }{
+		{"newline", "peer\nINJECTED fault line"},
+		{"carriage return", "peer\rINJECTED"},
+		{"over the ceiling", strings.Repeat("x", 129)},
+	} {
+		t.Run("label "+tc.name, func(t *testing.T) {
+			_, err := k.PeerDial(kernel.PeerDialSpec{Endpoint: "label.example", Label: tc.label})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "peer label")
+			assert.False(t, kernel.IsDenied(err),
+				"a shape refusal is not a policy denial: %v", err)
+		})
+	}
+
+	// From here on nothing may reach the host: every case below is a shape refusal, and
+	// a non-answering transport is what proves it. A validation that ran after the
+	// transport lookup would still refuse, but it would refuse too late.
+	ft := &fakeTransport{}
+	require.NoError(t, k.PeerSetTransport(ft))
+
+	// --- the endpoint and the node id: identifiers, strict filter. ---
+	for _, tc := range []struct{ name, endpoint string }{
+		{"empty", ""},
+		{"newline", "peer.example\nINJECTED"},
+		{"tab", "peer\texample"},
+		{"non-ascii", "peer-\u00e9xample.example"},
+		{"over the ceiling", strings.Repeat("e", 257)},
+	} {
+		t.Run("endpoint "+tc.name, func(t *testing.T) {
+			_, err := k.PeerDial(kernel.PeerDialSpec{Endpoint: tc.endpoint})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "peer endpoint")
+		})
+	}
+
+	// --- the inbound method: remote-controlled, so the identifier filter applies. ---
+	// Driven through the real inbound path: the test plays the remote node and signs an
+	// envelope carrying the method, so the filter is exercised where it actually runs.
+	for _, tc := range []struct{ name, method string }{
+		{"newline", "POST\nINJECTED audit line"},
+		{"carriage return", "POST\rINJECTED"},
+		{"tab", "PO\tST"},
+		{"non-ascii", "P\u00d6ST"},
+		{"over the ceiling", strings.Repeat("M", 129)},
+	} {
+		t.Run("method "+tc.name, func(t *testing.T) {
+			before := countAudit(t, kernel.AuditPeer, "peer forward refused")
+			frame := signPeerForward(t, peerPriv, selfID, "/mesh/x", tc.method, "", []byte("body"))
+			_, err := k.PeerDeliver("remote-node", frame)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "forward method",
+				"the refusal must name the field that failed, not a generic shape error")
+			assert.Greater(t, countAudit(t, kernel.AuditPeer, "peer forward refused"), before,
+				"a refused inbound frame must be recorded")
+		})
+	}
+
+	assert.Zero(t, ft.callCount(),
+		"a shape refusal must never reach the host transport")
+
+	// An empty method is accepted: it means the peer named no verb, and the record says
+	// so rather than inventing one. What is refused is a method that could forge a line.
+	frame := signPeerForward(t, peerPriv, selfID, "/mesh/x", "", "", []byte("body"))
+	_, err = k.PeerDeliver("remote-node", frame)
+	assert.NotContains(t, fmt.Sprint(err), "forward method",
+		"an empty method is not a shape violation: %v", err)
+}
+
 // TestPeerAnnounceEpochDistinguishesARestartFromAReplay pins the reason the epoch field
 // exists. A bare sequence check cannot tell an honest peer that restarted and began
 // numbering from 1 again from a captured announcement being replayed, and it would refuse

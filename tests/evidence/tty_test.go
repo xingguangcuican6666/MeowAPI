@@ -351,9 +351,25 @@ func TestConsoleCredentialRefusalIsNotABruteForceOracle(t *testing.T) {
 	}
 	var messages []string
 	for _, c := range candidates {
-		_, err := kernel.TTYProcessTable(k.InitContext(), fd, append([]byte(nil), c...))
+		presented := append([]byte(nil), c...)
+		_, err := kernel.TTYProcessTable(k.InitContext(), fd, presented)
 		require.Error(t, err)
 		messages = append(messages, err.Error())
+
+		// Ownership of the bytes transferred when they crossed the syscall boundary, so
+		// the kernel wipes them on the refusal path as well as the success path. A
+		// candidate left intact in the caller's heap is a credential-shaped secret that
+		// survives the call it was rejected by, which is the same hazard keyring.go
+		// wipes for. This assertion is the only thing that catches removing the wipe
+		// from the refusal path: nothing about the returned error changes.
+		// Elementwise rather than assert.Equal against a fresh zero slice, because a
+		// nil candidate and an empty one are both "no bytes" and must not be compared
+		// by slice identity: wipe zeroes in place and does not truncate, so the
+		// property is that the length is unchanged and every byte is zero.
+		assert.Len(t, presented, len(c), "wiping must not truncate the caller's slice")
+		for i, b := range presented {
+			assert.Zero(t, b, "byte %d of a refused candidate was not wiped", i)
+		}
 	}
 
 	for i, m := range messages {
@@ -364,6 +380,23 @@ func TestConsoleCredentialRefusalIsNotABruteForceOracle(t *testing.T) {
 	assert.Equal(t, int64(len(candidates)), after.Refused-before.Refused,
 		"refusals are counted in aggregate, so an operator sees the attempt")
 	assert.Equal(t, before.Issued, after.Issued, "and no candidate was accepted")
+
+	// Two properties of this gate are deliberately NOT asserted here, because no
+	// functional test can observe them and a green suite must not read as covering them:
+	//
+	//   - That the comparison is constant-time. Replacing
+	//     constantTimeEqualBytes with `string(working) == string(credential)` produces
+	//     identical results for every input, so it differs only in timing, which is not
+	//     reliably measurable in a test suite. The property is held by reusing
+	//     keyring's helper rather than by a test, and mutation testing confirms that
+	//     swapping it out stays green. Reviewing that this call site still uses that
+	//     helper is the control.
+	//   - That a late install cannot land in the next boot. The generation counter
+	//     closes a window in which a host call that already passed its shutdown check
+	//     is in flight while Shutdown runs resetKernel. Reaching it needs the two to
+	//     interleave at the instruction level, and a test that forced it would be
+	//     asserting on a race it had to create. TestTTYInstallAfterShutdownIsRefused
+	//     covers the shutdown-flag path, which is the one an operator can actually hit.
 }
 
 // TestConsoleCredentialInstallValidatesItsInput pins that the installer refuses a
@@ -681,12 +714,23 @@ func TestTTYWriteAddsNoFaultBypass(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, kernel.ErrTTYLimit), "want ErrTTYLimit, got %v", err)
 
-	// The fault-level reservation is enforced through this path too, which is the part
-	// that cannot be asserted from a module: a plugin cannot open a console handle at
-	// all, so the reservation is proven by the domain rule below rather than by driving
-	// it.
-	assert.True(t, kernel.Allowed(kernel.DomainPlugin, kernel.OpLogWrite))
-	assert.False(t, kernel.Allowed(kernel.DomainPlugin, kernel.OpTTYOpen))
+	// The fault-level reservation is reproduced on this path, and that reproduction is
+	// NOT reachable by any test today. It is defence in depth behind the tty:open gate
+	// rather than a live control, and the domain facts below are what make that so:
+	// the plugin domain holds log:write but not tty:open, so a module can never hold a
+	// console handle to write through, and the only domains that can are kernel and
+	// init - both of which legitimately hold the fault level through SyscallLog.
+	//
+	// That is stated rather than left implicit because mutation testing confirms it:
+	// replacing the reservation with `if false` leaves this whole suite green. The
+	// assertion worth having is therefore the one on the gate that makes the branch
+	// unreachable, so that widening tty:open without noticing this branch becomes a
+	// visible test failure rather than a silent hole.
+	assert.True(t, kernel.Allowed(kernel.DomainPlugin, kernel.OpLogWrite),
+		"a plugin may write to the console through log:write")
+	assert.False(t, kernel.Allowed(kernel.DomainPlugin, kernel.OpTTYOpen),
+		"and may not hold a console handle, which is what keeps the fault-level "+
+			"reservation on this path unreachable")
 }
 
 // TestTTYWriteRidesLogWriteNotTTYOpen pins the op assignment. Writing to the console is
