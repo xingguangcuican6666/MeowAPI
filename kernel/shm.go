@@ -1,5 +1,5 @@
 /*
-Copyright (C) 2023-2026 xingguangcuican6666
+Copyright (C) 2026 xingguangcuican6666
 
 This file is part of MeowAPI, which is licensed under the GNU Affero General
 Public License v3.0.

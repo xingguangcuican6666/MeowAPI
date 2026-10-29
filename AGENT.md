@@ -78,6 +78,7 @@ kernel/                      EL1 trust root. No business logic, standard library
   panic.go                   kpanic: crash dump and ledger flush on the way out
   tokenizer.go               ktokenizer: deterministic token measurement and usage checks
   net.go                     knet: the controlled outbound stack, resolve-then-validate
+  seccomp.go                 kseccomp: per-instance argument filters, narrowing only
   console.go                 kernel console, retention, the canonical fault emitter
   dump.go                    read-only kernel state rendering
 tests/                       external test suites, one package per architectural layer
@@ -95,6 +96,7 @@ tests/                       external test suites, one package per architectural
   kpanic/                    kpanic flush ordering, containment, the subprocess paths
   tokenizer/                 ktokenizer determinism, the floor, verdict edges
   egress/                    knet address ranges, the declaration, pooling, reclamation
+  seccomp/                   kseccomp narrowing, the three refusal kinds, wiring
   security/                  the mandatory invariants every change must keep green
 internal/auditfile/          the durable audit sink: JSON Lines, per-boot segments
 plugins/                     one directory per module. Each is independently buildable.
@@ -147,6 +149,7 @@ policy operation that gates it, in the same change.
 | `kernel/tty.go` | ktty | the operator console: credential-gated load, unload and process inspection | `console.java` |
 | `kernel/tokenizer.go` | ktokenizer | deterministic token measurement, and the comparison of a reported usage against it | none |
 | `kernel/net.go` | knet | controlled egress: allowlisted, address-validated, pooled, reclaimed | none |
+| `kernel/seccomp.go` | kseccomp | per-instance argument filters, attachable after load, narrowing only | none |
 | `kernel/fs.go` | kfs | the fs syscall surface over kv.go's resolver; host-set, sealed data roots | none |
 | `kernel/panic.go` | kpanic | the exit flush: unsettled metering, the audit tail, the console | none |
 | `kernel/clock.go` | kclock | the monotonic time authority: no rewind, no setter | none |
@@ -193,6 +196,7 @@ is broken even when every test passes.
 | kpanic | Unsettled metering is closed as abandoned and the audit tail is persisted before the process ends, so a crash cannot erase a bill or leave a hash chain whose missing tail is indistinguishable from a truncated one. The cause is on the chain before any notifier runs, so a flush that dies partway still leaves the reason behind. A notifier that panics or hangs does not stop the ones after it, and its failure is recorded rather than swallowed. The record says what was lost as well as what was saved: a sink with no flush is reported as not durable rather than assumed to be, because a write in an OS buffer does not survive a machine crash. A second concurrent flush returns immediately rather than queueing behind one that may be hung. There is no syscall surface, and that is the control: a module able to trigger a kernel crash dump would be able to erase evidence. |
 | ktokenizer | A reported usage quantity is compared against a measurement of the bytes the kernel itself saw, and the two are recorded side by side rather than one replacing the other, because the discrepancy is the signal and erasing either half destroys it. The measurement is deterministic - integer arithmetic over character classes, no float, no map order - so it can be compared against a receipt signed on another node. It is an estimate, never an exact count, and nothing in it claims otherwise: the kernel cannot know a provider's real vocabulary and shipping one is a multi-megabyte data file this project does not have. The floor is the sharper instrument, and it is conditional: a count of pre-tokenizer runs is a proven minimum only for tokenizers whose pre-tokenizer does not merge across whitespace or a class change, which is the GPT-2 family every major provider uses but not every model that exists, so the deployment chooses whether below-floor is impossible or merely suspicious. There is no syscall to change that choice, because a module that could loosen the check applied to its own reports would. |
 | knet | Hostname matching is not SSRF protection, so this stack resolves first, validates EVERY address the name returned, and then dials an address it has already validated - with a second check inside the dialer's Control hook on the socket address the kernel is actually about to use. The Control check is what closes the rebinding window rather than merely narrowing it, and validating every address rather than the first permitted one is what stops the outcome depending on resolver ordering, which whoever runs the authoritative server controls. Loopback, link-local, the unspecified address, multicast and private ranges are refused, and the cloud metadata address is checked ahead of the range that contains it so the refusal names what was actually attempted. A host opt-in can permit specific private CIDRs, because operators do run internal providers, and it cannot permit loopback, link-local, the metadata address or any range wider than a /8. The declaration is exact: an empty `allowed_hosts` will not load, an address literal is not a hostname, and a listener must bind the declared string rather than a port-compatible variant of it. A socket is gated on the operation that created it, so a listener-only module can close what it accepted without declaring egress. |
+| kseccomp | policy.go decides which operations a domain may perform and manifest.go decides a scoped operation's outer boundary, but both are settled before the process exists and apply to every instance alike. This subsystem is the third layer: per pid, attachable after load, deciding which arguments one running instance may pass. The invariant is that a filter can only narrow, and it is held structurally rather than by convention - install intersects every rule against the pid's own declaration and stores only the intersection, so a pattern outside the declaration is recorded, escalated, and never consulted again. The check path has no access to it, which means there is no branch a future maintainer could add that would make a filter additive. The layer order at every call site is ceiling, scope, filter, and reversing it would let a filter's answer stand in for a declaration that was never checked. Refusals are three distinct kinds and stay distinct: a filter refusal is not a policy denial, because the module does hold the operation and what it lacks is this argument. A module may learn that it is filtered and nothing more; the contents are host-side only, since a module that could read its filter would know exactly what it is restricted from. |
 | kmeter | The kernel records that a request was served and what it consumed. It never prices it: there is no unit price, ratio, discount or multiplier field, and the absence is the control. Facts pass the same closed kind set and per-event ceiling as usage.go, so nothing that bypassed validation on the way in can become an unbounded multiplier on the way out. |
 | usage | The kind set is closed and an unknown kind is refused rather than accumulated under a default branch. That is the specific hole the upstream project left open. |
 
@@ -850,9 +854,17 @@ build pass.
 These are current defects or deliberate facts, recorded so an agent does not
 mistake them for intent:
 
-- `LICENSE` currently contains the Apache License 2.0 text. The project license
-  is AGPLv3. Replace it before any release or public distribution. Until it is
-  replaced, do not describe the project as Apache-licensed.
+- `LICENSE` is the GNU AGPLv3, byte-identical to the canonical text at
+  `https://www.gnu.org/licenses/agpl-3.0.txt`. It replaced an Apache-2.0 file that
+  contradicted every source header in the tree. Do not reword it: a license file
+  that differs from the canonical text in even one line break is a file a lawyer has
+  to read to find out whether it still says what it appears to say. Verify with
+  `curl -sS https://www.gnu.org/licenses/agpl-3.0.txt | diff - LICENSE`.
+- Source headers claim `Copyright (C) 2026 xingguangcuican6666` and AGPLv3. The year
+  matches the repository's own history rather than spanning years this work did not
+  exist in. `stage/` is the exception and keeps the `2023-2026` range it was carried
+  over with, because those headers came with the files from the archived fork and
+  naming the upstream project is an attribution fact rather than a formatting one.
 - `stage/` holds 144 files recovered from the archived fork. They import
   `github.com/QuantumNous/new-api/...` and are reference material only. Their
   own `stage/go.mod` prunes them from the root module's `./...` patterns, so
