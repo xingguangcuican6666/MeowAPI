@@ -238,6 +238,14 @@ func RouteRegister(ctx SContext, path string, h RouteHandler) error {
 		kroutes.refuse(c, "route not declared in the manifest", map[string]any{"path": norm})
 		return fmt.Errorf("%w: %q", ErrRouteDenied, norm)
 	}
+	// The instance filter is consulted on the NORMALIZED path, the same string the
+	// declaration was compared against. Filtering the raw path would let a spelling
+	// difference decide the answer, which is the same reason the declaration check runs
+	// after normalization.
+	if err := SeccompAllow(c, OpRouteRegister, norm); err != nil {
+		kroutes.refuse(c, "route outside the instance filter", map[string]any{"path": norm})
+		return err
+	}
 
 	kroutes.mu.Lock()
 	if len(kroutes.byPid[c.pid]) >= maxRoutesPerModule {

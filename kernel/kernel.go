@@ -151,6 +151,9 @@ func resetKernel() {
 	// last boot's numbers. The strictness setting is deployment configuration and
 	// survives, for the reason resetTokenizer gives.
 	resetTokenizer()
+	// Instance filters die with their pids, and pids restart at 1 on a fresh boot, so a
+	// stale filter would land on init.
+	resetSeccomp()
 
 	// Crypto caches hold parsed key material, so they go with the secrets.
 	resetCrypto()

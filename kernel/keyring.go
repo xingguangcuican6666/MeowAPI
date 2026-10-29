@@ -760,6 +760,21 @@ func SecretUse(ctx SContext, alias string, action SecretAction, data []byte) (Se
 		refuseSecretScope(c, alias, string(action))
 		return SecretResult{}, errSecretNotVisible
 	}
+	// The instance filter runs after the scope check, and a refusal here is folded into
+	// the SAME message rather than returned as ErrSeccompRefused.
+	//
+	// That folding is not cosmetic. Everywhere else in this kernel a filter refusal can
+	// be distinguished from a scope refusal without leaking anything new, because the
+	// manifest is the module author's own document: comparing what they declared against
+	// what they observe tells them the filter's effect, and no runtime narrowing can hide
+	// its own effect. Secret aliases are different. The alias inventory belongs to the
+	// deployment, not to the manifest, so a distinct refusal here would answer a question
+	// the module could not otherwise answer - "does this alias exist and is it filtered?"
+	// - which is exactly the oracle the shared message above exists to close.
+	if err := SeccompAllow(c, OpSecretUse, alias); err != nil {
+		refuseSecretScope(c, alias, string(action))
+		return SecretResult{}, errSecretNotVisible
+	}
 
 	kkeyring.mu.Lock()
 	e := kkeyring.byAlias[alias]

@@ -1116,6 +1116,13 @@ func PeerDial(ctx SContext, spec PeerDialSpec) (PeerSession, error) {
 	if err := peerEndpointAllowed(c, spec.Endpoint); err != nil {
 		return PeerSession{}, err
 	}
+	// The instance filter narrows the endpoint's HOST, which is the part the declaration
+	// is expressed in, rather than the whole endpoint string. Filtering the endpoint would
+	// make a filter's pattern depend on the transport's spelling of ports and schemes, and
+	// the same narrowing written for one transport would silently not apply under another.
+	if err := SeccompAllow(c, OpPeerDial, peerHostOf(spec.Endpoint)); err != nil {
+		return PeerSession{}, err
+	}
 	return peerDial(c, spec)
 }
 

@@ -131,11 +131,17 @@ func (c *sContext) SyscallMetadataGet(key string) (any, error) {
 	if err := c.syscall(OpMetadataRead); err != nil {
 		return nil, err
 	}
+	if err := SeccompAllow(c, OpMetadataRead, key); err != nil {
+		return nil, err
+	}
 	return kmeta.read(c, key)
 }
 
 func (c *sContext) SyscallMetadataSet(key string, value any) error {
 	if err := c.syscall(OpMetadataWrite); err != nil {
+		return err
+	}
+	if err := SeccompAllow(c, OpMetadataWrite, key); err != nil {
 		return err
 	}
 	return kmeta.write(c, key, value)

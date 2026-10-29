@@ -168,6 +168,40 @@ func Dump(w io.Writer) error {
 	b.WriteString(fmt.Sprintf("dispatches=%d misses=%d registrations-refused=%d (max %d per module)\n",
 		rs.Calls, rs.Misses, rs.Denied, rs.MaxPerModule))
 
+	b.WriteString("\n--- instance filters ---\n")
+	// Per-instance argument filters, rendered with their patterns. The dump is host-side
+	// and no module can read it, which is what makes showing the contents safe here and
+	// unsafe through a module-readable surface: a module that could read its filter would
+	// know exactly what it is restricted from.
+	scf := SeccompStatsSnapshot()
+	b.WriteString(fmt.Sprintf("filtered=%d installs=%d removals=%d refused=%d exceeded=%d history=%d evicted=%d (max %d rules per filter)\n",
+		scf.Filtered, scf.Installs, scf.Removals, scf.Refused, scf.Exceeded,
+		scf.History, scf.Evicted, scf.MaxRules))
+	for _, p := range ProcTable() {
+		if !SeccompFiltered(p.PID) {
+			continue
+		}
+		snap, err := SeccompSnapshotFor(nil, p.PID)
+		if err != nil {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("  pid=%-4d %-20s label=%q refused=%d budget-hits=%d\n",
+			snap.PID, snap.Module, snap.Label, snap.Refused, snap.BudgetHits))
+		for _, r := range snap.Rules {
+			b.WriteString(fmt.Sprintf("      %-18s %-7s %v", r.Op, r.Kind, r.Patterns))
+			if r.Budget > 0 {
+				b.WriteString(fmt.Sprintf(" budget=%d used=%d", r.Budget, r.Used))
+			}
+			b.WriteString("\n")
+		}
+		for _, e := range snap.Exceeded {
+			b.WriteString(fmt.Sprintf("      EXCEEDED %s %q: %s\n", e.Op, e.Pattern, e.Reason))
+		}
+	}
+	if scf.Filtered == 0 {
+		b.WriteString("(no instance filter installed)\n")
+	}
+
 	b.WriteString("\n--- egress ---\n")
 	// Reachability, beside the mesh section that also describes it. The address a dial
 	// actually reached is rendered rather than only the hostname, because a name resolving

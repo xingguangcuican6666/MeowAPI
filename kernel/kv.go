@@ -163,6 +163,13 @@ func KVPut(ctx SContext, key string, value []byte) error {
 	if err := kvValidKey(key); err != nil {
 		return err
 	}
+	// The filter decides which well-formed keys this instance may use, so it runs after
+	// the shape check. Filtering first would put a filter refusal on the audit chain for a
+	// key that was going to be rejected as malformed anyway, and a misleading entry is
+	// worse than no entry.
+	if err := SeccompAllow(c, OpKVWrite, key); err != nil {
+		return err
+	}
 
 	cost := kvCost(key, value)
 	limit := Limits().MaxKVBytesPerModule
@@ -198,6 +205,9 @@ func KVGet(ctx SContext, key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := SeccompAllow(c, OpKVRead, key); err != nil {
+		return nil, err
+	}
 
 	kvfs.mu.RLock()
 	defer kvfs.mu.RUnlock()
@@ -217,6 +227,13 @@ func KVGet(ctx SContext, key string) ([]byte, error) {
 func KVDelete(ctx SContext, key string) error {
 	c, err := kvfsContext(ctx, OpKVWrite)
 	if err != nil {
+		return err
+	}
+	// The filter is consulted on the key as given. KVDelete does not re-validate the key's
+	// shape, and did not before this change: a malformed key can never have been stored, so
+	// it resolves to not-found on its own, and adding a validation here would change the
+	// error a caller sees for a reason this work has nothing to do with.
+	if err := SeccompAllow(c, OpKVWrite, key); err != nil {
 		return err
 	}
 
@@ -605,6 +622,12 @@ func FSCheckRead(ctx SContext, root, rel string) (string, error) {
 	if !FSPathAllowed(path.Clean(filepath.ToSlash(rel)), readPathsFor(c.pid)) {
 		return "", fsScopeRefused(c, OpFSRead, rel)
 	}
+	// The instance filter is consulted AFTER the manifest scope, never before, because
+	// the three layers are ceiling, scope, filter and a filter that answered first would
+	// stand in for a grant the module does not have. seccomp.go gives the full ordering.
+	if err := SeccompAllow(c, OpFSRead, rel); err != nil {
+		return "", err
+	}
 	return abs, nil
 }
 
@@ -624,6 +647,10 @@ func FSCheckWrite(ctx SContext, root, rel string) (string, error) {
 	}
 	if !FSPathAllowed(path.Clean(filepath.ToSlash(rel)), writePathsFor(c.pid)) {
 		return "", fsScopeRefused(c, OpFSWrite, rel)
+	}
+	// Instance filter, after the scope check. See FSCheckRead for the ordering.
+	if err := SeccompAllow(c, OpFSWrite, rel); err != nil {
+		return "", err
 	}
 	return abs, nil
 }

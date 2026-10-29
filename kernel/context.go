@@ -115,6 +115,7 @@ type SContext interface {
 	SyscallPeer
 	SyscallRequest
 	SyscallTokenizer
+	SyscallSeccomp
 	SyscallSlashing
 	SyscallTTY
 

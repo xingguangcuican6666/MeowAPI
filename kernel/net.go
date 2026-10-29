@@ -564,6 +564,15 @@ func netDial(c *sContext, spec NetSpec) (NetDialResult, error) {
 			&DeniedError{Op: OpNetDial, Ctx: c, Reason: err.Error()})
 	}
 
+	// The instance filter runs AFTER the manifest boundary, never before. The layers are
+	// ceiling, scope, filter, and a filter consulted first would have its answer stand in
+	// for a declaration that was never checked - which is the widening the filter exists to
+	// be unable to do. See seccomp.go for the ordering rule.
+	if err := SeccompAllow(c, OpNetDial, spec.Host); err != nil {
+		netRefuse(c, spec.Host, "", "refused: outside the instance filter")
+		return NetDialResult{}, err
+	}
+
 	// Pooled connections are returned before resolution, because a socket already open to
 	// a validated address needs no second decision. The pool is keyed on the resolved
 	// address rather than the name, so a name that starts resolving somewhere else does
