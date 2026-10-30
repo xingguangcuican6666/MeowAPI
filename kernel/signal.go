@@ -298,6 +298,12 @@ func SignalSend(ctx SContext, target PID, kind SignalKind) error {
 	kaudit.record(AuditPolicy, c, "signal sent", map[string]any{
 		"target": target, "kind": string(kind),
 	})
+	// Posted after the enqueue and after the audit record, both for the same reason the
+	// record is written after the enqueue: this is a fact about something that happened, and
+	// a subscriber that woke before the queue held the signal would see an event whose
+	// subject is not yet true. Targeted at the pid the signal went to, because waking every
+	// subscriber in the kernel to report one module's reload is noise.
+	postEventToPid(EventSignalDelivered, target, c.pid, string(kind))
 	return nil
 }
 
@@ -533,6 +539,20 @@ func (s *signalState) dispatch(info SignalInfo) {
 			"target": pid, "kind": string(info.Kind), "from": info.From,
 		})
 		return
+	}
+
+	// Posted here rather than beside markDraining above, and the ordering is the point. The
+	// wind-down flag is set before this function knows whether the target still exists, so
+	// posting there fired "this pid entered drain" for a pid that was already gone - in the
+	// same dispatch whose audit record says the signal was dropped because the target is not
+	// running. An event and an audit line contradicting each other about one dispatch is worse
+	// than either alone, because the event is the one a module acts on.
+	//
+	// Above both delivery branches rather than inside them, so a subscriber hears about the
+	// drain whether the module has a handler for it or is about to be terminated for not
+	// having one, and hears about it BEFORE the termination rather than after.
+	if info.Kind == SignalDrain {
+		postEventToPid(EventDraining, pid, pid, string(info.Kind))
 	}
 
 	if handler != nil && ctx != nil {

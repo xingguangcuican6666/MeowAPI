@@ -327,6 +327,12 @@ func (k *Kernel) Publish(key string, value any) error {
 	// a credential, and the audit trail is readable by anything holding
 	// audit:read.
 	kaudit.record(AuditPolicy, k.initCtx, "published kernel metadata", map[string]any{"key": key})
+	// Broadcast rather than targeted, and posted after the value is readable: a subscriber
+	// woken by this event is meant to go and read the new configuration, so the event has to
+	// arrive after the read would succeed. The key rides in the detail, which is
+	// kernel-chosen text and is length-bounded by events.go, so a caller-supplied key cannot
+	// use the event path to carry a payload of its own.
+	postEvent(EventConfigReloaded, 0, key)
 	return nil
 }
 

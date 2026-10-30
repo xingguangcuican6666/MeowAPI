@@ -254,6 +254,19 @@ type eventBus struct {
 	// posts is atomic because it is incremented under the read lock: two posters
 	// run concurrently by design, and a plain counter under RLock is a race.
 	posts atomic.Int64
+	// subCount mirrors len(subs) flattened, maintained under mu by add, drop, dropAll and
+	// reset, and read WITHOUT mu by postEvent. A post that reads zero while a subscribe is in
+	// flight is dropped, which is the same ordering the locked path has always had - a post
+	// that arrives before the subscription exists was never delivered to it - and it is why a
+	// module subscribes before starting the work whose completion it wants to hear about. It exists because posting is now on a hot
+	// path: sched.finish posts job.finished for every supervised run that reaches a terminal
+	// state, and a kernel that nobody has subscribed to events in is the common case. Taking
+	// this bus's lock - which every subscription and every other poster contends on - to
+	// discover there is nothing to notify turns an idle feature into a global
+	// synchronization point. An approximate read is safe here in both directions: a stale
+	// zero means one event is dropped that nobody was listening for, and a stale nonzero
+	// means the locked path runs and finds nothing.
+	subCount atomic.Int64
 }
 
 var kevents = &eventBus{subs: map[PID][]*subscription{}}
@@ -266,6 +279,7 @@ func (b *eventBus) add(pid PID, s *subscription) error {
 			pid, maxSubscriptionsPerModule)
 	}
 	b.subs[pid] = append(b.subs[pid], s)
+	b.subCount.Add(1)
 	return nil
 }
 
@@ -279,6 +293,9 @@ func (b *eventBus) drop(pid PID, s *subscription) {
 			out = append(out, x)
 		}
 	}
+	// Counted from what was actually removed rather than decremented by one, so a double drop
+	// cannot drive the mirror negative and make the fast path above permanently wrong.
+	b.subCount.Add(int64(len(out) - len(list)))
 	if len(out) == 0 {
 		delete(b.subs, pid)
 	} else {
@@ -291,6 +308,7 @@ func (b *eventBus) dropAll(pid PID) {
 	b.mu.Lock()
 	subs := b.subs[pid]
 	delete(b.subs, pid)
+	b.subCount.Add(-int64(len(subs)))
 	b.mu.Unlock()
 
 	for _, s := range subs {
@@ -313,6 +331,19 @@ func (b *eventBus) dropAll(pid PID) {
 // bootconfig.go gives for nodeSigningKey: where a package-level function would be an oracle,
 // the capability moves onto a handle only the host holds.
 func postEvent(name KernelEventName, subject PID, detail string) {
+	// Read before validating the name, because the common case in a deployment that has not
+	// subscribed to anything is "nothing to notify" and the name is a compile-time constant at
+	// every call site this kernel makes. An undefined name still faults: the check below is
+	// reached whenever there is a subscriber, and a kernel that faults on its own typo is
+	// better than one that silently drops an event nobody happened to be listening for.
+	if kevents.subCount.Load() == 0 && kernelEventNames[name] {
+		// Counted even though nothing is notified, because Posts has always meant every post
+		// the kernel made and an operator reading the dump asks whether facts are being
+		// published at all. Skipping the increment here would make the field mean "posts that
+		// reached the delivery path", which is a different number wearing the same name.
+		kevents.posts.Add(1)
+		return
+	}
 	if !kernelEventNames[name] {
 		// An unknown name is a defect in the kernel, not in a module, so it is a
 		// fault rather than a quiet no-op: a subsystem that posts a name nobody
@@ -345,6 +376,10 @@ func postEvent(name KernelEventName, subject PID, detail string) {
 // event is about one module and waking every subscriber would be noise. Unexported for the
 // reason postEvent is.
 func postEventToPid(name KernelEventName, pid PID, subject PID, detail string) {
+	if kevents.subCount.Load() == 0 && kernelEventNames[name] {
+		kevents.posts.Add(1)
+		return
+	}
 	if !kernelEventNames[name] {
 		fault(nil, "post of an undefined kernel event name", map[string]any{
 			"name": string(name),
@@ -553,6 +588,7 @@ func resetEvents() {
 	}
 	kevents.subs = map[PID][]*subscription{}
 	kevents.posts.Store(0)
+	kevents.subCount.Store(0)
 	kevents.mu.Unlock()
 
 	for _, s := range subs {

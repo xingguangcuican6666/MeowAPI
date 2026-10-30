@@ -820,6 +820,24 @@ func (r *schedRun) finish(state SchedState, detail, stack string) {
 			"run": id, "kind": kind, "label": label, "state": string(state), "detail": detail,
 		})
 	}
+
+	// Posted here rather than by the worker that ran the module's function, because finish is
+	// the one place that knows the terminal state, and it is reached by four different paths -
+	// the worker returning, a cancellation, a handle close, a watchdog sweep. Posting at any of
+	// those call sites would report the fact for some endings and not others.
+	//
+	// Both events are posted after settled is swapped and after r.mu is released, so a
+	// subscriber woken by the event cannot re-enter finish, and no lock is held while
+	// events.go takes its own.
+	//
+	// A timed-out run posts BOTH names, and that is not duplication: job.finished says a run
+	// reached a terminal state, deadline.passed says the deadline expired unmet. A subscriber
+	// waiting only on the second gets the fact it asked for and not the four other terminal
+	// states it did not.
+	if state == SchedTimedOut {
+		postEventToPid(EventDeadlinePassed, pid, pid, label)
+	}
+	postEventToPid(EventJobFinished, pid, pid, string(state))
 }
 
 // snapshot copies the outcome under the lock.
