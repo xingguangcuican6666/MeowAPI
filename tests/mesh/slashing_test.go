@@ -729,11 +729,63 @@ func TestSlashLedgerTrimsInOneStep(t *testing.T) {
 	stats := kernel.SlashStatsSnapshot()
 	assert.Greater(t, stats.RecordEvicted, baseEvicted, "the trim must be counted, not silent")
 	assert.LessOrEqual(t, len(kernel.SlashLedger()), bound)
-	// A one-record-per-insert trim would leave evicted at exactly the overflow. A batch
-	// trim evicts at least a full batch at once, which is the observable difference
-	// between the two implementations.
 	assert.GreaterOrEqual(t, stats.RecordEvicted-baseEvicted, int64(batch),
 		"eviction must happen in batches of seven eighths, not one record at a time")
+}
+
+// TestSlashTrimBeginsOnlyPastTheBound pins the one observation that actually separates a
+// batch trim from a per-insert trim, because the two are otherwise indistinguishable.
+//
+// They are indistinguishable at the endpoints: both leave the ledger at the keep mark
+// (3584) and both report the same total RecordEvicted (513). The totals coincide because a
+// per-insert trim starting at the keep mark evicts exactly one record for each of the 513
+// inserts that carry the ledger from keep+1 to bound+1. So a test that only measures the
+// final length and the final eviction count passes under BOTH implementations, and the
+// property "the ledger is trimmed in one step rather than continuously" is asserted in the
+// test name and never actually observed.
+//
+// What separates them is the length at which eviction BEGINS. At exactly the bound, a
+// batch trim has evicted nothing yet, while a per-insert trim has already evicted a full
+// batch. This test observes that midpoint.
+func TestSlashTrimBeginsOnlyPastTheBound(t *testing.T) {
+	harness.QuietConsole(t)
+	accused := newSlashPeer(t, slashSeq.next("slash-peer"))
+	k := slashBoot(t, slashSeq.next("slash-self"), accused)
+	mod := slashReporter(t, k)
+
+	const bound = 4096 // maxSlashRecords
+	const batch = bound / 8
+
+	baseEvicted := kernel.SlashStatsSnapshot().RecordEvicted
+	base := len(kernel.SlashLedger())
+
+	var atBound int
+	for i := range bound - base + 1 {
+		id, err := kernel.SlashReport(mod.ctx, kernel.SlashProof{
+			Kind: kernel.SlashEmptyContent, NodeID: accused.nodeID,
+			Receipts: []kernel.Receipt{signReceipt(accused, int64(i+200000), "", "x", 1, 1)},
+		})
+		require.NoError(t, err)
+		_, err = k.AdjudicateSlash(id)
+		require.NoError(t, err)
+
+		// The ledger is process-wide, so another suite could in principle move it; the
+		// check is on the exact bound, which this loop passes through exactly once.
+		if n := len(kernel.SlashLedger()); n == bound {
+			atBound++
+			assert.Equal(t, baseEvicted, kernel.SlashStatsSnapshot().RecordEvicted,
+				"at exactly the bound nothing has been evicted yet: a trim that fires "+
+					"earlier is a per-insert trim, not a batch one")
+			assert.Less(t, kernel.SlashStatsSnapshot().RecordEvicted-baseEvicted, int64(batch),
+				"and it certainly has not already dropped a whole batch")
+		}
+	}
+
+	require.Equal(t, 1, atBound, "the loop must pass through the bound exactly once")
+
+	// And past the bound, one step takes it all the way down to the keep mark.
+	assert.LessOrEqual(t, len(kernel.SlashLedger()), bound)
+	assert.GreaterOrEqual(t, kernel.SlashStatsSnapshot().RecordEvicted-baseEvicted, int64(batch))
 }
 
 // TestSlashingResetsAcrossRestart pins the reset ordering slot. kreceipt's sequence cursor
