@@ -93,11 +93,16 @@ const maxPipeTotalBytes = maxPipesPerModule * maxPipeBuffer / 8
 
 // pipeChunk is one queued message. It is always a fresh allocation, never a slice
 // of a caller's buffer.
+//
+// It carries no control flags. An earlier version had an `aborted bool` here, meant
+// to travel a cancellation inline, and nothing ever set it: abortStream latches
+// p.abort and drops the queue instead, so a chunk-level flag had no producer and the
+// branch that consumed it was unreachable. It is gone rather than wired up because
+// the cancellation has a real inline channel already - the latch, which a blocked
+// reader wakes to see - and a second, unused one only misled readers into believing
+// the abort rode on the data.
 type pipeChunk struct {
 	data []byte
-	// aborted marks a stream-abort signal carried inline, so a reader learns the
-	// client disconnected without needing a separate channel.
-	aborted bool
 }
 
 // pipe is one duplex channel between two pids.
@@ -158,6 +163,17 @@ func (p *pipe) Close() error {
 	// Broadcast outside the state change so every blocked reader and writer wakes
 	// and sees closed rather than waiting on a condition that will never fire.
 	p.cond.Broadcast()
+
+	// pipe.readable, posted last: after the state change, the registry removal and
+	// the broadcast. The name promises what its doc comment says - "has data or
+	// ended" - and close is the ended half. A readability event is the pollable
+	// mirror of the broadcast above: it is posted at every site where a blocked read
+	// on this pipe now returns, and at no other site. A subscriber that hears it and
+	// reads gets an immediate answer rather than a block, which is the whole service
+	// the event exists to provide. Targeted at the owner because the owner is the
+	// only pid a pipe is registered for today (newPipe is called with peer 0); if a
+	// peer end is ever attached, this post must learn to target it too.
+	postEventToPid(EventPipeReadable, owner, owner, p.name)
 	return nil
 }
 
@@ -203,6 +219,17 @@ func (p *pipe) write(data []byte, deadline int64) (int, error) {
 			p.buf += len(chunk.data)
 			p.written++
 			p.cond.Broadcast()
+			// pipe.readable, under the lock and after the chunk is on the queue.
+			// The chunk is committed before the post, so a subscriber woken by the
+			// event sees the data the event names - the same ordering rule as the
+			// signal post, where the event must not arrive before the fact. The
+			// post itself takes kevents.mu, not p.mu, and no path takes them in the
+			// other order (a subscription post never calls back into a pipe), so
+			// holding this lock across the call cannot deadlock. A second writer
+			// that appends while this post is in flight is also fine: both chunks
+			// are on the queue, and the subscriber reads whatever the queue holds,
+			// not what one event named.
+			postEventToPid(EventPipeReadable, p.owner, p.owner, p.name)
 			return len(data), nil
 		}
 		if p.mode == PipeNonBlocking {
@@ -233,9 +260,6 @@ func (p *pipe) read(deadline int64) ([]byte, error) {
 			p.buf -= len(c.data)
 			p.readCount++
 			p.cond.Broadcast()
-			if c.aborted {
-				return nil, ErrPipeClosed
-			}
 			return append([]byte(nil), c.data...), nil
 		}
 		if p.abort {
@@ -274,8 +298,33 @@ func (p *pipe) abortStream() {
 	p.aborts++
 	p.queue = nil
 	p.buf = 0
+	name, owner := p.name, p.owner
 	p.mu.Unlock()
 	p.cond.Broadcast()
+
+	// Two posts, both after the latch and the broadcast, because both name a fact
+	// that is already committed by the time a subscriber hears either.
+	//
+	// stream.aborted is the cancellation itself: the subscriber is told the stream
+	// this module serves was cancelled, which is the fact a handler loop asks about
+	// when it would rather poll events than sit in a blocking read. This is the
+	// second channel for one fact - the latch is the first, and a blocked reader
+	// wakes to see it - and having both is deliberate rather than redundant: the
+	// latch serves a reader already parked in read(), the event serves a module
+	// selecting across many fds. They cannot disagree, because the latch is set
+	// before the post and both are latched-once, in the same function.
+	//
+	// pipe.readable is posted too, and that is not duplication either: the name
+	// promises "has data or ended", and an abort ends the stream exactly as a close
+	// does - a blocked read on this pipe now returns ErrPipeClosed instead of
+	// waiting. The rule this file follows is that pipe.readable is posted at every
+	// site where a blocked read now returns, so a subscriber that hears it and
+	// reads always gets an immediate answer. The read() broadcast is deliberately
+	// NOT a post site: it wakes blocked writers, and announcing "readable" about
+	// bytes the reader just consumed would send a subscriber into a read that
+	// blocks.
+	postEventToPid(EventStreamAborted, owner, owner, name)
+	postEventToPid(EventPipeReadable, owner, owner, name)
 }
 
 // PipeInfo describes an open pipe for the dump. It reports byte counts, never

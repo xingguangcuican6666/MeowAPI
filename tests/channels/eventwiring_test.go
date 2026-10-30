@@ -32,12 +32,14 @@ package channels
 // to produce it.
 //
 // What each case here does is trigger the fact through the kernel's own path - send a signal,
-// finish a supervised run, publish configuration, unload a module - and assert a subscriber
-// hears about it without any test-side post. Removing the post site in the subsystem turns the
-// corresponding case red.
+// finish a supervised run, publish configuration, unload a module, write to a pipe - and assert
+// a subscriber hears about it without any test-side post. Removing the post site in the
+// subsystem turns the corresponding case red.
 //
-// pipe.readable is not here. Its four post sites are in pipe.go and are owned by the kpeer
-// work; this file covers the other six so the two halves can be landed independently.
+// All eight names in the closed set are covered: six were wired from the kernel side in the
+// commit that created this file, and the last two - pipe.readable and stream.aborted - have
+// their sites in pipe.go and are covered here too. A subscription to any name in the set now
+// hears the kernel; the enumeration test at the bottom asserts that stays true.
 
 import (
 	"testing"
@@ -307,29 +309,189 @@ func TestAnUnloadedModuleIsAPeerDisconnection(t *testing.T) {
 	assert.Equal(t, gone, e.Subject, "the event names the pid that is gone")
 }
 
-// TestAnUnpostedEventNeverArrives is the negative control for the whole file. Every case above
-// triggers a real fact through a real kernel path; this one asserts that a name with no post
-// site produces nothing, so a passing suite means the posts exist and not that the
-// subscriptions are somehow always satisfied.
-func TestAnUnpostedEventNeverArrives(t *testing.T) {
+// TestASubscriptionHearsOnlyItsOwnName is the negative control for the whole file. Every other
+// case triggers a real fact and asserts its name arrives; this one asserts that a subscription
+// hears nothing when the facts triggered are other names'. Without it, a suite could pass
+// because subscriptions are always satisfied - a filter that lets everything through would
+// make every positive case green and would be a worse defect than a missing post.
+//
+// stream.aborted is the subscribed name and pipe facts are among the triggers, which is the
+// sharpest version of the control: pipe.readable and stream.aborted are posted by the same
+// file, two of them by the same function, so a subscription filter that confused one for the
+// other is exactly the failure this rules out.
+func TestASubscriptionHearsOnlyItsOwnName(t *testing.T) {
 	harness.QuietConsole(t)
 	k := harness.BootOne(t)
 
-	// stream.aborted is the one closed-set name this file does not wire, and the reason is
-	// file ownership rather than a judgement that it should not be posted. The site that knows
-	// the fact is abortStream() in pipe.go, which latches the abort and broadcasts to both ends;
-	// pipe.go is the other half of this kepoll work, and it owns pipe.readable too. Subscribing
-	// to the name from here must therefore hear nothing.
-	pid, ctx, fd := evSubscribe(t, k, []kernel.Op{kernel.OpSignalSend}, kernel.EventStreamAborted)
+	pid, ctx, fd := evSubscribe(t, k,
+		[]kernel.Op{kernel.OpSignalSend, kernel.OpPipeOpen, kernel.OpPipeWrite},
+		kernel.EventStreamAborted)
 	defer func() { _ = k.Unload(pid) }()
 
-	// Everything the other cases trigger, and still nothing on this name.
+	// Facts for four other names, and nothing for this one. No stream is aborted in this
+	// test, so the subscription must stay empty.
 	require.NoError(t, ctx.SyscallSignalSend(pid, kernel.SignalReload))
 	require.NoError(t, k.Publish("negative.control", "1"))
+	pipeFD, err := ctx.SyscallOpenPipe("negative-control", 0, kernel.PipeNonBlocking)
+	require.NoError(t, err)
+	_, err = ctx.SyscallPipeWrite(pipeFD, []byte("not an abort"), 0)
+	require.NoError(t, err)
 
-	_, err := ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(200*time.Millisecond))
+	_, err = ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(200*time.Millisecond))
 	assert.ErrorIs(t, err, kernel.ErrNoEvents,
-		"a subscription to a name with no post site must hear nothing rather than everything")
+		"a subscription must hear only its own names, not everything the kernel posts")
+}
+
+// TestAWrittenChunkIsAPipeReadableEvent covers pipe.readable's data half. The post is in
+// write() after the chunk is on the queue, so a subscriber woken by the event is never woken
+// ahead of the fact it names.
+//
+// The read after the wait is the property, not padding: it uses no deadline, so if the event
+// could ever arrive before the chunk was readable - or if it were posted at a site where the
+// pipe is not in fact readable - this call would block forever and the test would fail as a
+// timeout. The event promises that a read returns immediately; the test holds it to that
+// literally.
+func TestAWrittenChunkIsAPipeReadableEvent(t *testing.T) {
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
+
+	pid, ctx, fd := evSubscribe(t, k,
+		[]kernel.Op{kernel.OpPipeOpen, kernel.OpPipeWrite, kernel.OpPipeRead},
+		kernel.EventPipeReadable)
+	defer func() { _ = k.Unload(pid) }()
+
+	pipeFD, err := ctx.SyscallOpenPipe("stream-events", 0, kernel.PipeBlocking)
+	require.NoError(t, err)
+
+	// Opening is not posting: nothing is readable yet, and a subscriber that heard
+	// "readable" from an open would block on the first read.
+	_, err = ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(100*time.Millisecond))
+	assert.ErrorIs(t, err, kernel.ErrNoEvents, "an open pipe is not a readable pipe")
+
+	_, err = ctx.SyscallPipeWrite(pipeFD, []byte("chunk"), 0)
+	require.NoError(t, err)
+
+	e := evWait(t, ctx, fd, kernel.EventPipeReadable)
+	assert.Equal(t, pid, e.Subject, "the event is about the pid that reads this pipe")
+	assert.Equal(t, "stream-events", e.Detail, "the detail names the pipe, never its content")
+
+	// Undeadlined: the event said readable, so this must return, not block.
+	got, err := ctx.SyscallPipeRead(pipeFD, 0)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("chunk"), got)
+}
+
+// TestAClosedPipeEndsTheStreamAsAnEvent covers pipe.readable's ended half: the name's contract
+// is "has data or ended", and close is how a stream ends without an abort. A subscriber parked
+// on events rather than on a blocking read learns the peer is done from the event, and the
+// read below - again undeadlined - proves the event arrives only after the close is committed.
+func TestAClosedPipeEndsTheStreamAsAnEvent(t *testing.T) {
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
+
+	pid, ctx, fd := evSubscribe(t, k,
+		[]kernel.Op{kernel.OpPipeOpen, kernel.OpPipeRead}, kernel.EventPipeReadable)
+	defer func() { _ = k.Unload(pid) }()
+
+	pipeFD, err := ctx.SyscallOpenPipe("closing", 0, kernel.PipeBlocking)
+	require.NoError(t, err)
+	require.NoError(t, ctx.SyscallClose(pipeFD))
+
+	e := evWait(t, ctx, fd, kernel.EventPipeReadable)
+	assert.Equal(t, pid, e.Subject)
+	assert.Equal(t, "closing", e.Detail)
+
+	// The registry entry is gone with the close, so the fd no longer resolves; what the
+	// ordering guarantees is that the event was posted after closed was set, the capacity
+	// was released and the broadcast woke any blocked end. A read that had blocked here
+	// would fail the test as a timeout rather than an assertion, which is the point of
+	// leaving the deadline off everywhere in these cases.
+	_, err = ctx.SyscallPipeRead(pipeFD, 0)
+	assert.Error(t, err, "a closed pipe's fd is no longer a pipe")
+}
+
+// TestAnAbortIsAStreamAbortedEvent covers stream.aborted, and the deliberate second post it
+// makes: abortStream ends the stream, and pipe.readable's contract is "has data or ended", so
+// an abort posts both names. One is the fact a handler asks about (the client disconnected),
+// the other keeps the readability promise (a read on this pipe now returns instead of
+// blocking). A subscriber to either name hears the abort from the function that latches it.
+func TestAnAbortIsAStreamAbortedEvent(t *testing.T) {
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
+
+	pid, ctx, fd := evSubscribe(t, k,
+		[]kernel.Op{kernel.OpPipeOpen, kernel.OpPipeWrite, kernel.OpPipeRead},
+		kernel.EventStreamAborted, kernel.EventPipeReadable)
+	defer func() { _ = k.Unload(pid) }()
+
+	pipeFD, err := ctx.SyscallOpenPipe("client-stream", 0, kernel.PipeNonBlocking)
+	require.NoError(t, err)
+	_, err = ctx.SyscallPipeWrite(pipeFD, []byte("partial"), 0)
+	require.NoError(t, err)
+	// Drain the write's readable event so the waits below see only the abort's posts.
+	evWait(t, ctx, fd, kernel.EventPipeReadable)
+
+	require.NoError(t, ctx.SyscallPipeAbort(pipeFD))
+
+	// Asserted on the raw batch rather than through evWait because this fact produces two
+	// events at once and evWait drains the whole backlog while searching for one name: a
+	// missing pipe.readable post would be swallowed by a batch that still carried
+	// stream.aborted. Both names must be in the batch the abort posts.
+	got, err := ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(3*time.Second))
+	require.NoError(t, err)
+	names := map[kernel.KernelEventName]kernel.Event{}
+	for _, e := range got {
+		names[e.Name] = e
+	}
+	require.Contains(t, names, kernel.EventStreamAborted, "the abort is the fact the name exists for")
+	require.Contains(t, names, kernel.EventPipeReadable,
+		"and the same abort ends the stream, so the readability promise fires with it")
+
+	e := names[kernel.EventStreamAborted]
+	assert.Equal(t, pid, e.Subject, "the event names the pid whose stream was cancelled")
+	assert.Equal(t, "client-stream", e.Detail, "and carries the pipe name, never content")
+
+	// The same abort also promised readability - here meaning "a read returns", with the
+	// answer being end-of-stream. Undeadlined, as in every case in this file.
+	_, err = ctx.SyscallPipeRead(pipeFD, 0)
+	assert.ErrorIs(t, err, kernel.ErrPipeClosed)
+
+	// Latching means one post. A second abort is a no-op on the stream and must be a no-op
+	// on the bus too, or a module that retries its cancellation would spam its own
+	// subscription with facts that are all the same fact.
+	require.NoError(t, ctx.SyscallPipeAbort(pipeFD))
+	_, err = ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(200*time.Millisecond))
+	assert.ErrorIs(t, err, kernel.ErrNoEvents, "a latched abort posts once")
+}
+
+// TestAReadDoesNotAnnounceReadability pins the one broadcast in pipe.go that deliberately
+// does NOT post. read() broadcasts to wake blocked writers - space freed is a writability
+// fact, not a readability one. Posting pipe.readable there would tell a subscriber to come
+// read a pipe that just had its data consumed: the subscriber's read would block, and the
+// event bus's one promise - hear it and a read returns - would be false at the site that
+// consumes data. The absence asserted here is the rule, not an oversight.
+func TestAReadDoesNotAnnounceReadability(t *testing.T) {
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
+
+	pid, ctx, fd := evSubscribe(t, k,
+		[]kernel.Op{kernel.OpPipeOpen, kernel.OpPipeWrite, kernel.OpPipeRead},
+		kernel.EventPipeReadable)
+	defer func() { _ = k.Unload(pid) }()
+
+	pipeFD, err := ctx.SyscallOpenPipe("drained", 0, kernel.PipeNonBlocking)
+	require.NoError(t, err)
+	_, err = ctx.SyscallPipeWrite(pipeFD, []byte("one"), 0)
+	require.NoError(t, err)
+	evWait(t, ctx, fd, kernel.EventPipeReadable)
+
+	got, err := ctx.SyscallPipeRead(pipeFD, kernel.KernelClock().Deadline(time.Second))
+	require.NoError(t, err)
+	require.Equal(t, []byte("one"), got)
+
+	_, err = ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(200*time.Millisecond))
+	assert.ErrorIs(t, err, kernel.ErrNoEvents,
+		"consuming data wakes writers; it must not announce a readability that just ended")
 }
 
 // TestEveryClosedSetNameIsEitherPostedOrDocumented keeps the closed set honest. A name that no
@@ -348,20 +510,18 @@ func TestEveryClosedSetNameIsEitherPostedOrDocumented(t *testing.T) {
 		kernel.EventDeadlinePassed:   "sched.go, from finish when the state is timed out",
 		kernel.EventConfigReloaded:   "boot.go, from Publish, which is what publishes configuration",
 		kernel.EventPeerDisconnected: "module.go, on unload",
+		kernel.EventPipeReadable: "pipe.go, at the three sites where a blocked read now returns: " +
+			"write (data), Close and abortStream (ended) - and deliberately not at read()",
+		kernel.EventStreamAborted: "pipe.go, from abortStream after the latch commits",
 	}
-	// Names in the closed set that no kernel path posts yet, each with the file that owns the
-	// site and why the post is not here. Neither is a judgement that it should never be posted:
-	// both sites live in pipe.go, so wiring them from this file would mean editing across a
-	// boundary that is being worked in parallel. Adding a post site for one means removing it
-	// from this map, which is the review question the map exists to force.
-	unposted := map[kernel.KernelEventName]string{
-		kernel.EventPipeReadable: "pipe.go owns the site: the wake-up broadcasts on close, write, " +
-			"read and abort",
-		kernel.EventStreamAborted: "pipe.go owns the site too: abortStream() is what latches the " +
-			"abort and broadcasts to both ends. The abort already travels inline on a pipe chunk, " +
-			"so a post is a second channel for one fact and has to be written where both are " +
-			"visible, which is not this file",
-	}
+	// Names in the closed set that no kernel path posts, each with the file that owns the site
+	// and why the post is not here. The map is empty - every name has a post site, and the
+	// cases above pin each one - but the loop below keeps requiring the enumeration, so a
+	// future name added to the closed set fails here until it is either wired with a case of
+	// its own or listed here with the reason it is not. That is the review question this test
+	// exists to force: the way seven unwired names stayed hidden is that nothing ever
+	// compared the set to the sites that produce it.
+	unposted := map[kernel.KernelEventName]string{}
 
 	for _, name := range kernel.KernelEvents() {
 		where, isPosted := posted[name]
@@ -378,6 +538,6 @@ func TestEveryClosedSetNameIsEitherPostedOrDocumented(t *testing.T) {
 			"%q has no post site, and naming the file that owns one is what keeps it pending "+
 				"rather than forgotten", name)
 	}
-	assert.Len(t, posted, 6, "six of the eight names are posted by kernel paths")
-	assert.Len(t, unposted, 2, "and two have their site in pipe.go, which this file does not edit")
+	assert.Len(t, posted, 8, "every name in the closed set is posted by a kernel path")
+	assert.Empty(t, unposted, "and none is pending")
 }
