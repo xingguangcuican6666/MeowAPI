@@ -69,6 +69,44 @@ type Kernel struct {
 	modules   []PID
 	shutdown  bool
 	shutdownM sync.Mutex
+
+	// live is set by Boot and by nothing else, and it is what makes a *Kernel the booted
+	// kernel rather than a value some in-process code assembled. Every field here is
+	// unexported, so a module - which is Go code in this address space, importing this
+	// package like any other - can write &kernel.Kernel{} and call any method on it. The
+	// zero value has a usable mutex and shutdown == false, so a shutdown check alone passes
+	// and the method runs against package state that is not scoped to the receiver at all.
+	//
+	// This is not the sandbox limit AGENT.md documents. That limit is about a module acting
+	// OUTSIDE the kernel: opening its own socket, reading a file, calling os.Exit. Nothing
+	// here can stop that, and no field in this struct claims to. What live stops is a module
+	// acting THROUGH the kernel with the kernel's authority - installing the console
+	// credential, choosing the memory sampler that decides who gets terminated, publishing
+	// configuration every metadata reader treats as the kernel's own - and the kernel then
+	// recording the result as its own action. Confusion of authority is a different defect
+	// from absence of containment, and unlike containment it is fixable in-process.
+	live bool
+}
+
+// errForeignKernel is what every Kernel method returns for a receiver that is not the booted
+// kernel. It is deliberately not a policy denial: there is no operation to grant, no domain
+// to consult, and no avc line to write, because the caller never reached the point where the
+// kernel asks who it is. It is the same shape as ErrBootSealed.
+var errForeignKernel = errors.New("kernel: not the booted kernel")
+
+// hostOnly is the identity gate every Kernel method passes through before it does anything,
+// including before the shutdown check: whether this is a kernel at all precedes whether that
+// kernel has stopped.
+//
+// It is one helper rather than a check written out per method because the failure it prevents
+// is a method someone adds later without the check. A new method that skips hostOnly is
+// reachable from module code, and tests/security asserts by reflection that every exported
+// Kernel method refuses a zero receiver, so skipping it fails the suite rather than shipping.
+func (k *Kernel) hostOnly() error {
+	if k == nil || !k.live {
+		return errForeignKernel
+	}
+	return nil
 }
 
 // Boot starts the kernel. The sequence is fixed and mirrors the prototype:
@@ -165,7 +203,10 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 		"kernel_api": KernelAPI,
 	})
 
-	k = &Kernel{initCtx: initCtx}
+	// live is set here and never again. It cannot be set from outside the package because the
+	// field is unexported, and Boot is the only construction site, which is what makes the
+	// gate in hostOnly structural rather than a convention every method has to remember.
+	k = &Kernel{initCtx: initCtx, live: true}
 
 	for _, m := range cfg.Modules {
 		pid, err := LoadModule(initCtx, m)
@@ -201,10 +242,30 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 // It holds module:load and module:unload, which is deliberately more than a
 // plugin gets and less than the kernel had. Nothing else should ever need it;
 // prefer Kernel.Load and Kernel.Unload.
-func (k *Kernel) InitContext() SContext { return k.initCtx }
+//
+// It returns a bare SContext rather than (SContext, error), which is why the gate here is a
+// nil return instead of hostOnly: changing the signature would touch every call site in the
+// tree for a method whose failure mode is already covered. What it returns on a foreign
+// receiver is an UNTYPED nil, and that distinction is the whole fix. k.initCtx on a zero
+// Kernel is a nil *sContext, and a nil *sContext stored in an interface is not nil: ctx == nil
+// is false, the comma-ok assertion in every syscall entry point succeeds, and the first
+// dereference of c.dom panics. Untyped nil fails that assertion, so all 74 of them refuse
+// with errForeignContext - the error that already means "this context was not issued by this
+// kernel", which is exactly true here. The one entry point that does not use comma-ok,
+// verifier.go's VerifyManifestLoad, already guards with `if c == nil` in both of its
+// attribution helpers.
+func (k *Kernel) InitContext() SContext {
+	if err := k.hostOnly(); err != nil {
+		return nil
+	}
+	return k.initCtx
+}
 
 // Load loads a module into the running kernel.
 func (k *Kernel) Load(m Manifest) (PID, error) {
+	if err := k.hostOnly(); err != nil {
+		return 0, err
+	}
 	k.shutdownM.Lock()
 	done := k.shutdown
 	k.shutdownM.Unlock()
@@ -223,6 +284,9 @@ func (k *Kernel) Load(m Manifest) (PID, error) {
 
 // Unload removes a module from the running kernel.
 func (k *Kernel) Unload(pid PID) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	k.shutdownM.Lock()
 	defer k.shutdownM.Unlock()
 	if k.shutdown {
@@ -245,12 +309,15 @@ func (k *Kernel) Unload(pid PID) error {
 // Any context holding metadata:read can see published values; a module's own
 // writes stay private to it. This is how the kernel hands configuration and
 // boot facts to modules without widening the policy.
-func (k *Kernel) Publish(key string, value any) {
+func (k *Kernel) Publish(key string, value any) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
 	if shutdown {
-		return
+		return errors.New("kernel: already shut down")
 	}
 
 	kmeta.publish(key, value)
@@ -260,12 +327,16 @@ func (k *Kernel) Publish(key string, value any) {
 	// a credential, and the audit trail is readable by anything holding
 	// audit:read.
 	kaudit.record(AuditPolicy, k.initCtx, "published kernel metadata", map[string]any{"key": key})
+	return nil
 }
 
 // Shutdown unloads every module newest-first and releases the boot guard.
 // After Shutdown the kernel can be booted again, which is what makes the
 // security invariants testable.
 func (k *Kernel) Shutdown() error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	k.shutdownM.Lock()
 	if k.shutdown {
 		k.shutdownM.Unlock()
@@ -305,6 +376,9 @@ func (k *Kernel) Shutdown() error {
 }
 
 func (k *Kernel) unloadAll() error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	k.shutdownM.Lock()
 	pids := make([]PID, len(k.modules))
 	copy(pids, k.modules)

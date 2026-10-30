@@ -45,8 +45,12 @@ import (
 //     returns, and one that returns but burned the whole budget doing it.
 //
 // A module that spins in its own goroutine outside kernel-supervised work is not
-// stopped by this. That is kwatchdog's detection problem and ksandbox's prevention
-// problem, and pretending otherwise here would put a false guarantee in the kernel.
+// stopped by this. Detection is kwatchdog's problem, and prevention would need an
+// address space this kernel does not have: modules are Go code in the host process, so
+// nothing here can stop one from running its own goroutine, opening its own socket or
+// calling os.Exit. AGENT.md defers that boundary to an out-of-process module tier and
+// names no file for it, so this comment points there rather than at a subsystem that
+// does not exist. Pretending otherwise would put a false guarantee in the kernel.
 
 // ErrCPUBudget is returned when a pid has exhausted its CPU budget.
 var ErrCPUBudget = errors.New("kernel: cpu budget exhausted")

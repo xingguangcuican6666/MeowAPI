@@ -350,6 +350,9 @@ var kttys = &ttyRegistry{open: map[PID]int{}, byHandle: map[*ttyHandle]struct{}{
 // while a comparison could be reading the buffer would leave a window in which a
 // concurrently arriving all-zero candidate matched a fully wiped credential.
 func (k *Kernel) InstallConsoleCredential(credential []byte) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	generation := ttyGeneration()
 
 	k.shutdownM.Lock()

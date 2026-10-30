@@ -2158,6 +2158,9 @@ func PeerPeers(ctx SContext) ([]PeerInfo, error) {
 // under a node identity it has not re-read yet. A host that reuses one *Kernel across
 // Shutdown and Boot must install the transport again after each boot.
 func (k *Kernel) PeerSetTransport(t PeerTransport) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
@@ -2186,6 +2189,9 @@ func (k *Kernel) PeerSetTransport(t PeerTransport) error {
 
 // PeerDial proves a peer's identity from the host process.
 func (k *Kernel) PeerDial(spec PeerDialSpec) (PeerSession, error) {
+	if err := k.hostOnly(); err != nil {
+		return PeerSession{}, err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
@@ -2197,6 +2203,9 @@ func (k *Kernel) PeerDial(spec PeerDialSpec) (PeerSession, error) {
 
 // PeerProbe measures one round trip from the host process.
 func (k *Kernel) PeerProbe(fd FD, deadline int64) (PeerLatency, error) {
+	if err := k.hostOnly(); err != nil {
+		return PeerLatency{}, err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
@@ -2208,6 +2217,9 @@ func (k *Kernel) PeerProbe(fd FD, deadline int64) (PeerLatency, error) {
 
 // PeerForward sends one cross-node request from the host process.
 func (k *Kernel) PeerForward(req PeerForwardRequest) (PeerForwardResult, error) {
+	if err := k.hostOnly(); err != nil {
+		return PeerForwardResult{}, err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
@@ -2219,6 +2231,9 @@ func (k *Kernel) PeerForward(req PeerForwardRequest) (PeerForwardResult, error) 
 
 // PeerAnnounce publishes one discovery record from the host process.
 func (k *Kernel) PeerAnnounce(a PeerAnnouncement) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
@@ -2230,6 +2245,9 @@ func (k *Kernel) PeerAnnounce(a PeerAnnouncement) error {
 
 // PeerPeers lists the mesh table from the host process.
 func (k *Kernel) PeerPeers() ([]PeerInfo, error) {
+	if err := k.hostOnly(); err != nil {
+		return nil, err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
@@ -2254,6 +2272,9 @@ func (k *Kernel) PeerPeers() ([]PeerInfo, error) {
 // hole maxCallPayloadBytes closes in service.go, and unlike the syscall side there is
 // no sealed quota in front of it.
 func (k *Kernel) PeerDeliver(from string, frame PeerFrame) (PeerFrame, error) {
+	if err := k.hostOnly(); err != nil {
+		return PeerFrame{}, err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()

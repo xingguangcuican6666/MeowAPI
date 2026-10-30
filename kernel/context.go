@@ -159,6 +159,27 @@ var errRetired = errors.New("kernel: context retired")
 // fails closed rather than assuming the caller is legitimate.
 var errForeignContext = errors.New("kernel: context was not issued by this kernel")
 
+// contextOf resolves an SContext to the kernel's own implementation, refusing a foreign type
+// and a nil pointer behind one.
+//
+// The nil case is the one `c, ok := ctx.(*sContext)` misses, and it is missed silently: a
+// typed nil *sContext stored in an SContext satisfies that assertion with ok == true, so the
+// !ok branch never runs and the first dereference of c.pid or c.name panics instead of
+// refusing. Most entry points are covered anyway because their first act is c.syscall(op),
+// which calls alive(), which checks for nil. The ones this exists for are the entry points
+// that dereference the context FIRST - reading a data root by module name, resolving a
+// socket by pid - where the panic would arrive before any gate.
+//
+// Use this at any new entry point rather than a bare type assertion, so the shape a future
+// author copies is the safe one.
+func contextOf(ctx SContext) (*sContext, error) {
+	c, ok := ctx.(*sContext)
+	if !ok || c == nil {
+		return nil, errForeignContext
+	}
+	return c, nil
+}
+
 // newRootContext creates the pid 0 context. Only the context manager calls this,
 // once per boot, and only the bootloader ever holds the result.
 func newRootContext(name string) *sContext {
@@ -179,6 +200,20 @@ func (c *sContext) retire() { c.retired.Store(true) }
 // withdrew, and using it is a defect in the holder rather than a policy event,
 // so it is reported as a fault and refused without a policy decision.
 func (c *sContext) alive() error {
+	// A nil receiver is refused here rather than left to panic, and the reason is a property
+	// of Go that makes the obvious guard insufficient: a typed nil *sContext stored in an
+	// SContext interface satisfies `c, ok := ctx.(*sContext)` with ok == true, so the !ok
+	// branch every entry point uses for a foreign context never runs and the first
+	// dereference below panics instead. That turns "this is not a context the kernel issued"
+	// into a crash, and a crash is not distinguishable from a refusal by the party that
+	// caused it. Returning errForeignContext makes the two the same answer they always
+	// should have been, and covers every syscall whose prologue calls this.
+	//
+	// verifier.go's verifierAttribPID and verifierAttribDomain guard nil for the same reason
+	// on the path that does not call alive().
+	if c == nil {
+		return errForeignContext
+	}
 	if c.retired.Load() {
 		fault(c, "syscall on retired context", nil)
 		return errRetired

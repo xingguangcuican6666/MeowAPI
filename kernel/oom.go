@@ -95,6 +95,9 @@ var oomSampler = oomSamplerState{}
 // gives for accepting nil: "use the default" is a legitimate configuration for a sampler
 // that has a safe no-op, unlike a transport that has no default at all.
 func (k *Kernel) OomSetMemorySampler(s OomMemorySampler) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
@@ -465,11 +468,16 @@ func EffectiveOomThresholds() OomThresholds {
 	if t.MaxVictimsPerSweep <= 0 {
 		t.MaxVictimsPerSweep = oomDefaultMaxVictims
 	}
-	// Derived, not configured: the call ceiling is how long the kernel is prepared to wait
-	// on one module operation, so patrolling at a tenth of it gives a sweep roughly ten
-	// chances to catch a module on its way to exhausting memory. The same reasoning and the
-	// same clamping shape as watchdogInterval, so the two patrols in this kernel are timed
-	// by one rule rather than by two that could drift apart.
+	// Derived, not configured: the call ceiling is how long the kernel is prepared to wait on
+	// one module operation, so patrolling at a tenth of it gives a sweep roughly ten chances
+	// to catch a module on its way to exhausting memory. watchdogInterval derives from the
+	// same ceiling for the same reason, and the two are deliberately NOT the same interval:
+	// its clamps are 10ms-2s and these are 500ms-10s, because a watchdog that reacts to a
+	// hang has to be fast relative to the timeout it polices while a memory sweep's floor is
+	// set by the cost of the sweep itself - three subsystem locks and a process-table walk -
+	// which must not become part of the pressure it measures. At the sealed default of 30s
+	// that is 2s there and 3s here. One derivation, two clamp pairs, and the difference is
+	// the point rather than a drift to be reconciled.
 	ceiling := time.Duration(l.CallTimeoutMillis) * time.Millisecond
 	if ceiling <= 0 {
 		ceiling = defaultCallCeiling
@@ -874,8 +882,8 @@ func resetOom() {
 //    plus their entries in defaultLimits, withDefaults and loadBootConfig's digested values
 //    map. They are limits rather than globals so the operator seals them with the rest of
 //    the trust root. The patrol interval is deliberately NOT one of them: it is derived from
-//    the sealed call ceiling the way watchdogInterval is, so the two patrols in this kernel
-//    are timed by one rule rather than by two that could drift.
+//    the sealed call ceiling the way watchdogInterval is - one derivation, but not one
+//    interval, since the clamps differ and the reason they differ is in EffectiveOomThresholds.
 //
 // 2. kernel.go: resetOom() is in resetKernel(), AFTER resetModules, because a termination
 //    started by a late sweep would otherwise have no module table to tear down against.

@@ -1134,7 +1134,7 @@ func TestEventDeliveryIsScopedToSubscribers(t *testing.T) {
 
 	// A kernel-side post arrives. Posted from the test rather than from a module,
 	// because there is no syscall for it: that absence is the control.
-	kernel.PostEvent(kernel.EventDraining, pid, "test-post")
+	require.NoError(t, k.PostEvent(kernel.EventDraining, pid, "test-post"))
 
 	got, err := m.ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(time.Second))
 	require.NoError(t, err)
@@ -1146,7 +1146,7 @@ func TestEventDeliveryIsScopedToSubscribers(t *testing.T) {
 	assert.Positive(t, got[0].At, "the post time comes from the kernel clock")
 
 	// A second post gets the next sequence number, so a consumer can detect a gap.
-	kernel.PostEvent(kernel.EventDraining, pid, "second")
+	require.NoError(t, k.PostEvent(kernel.EventDraining, pid, "second"))
 	got, err = m.ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(time.Second))
 	require.NoError(t, err)
 	require.Len(t, got, 1)
@@ -1164,8 +1164,8 @@ func TestEventSubscriptionOnlyReceivesWhatItAskedFor(t *testing.T) {
 	fd, err := m.ctx.SyscallEventSubscribe([]kernel.KernelEventName{kernel.EventStreamAborted})
 	require.NoError(t, err)
 
-	kernel.PostEvent(kernel.EventConfigReloaded, pid, "not wanted")
-	kernel.PostEvent(kernel.EventStreamAborted, pid, "wanted")
+	require.NoError(t, k.PostEvent(kernel.EventConfigReloaded, pid, "not wanted"))
+	require.NoError(t, k.PostEvent(kernel.EventStreamAborted, pid, "wanted"))
 
 	got, err := m.ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(time.Second))
 	require.NoError(t, err)
@@ -1193,7 +1193,7 @@ func TestEventBacklogIsBoundedAndDropsOldest(t *testing.T) {
 
 	// Post well past the bound without draining.
 	for i := range bound + 50 {
-		kernel.PostEvent(kernel.EventConfigReloaded, pid, "e"+harness.Itoa(i))
+		require.NoError(t, k.PostEvent(kernel.EventConfigReloaded, pid, "e"+harness.Itoa(i)))
 	}
 
 	pending, dropped, err := m.ctx.SyscallEventPending(fd)
@@ -1239,7 +1239,7 @@ func TestEventPostWakesABlockedWaiter(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	kernel.PostEvent(kernel.EventPeerDisconnected, pid, "wakeup")
+	require.NoError(t, k.PostEvent(kernel.EventPeerDisconnected, pid, "wakeup"))
 
 	select {
 	case ev := <-got:
@@ -1270,7 +1270,7 @@ func TestEventSubscriptionIsDroppedOnUnload(t *testing.T) {
 	assert.Zero(t, after.Subscriptions, "unloading must drop the subscription")
 
 	// A post afterwards reaches nobody and does not resurrect the backlog.
-	kernel.PostEvent(kernel.EventConfigReloaded, pid, "after unload")
+	require.NoError(t, k.PostEvent(kernel.EventConfigReloaded, pid, "after unload"))
 	assert.Equal(t, after.Posts+1, kernel.EventStatsSnapshot().Posts)
 	assert.Zero(t, kernel.EventStatsSnapshot().Pending)
 }
@@ -1331,7 +1331,7 @@ func TestUndefinedEventNameIsAFault(t *testing.T) {
 	defer func() { _ = k.Shutdown() }()
 
 	before := len(harness.Faults(buf))
-	kernel.PostEvent("not.a.kernel.event", 0, "x")
+	require.NoError(t, k.PostEvent("not.a.kernel.event", 0, "x"))
 	assert.Greater(t, len(harness.Faults(buf)), before,
 		"posting an undefined event name must be a visible kernel defect, not a silent no-op")
 	assert.Contains(t, buf.String(), "undefined kernel event name")
@@ -1351,7 +1351,7 @@ func TestEventPostToPidIsTargeted(t *testing.T) {
 	fdB, err := mB.ctx.SyscallEventSubscribe([]kernel.KernelEventName{kernel.EventJobFinished})
 	require.NoError(t, err)
 
-	kernel.PostEventToPid(kernel.EventJobFinished, pidA, pidB, "only for A")
+	require.NoError(t, k.PostEventToPid(kernel.EventJobFinished, pidA, pidB, "only for A"))
 
 	got, err := mA.ctx.SyscallEventWait(fdA, kernel.KernelClock().Deadline(time.Second))
 	require.NoError(t, err)
@@ -1376,7 +1376,7 @@ func TestEventDetailIsBounded(t *testing.T) {
 	require.NoError(t, err)
 
 	huge := strings.Repeat("x", 4096)
-	kernel.PostEvent(kernel.EventConfigReloaded, pid, huge)
+	require.NoError(t, k.PostEvent(kernel.EventConfigReloaded, pid, huge))
 
 	got, err := m.ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(time.Second))
 	require.NoError(t, err)
@@ -1395,7 +1395,7 @@ func TestEventResetsAcrossRestart(t *testing.T) {
 	pid, m := chLoad(t, k1, nil, kernel.OpEventWait)
 	_, err = m.ctx.SyscallEventSubscribe([]kernel.KernelEventName{kernel.EventDraining})
 	require.NoError(t, err)
-	kernel.PostEvent(kernel.EventDraining, pid, "before")
+	require.NoError(t, k1.PostEvent(kernel.EventDraining, pid, "before"))
 	require.GreaterOrEqual(t, kernel.EventStatsSnapshot().Subscriptions, 1)
 	require.NoError(t, k1.Shutdown())
 

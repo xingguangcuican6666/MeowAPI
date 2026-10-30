@@ -138,7 +138,7 @@ something the kernel learned during the boot or something it was told before it,
 | `kernel/policy.go` | - | the `Op` set, domain rules, manifest grant narrowing, `check()`, `DeniedError` | `policy.java` |
 | `kernel/proc.go` | - | context manager, pid/uid allocation, the append-only process table | `scm.java`, `smap.java` |
 | `kernel/metadata.go` | - | per-owner-pid kernel key-value store | `kmetadata.java` |
-| `kernel/boot.go` | - | boot guard, root handoff, init spawn, `Publish`, `Shutdown` | `App.java`, `init.java` |
+| `kernel/boot.go` | - | boot guard, root handoff, init spawn, `Publish`, `Shutdown`, and `hostOnly`, the identity gate every method of the `Kernel` handle passes through | `App.java`, `init.java` |
 | `kernel/module.go` | - | `Module` contract, `Register`, load, unload | `moduleloader.java`, `Plugin.java` |
 | `kernel/manifest.go` | - | `Manifest`, validation, scoped operations, `Digest` | none |
 | `kernel/usage.go` | - | usage ABI: closed kind set, per-event ceilings, per-pid accounting. Counts quantities, never prices them | none |
@@ -173,6 +173,7 @@ something the kernel learned during the boot or something it was told before it,
 | `kernel/fdtable.go` | kfdtable | per-pid integer handles; reclamation on unload | none |
 | `kernel/bootconfig.go` | kboot | the sealed trust root, cluster roots, resource ceilings | none |
 | `kernel/console.go` | - | kernel console: JSON/text, level filter, retention, fault emitter | `console.java` |
+| `kernel/nilcontext_test.go` | - | internal test: a typed nil context is refused, not panicked | none |
 | `kernel/dump.go` | - | read-only kernel state rendering for debugging | none |
 
 ### What each subsystem must guarantee
@@ -187,12 +188,14 @@ is broken even when every test passes.
 | kclock | Every duration and deadline in the kernel is measured on `Mono()`. A wall-clock step, an NTP correction or an operator changing the date cannot move a timeout, refill a bucket early or make a settled request look unsettled. |
 | kaudit | Records are hash-chained, so a deletion or an edit in the middle is detectable. Denials and refusals land on the chain before the error reaches the caller. |
 | kfdtable | A handle is only resolvable inside the pid that opened it. An integer from another module's table is not a capability. Reclamation on unload closes everything, so no resource's only reference lives inside module code. |
-| kboot | The trust root is sealed once and cannot be rewritten afterwards. Resource ceilings come from it, so a module cannot raise the bound that applies to it. |
+| kboot | The trust root is sealed once and cannot be rewritten afterwards. Resource ceilings come from it, so a module cannot raise the bound that applies to it. Every sealed ceiling is in the digested configuration, so the `trust_root_digest` on the boot record identifies all of them: a ceiling that is enforced but not digested is one a deployment record cannot prove, and two boots differing only in when the kernel starts terminating modules would otherwise hash identically. `tests/identity` walks `BootLimits` by reflection, so a ceiling added without being digested fails there rather than shipping. |
+| kernel handle | Every method on `*Kernel` refuses a receiver that is not the booted kernel, and `tests/security` asserts that by walking the exported method set, so a method added without the gate fails the suite. This is a different guarantee from every other line in this table and the distinction is worth stating, because conflating them is how a false one gets written. The others are about what a module can do OUTSIDE the kernel - its own socket, its own file read, its own `os.Exit` - and nothing in-process can stop those; AGENT.md defers that boundary to an out-of-process module tier. This one is about a module acting THROUGH the kernel with the kernel's authority: installing the console credential, choosing the memory sampler that decides who gets terminated, posting an event, publishing configuration. Confusion of authority is fixable in-process, and it is what the gate fixes. |
+| context resolution | An entry point that takes an `SContext` resolves it with `contextOf`, not with a bare `c, ok := ctx.(*sContext)`. A nil `*sContext` stored in the interface satisfies that assertion with `ok == true`, so the `!ok` branch that refuses a foreign context never runs and the first dereference panics instead of refusing. `contextOf` also refuses nil, and `alive()` and the two helpers that dereference before any gate - `fsRootFor` reading a module name, `netSocketFor` reading a pid - check for nil as well, so a new entry point is protected by whichever it reaches first. `kernel/nilcontext_test.go` sweeps the exported surface for panics on a typed nil, which is a value no test outside `package kernel` can construct; that file is internal for the same reason `export_test.go` is. |
 | kvfs | One module cannot read or write another's state, and the reason is structural: the other module's key is not in its namespace. Path resolution cannot leave the data root, including through a symlink or a `..`. |
 | kshm | No call shape hands a reader a writable alias. A granted segment is sealed against everyone including its owner. A released buffer is zeroed before it can be reused, so recycling does not leak the previous tenant's payload. That zero-fill is the whole of kiommu's guarantee: sensitive memory is overwritten before another module can be handed it, and no separate subsystem holds it, because the party that owns the buffer is the one that can wipe it. |
 | kpipe | Data crosses as bytes and never as a Go value, so neither side can retain a reference into the other's heap. An abort latches and wakes blocked waiters. A chunk never arrives interleaved with another writer's. |
 | klock | The kernel owns the lock, so an owner that dies cannot strand its waiters. A clean unload releases it; a forced termination condemns it, because telling a waiter the work it waited for completed when it did not is the worst thing this path can do. Waits have mandatory deadlines and grants follow arrival order, so a noisy module cannot control a quiet one's latency. An exclusive lock is not re-entrant and every acquire queues: the kernel knows a pid, not a goroutine, so a same-pid shortcut hands one exclusive lock to two goroutines at once. Read locks may nest. |
-| kepoll | Delivery is bounded: a full backlog drops the oldest and counts the drop, so a module that stops draining cannot grow the kernel's heap. Event names are a closed kernel set, so a peer's claim is never indistinguishable from a kernel fact. |
+| kepoll | Delivery is bounded: a full backlog drops the oldest and counts the drop, so a module that stops draining cannot grow the kernel's heap. Only the booted kernel can post an event, so a peer's claim is never indistinguishable from a kernel fact. The closed name set does not provide that and never did: it stops a module inventing a name, not a module using a real one to assert something untrue, and `Event` carries no origin field a subscriber could check. Posting is a method on the kernel handle, which module code cannot obtain, and `tests/security` asserts a subscriber receives nothing from a module that tries. |
 | kcrypto | Key material does not cross the syscall boundary in either direction. Signing is reachable by no live context after boot. Randomness comes from `crypto/rand` alone, and a failed entropy read fails the call rather than returning a partially filled buffer. |
 | kkeyring | A module names an alias and an action and receives the result, never the credential. Scope is by declared prefix; an out-of-scope alias and an unknown one are indistinguishable, so the call is not an oracle for what a deployment holds. |
 | kreceipt | A receipt is signed over a canonical encoding, so verification recomputes rather than trusts. Sequence numbers are per boot and per node, so a cursor surviving a restart cannot repeat one or open a gap. |
@@ -376,7 +379,7 @@ fault record is refused and the attempt is itself recorded. A module that could
 write fault records could bury a real denial in noise or fabricate evidence.
 
 Policy rules are embedded in the kernel as compiled Go data, in
-`kernel/namespace.go`. They are NOT read from disk at runtime, because a policy
+`kernel/policy.go`, in the `rules` map. They are NOT read from disk at runtime, because a policy
 an attacker can write is not a policy. Adding an operation or widening a domain
 is a kernel change requiring owner approval.
 

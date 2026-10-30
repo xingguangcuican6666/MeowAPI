@@ -336,6 +336,9 @@ func ReceiptIssue(ctx SContext, spec ReceiptSpec) (Receipt, error) {
 // this receipt itself. A module cannot reach this method: it never receives a
 // *Kernel, and Boot refuses a second call.
 func (k *Kernel) IssueReceipt(spec ReceiptSpec) (Receipt, error) {
+	if err := k.hostOnly(); err != nil {
+		return Receipt{}, err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()

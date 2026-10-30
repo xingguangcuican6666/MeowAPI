@@ -434,6 +434,9 @@ func validHeaderName(header string) error {
 // There is no policy check here because there is no context to check. See the policy
 // note at the top of this file.
 func (k *Kernel) InstallSecret(spec SecretSpec) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
@@ -448,6 +451,9 @@ func (k *Kernel) InstallSecret(spec SecretSpec) error {
 // operator rotating credentials needs to know the alias they meant to remove was not
 // there.
 func (k *Kernel) RevokeSecret(alias string) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()

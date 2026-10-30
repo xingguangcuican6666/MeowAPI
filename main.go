@@ -156,7 +156,13 @@ func run(textMode bool, logLevel string, dumpState bool, auditPath, crashPath st
 	// metadata:read sees it in OnLoad, and no module can overwrite it, because
 	// metadata:write is not grantable to the plugin domain. Ordering matters:
 	// a module loaded during Boot would read this key before it existed.
-	k.Publish("kernel.boot.id", fmt.Sprintf("boot-%d", time.Now().Unix()))
+	// The error is read rather than discarded. Publish now returns one because a forged
+	// publish had to become distinguishable from a real one, and the same reason applies to
+	// the honest caller: a boot fact that did not land is something the operator needs to
+	// hear about at boot rather than discover when a module reads a missing key.
+	if err := k.Publish("kernel.boot.id", fmt.Sprintf("boot-%d", time.Now().Unix())); err != nil {
+		return fmt.Errorf("publishing the boot id: %w", err)
+	}
 
 	if _, err := k.Load(diag.Manifest()); err != nil {
 		return err

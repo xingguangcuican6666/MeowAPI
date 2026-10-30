@@ -759,6 +759,9 @@ var netResolver = netResolverState{r: netSystemResolver{}}
 // configuration and not a mistake; kpeer refuses a nil transport instead, and the
 // difference is that a peer transport has no sensible default while a resolver does.
 func (k *Kernel) NetSetResolver(r NetResolver) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
@@ -878,9 +881,11 @@ const maxNetPooledPerPID = 8
 // on pid, so a socket handed to another module - which this kernel does not do today, but
 // a future grant might - must not be returned to a pool the new owner can draw from.
 func NetRelease(ctx SContext, fd FD) error {
-	c, ok := ctx.(*sContext)
-	if !ok {
-		return errForeignContext
+	// contextOf rather than a bare assertion: netSocketForOp resolves the fd through
+	// netSocketFor, which reads c.pid before it reaches c.syscall.
+	c, err := contextOf(ctx)
+	if err != nil {
+		return err
 	}
 	conn, err := netSocketForOp(c, fd)
 	if err != nil {
@@ -1149,6 +1154,11 @@ func NetRead(ctx SContext, fd FD, limit int) ([]byte, error) {
 // here and getting a socket's behaviour on a pipe's resource; the grant check is what
 // lets a listener-only module close what it accepted without also declaring net:dial.
 func netSocketFor(c *sContext, fd FD) (*netConn, error) {
+	// Guarded here rather than at each caller, for the reason fsRootFor gives: lookup takes
+	// c.pid, and every socket operation reaches it through this function.
+	if c == nil {
+		return nil, errForeignContext
+	}
 	entry, err := lookup(c.pid, fd)
 	if err != nil {
 		return nil, err
@@ -1179,9 +1189,10 @@ func netSocketForOp(c *sContext, fd FD) (*netConn, error) {
 
 // NetClose closes a socket without pooling it.
 func NetClose(ctx SContext, fd FD) error {
-	c, ok := ctx.(*sContext)
-	if !ok {
-		return errForeignContext
+	// contextOf for the reason NetRelease gives.
+	c, err := contextOf(ctx)
+	if err != nil {
+		return err
 	}
 	if _, err := netSocketForOp(c, fd); err != nil {
 		return err

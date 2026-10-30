@@ -619,9 +619,12 @@ func seccompCheckInstaller(ctx SContext, target PID, action string) (*sContext, 
 	if ctx == nil {
 		return nil, nil
 	}
-	c, ok := ctx.(*sContext)
-	if !ok {
-		return nil, errForeignContext
+	// contextOf rather than a bare assertion: c.pid is compared below before any gate runs,
+	// and the ctx == nil check above does not catch a typed nil, which is exactly the shape
+	// that gets here from a zero Kernel's InitContext.
+	c, err := contextOf(ctx)
+	if err != nil {
+		return nil, err
 	}
 	if c.pid == target {
 		return nil, fmt.Errorf("%w (%s)", ErrSeccompSelfModification, action)
@@ -704,9 +707,11 @@ func seccompDropFor(pid PID) {
 // The op argument is checked against the projection's own op rather than used to look up
 // a rule, so a caller cannot pass one operation and be judged by another's filter.
 func SeccompAllow(ctx SContext, op Op, arg string) error {
-	c, ok := ctx.(*sContext)
-	if !ok {
-		return errForeignContext
+	// contextOf rather than a bare assertion: c.pid and c.name are read on the next line,
+	// before any gate.
+	c, err := contextOf(ctx)
+	if err != nil {
+		return err
 	}
 	return seccompAllowFor(c.pid, c.name, op, arg)
 }

@@ -21,6 +21,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 package supervision
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -920,22 +921,50 @@ func TestThePatrolStartsWithTheBoot(t *testing.T) {
 	assert.Eventually(t, func() bool { return kernel.OomStatsSnapshot().Sweeps > before },
 		5*time.Second, 20*time.Millisecond, "and it keeps running rather than sweeping once")
 
-	// The derived interval is clamped at both ends, so a pathological ceiling cannot produce
-	// a busy loop or a detector slower than the thing it detects.
-	for _, millis := range []int64{1, 10, 1_000_000_000} {
-		k2, err := kernel.Boot(kernel.BootConfig{
-			TrustRoot: kernel.BootTrustRoot{NodeID: "node-oom-clamp",
-				Limits: kernel.BootLimits{CallTimeoutMillis: millis}},
+}
+
+// TestThePatrolIntervalIsClampedAtBothEnds pins the clamp, one kernel per ceiling.
+//
+// This was a loop inside TestThePatrolStartsWithTheBoot, and the loop body never executed:
+// the outer kernel was still live, so every inner Boot returned "already booted" and
+// `if err != nil { continue }` skipped all three. The test passed while asserting nothing, and
+// widening oomMaxInterval to an hour left the whole suite green - an OOM detector that patrols
+// once an hour passed a suite that claimed to bound its interval. Each ceiling now boots its
+// own kernel in its own subtest with require rather than continue, so a boot that fails is a
+// failure and not a skipped assertion.
+func TestThePatrolIntervalIsClampedAtBothEnds(t *testing.T) {
+	harness.QuietConsole(t)
+
+	for _, tc := range []struct {
+		millis int64
+		what   string
+	}{
+		{1, "a 1ms ceiling does not produce a busy loop"},
+		{10, "a 10ms ceiling does not produce a busy loop"},
+		{30_000, "the sealed default lands inside both clamps"},
+		{1_000_000_000, "a billion-ms ceiling does not produce a detector slower than what it detects"},
+	} {
+		t.Run(fmt.Sprintf("%dms", tc.millis), func(t *testing.T) {
+			// Booted and shut down inside the subtest, so the next one gets a kernel. The
+			// boot guard is process-wide and the outer test's kernel is already down by the
+			// time this function runs.
+			k, err := kernel.Boot(kernel.BootConfig{
+				TrustRoot: kernel.BootTrustRoot{NodeID: "node-oom-clamp",
+					Limits: kernel.BootLimits{CallTimeoutMillis: tc.millis}},
+			})
+			require.NoError(t, err, "booting under a %dms ceiling", tc.millis)
+			defer func() { _ = k.Shutdown() }()
+
+			iv := kernel.EffectiveOomThresholds().Interval
+			assert.GreaterOrEqual(t, iv, 500*time.Millisecond, tc.what)
+			assert.LessOrEqual(t, iv, 10*time.Second, tc.what)
+
+			// The derivation itself, not only its clamps: a tenth of the ceiling, so the
+			// middle case is the one that proves the rule rather than the bound.
+			want := time.Duration(tc.millis) * time.Millisecond / 10
+			want = max(500*time.Millisecond, min(want, 10*time.Second))
+			assert.Equal(t, want, iv, "the interval is a tenth of the ceiling, clamped")
 		})
-		if err != nil {
-			continue // one kernel at a time; the clamp is asserted on the boots that succeed
-		}
-		iv := kernel.EffectiveOomThresholds().Interval
-		assert.GreaterOrEqual(t, iv, 500*time.Millisecond,
-			"a %dms ceiling does not produce a busy loop", millis)
-		assert.LessOrEqual(t, iv, 10*time.Second,
-			"a %dms ceiling does not produce a detector slower than what it detects", millis)
-		_ = k2.Shutdown()
 	}
 }
 

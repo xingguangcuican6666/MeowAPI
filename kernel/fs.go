@@ -175,6 +175,12 @@ func resetFS() {
 // directory would put module data wherever the operator happened to launch the
 // binary from, and silence about it would make that look like a decision.
 func fsRootFor(c *sContext) (string, error) {
+	// A nil context is refused here rather than at the five entry points that call this, so
+	// that a sixth one inherits the guard instead of having to remember to add it. The
+	// dereference of c.name below is what panics, and this function is where it happens.
+	if c == nil {
+		return "", errForeignContext
+	}
 	kfs.mu.RLock()
 	defer kfs.mu.RUnlock()
 	root, ok := kfs.roots[c.name]
@@ -189,9 +195,11 @@ func fsRootFor(c *sContext) (string, error) {
 // kernel state retains a reference to it, which is the same guarantee kpipe makes
 // and for the same reason.
 func FSReadFile(ctx SContext, rel string) ([]byte, error) {
-	c, ok := ctx.(*sContext)
-	if !ok {
-		return nil, errForeignContext
+	// contextOf rather than a bare assertion, because fsRootFor below reads c.name before
+	// anything calls alive(): a typed nil would panic on the way to a refusal.
+	c, err := contextOf(ctx)
+	if err != nil {
+		return nil, err
 	}
 	root, err := fsRootFor(c)
 	if err != nil {
@@ -243,9 +251,10 @@ func FSReadFile(ctx SContext, rel string) ([]byte, error) {
 // writing outside the boundary and renaming in would be an escape, and deriving
 // rather than accepting a name is what closes it.
 func FSWriteFile(ctx SContext, rel string, data []byte) error {
-	c, ok := ctx.(*sContext)
-	if !ok {
-		return errForeignContext
+	// contextOf for the reason FSReadFile gives: c.name is dereferenced before any gate.
+	c, err := contextOf(ctx)
+	if err != nil {
+		return err
 	}
 	root, err := fsRootFor(c)
 	if err != nil {
@@ -312,9 +321,11 @@ func FSWriteFile(ctx SContext, rel string, data []byte) error {
 // result is sorted and a copy; names outside the boundary are not reachable by
 // construction, since only contained paths can be listed at all.
 func FSList(ctx SContext, rel string) ([]string, error) {
-	c, ok := ctx.(*sContext)
-	if !ok {
-		return nil, errForeignContext
+	// contextOf rather than a bare assertion, for the reason FSReadFile gives: fsRootFor
+	// reads c.name below, and a typed nil passes a comma-ok assertion.
+	c, err := contextOf(ctx)
+	if err != nil {
+		return nil, err
 	}
 	root, err := fsRootFor(c)
 	if err != nil {
@@ -340,9 +351,10 @@ func FSList(ctx SContext, rel string) ([]string, error) {
 
 // FSStat reports one entry's size and directory flag. Requires fs:read.
 func FSStat(ctx SContext, rel string) (FSInfo, error) {
-	c, ok := ctx.(*sContext)
-	if !ok {
-		return FSInfo{}, errForeignContext
+	// contextOf for the reason FSReadFile gives.
+	c, err := contextOf(ctx)
+	if err != nil {
+		return FSInfo{}, err
 	}
 	root, err := fsRootFor(c)
 	if err != nil {
@@ -373,9 +385,10 @@ type FSInfo struct {
 // the module's data area. A missing file is a typed, checkable "already gone"
 // rather than a retry loop.
 func FSDelete(ctx SContext, rel string) error {
-	c, ok := ctx.(*sContext)
-	if !ok {
-		return errForeignContext
+	// contextOf for the reason FSReadFile gives.
+	c, err := contextOf(ctx)
+	if err != nil {
+		return err
 	}
 	root, err := fsRootFor(c)
 	if err != nil {

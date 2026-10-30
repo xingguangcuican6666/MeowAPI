@@ -677,6 +677,9 @@ func SlashAdjudicate(ctx SContext, id SlashID) (SlashRecord, error) {
 // the host is the party that sealed those roots into the trust root at boot. It cannot
 // substitute a friendlier root list afterwards, because kboot refuses the write.
 func (k *Kernel) AdjudicateSlash(id SlashID) (SlashRecord, error) {
+	if err := k.hostOnly(); err != nil {
+		return SlashRecord{}, err
+	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()

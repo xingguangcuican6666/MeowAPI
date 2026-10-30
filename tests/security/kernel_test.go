@@ -22,8 +22,10 @@ package security
 
 import (
 	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -206,3 +208,259 @@ type resetTestSampler struct{}
 
 func (resetTestSampler) TotalMemoryBytes() uint64 { return 1 << 30 }
 func (resetTestSampler) ReservedBytes() uint64    { return 1 << 30 }
+
+// ---------------------------------------------------------------------------
+// The authority gate on the kernel handle.
+
+// foreignKernelErr is what hostOnly returns. Compared by text because the sentinel is
+// unexported, and the text is part of the contract: an operator reading an audit line needs
+// to be able to tell "you are not the booted kernel" from "this kernel has shut down".
+const foreignKernelErr = "kernel: not the booted kernel"
+
+// foreignContextErr is errForeignContext, which is unexported. Compared by text for the same
+// reason as the constant above, and because exporting a sentinel so a test can errors.Is it
+// would widen the kernel's surface for a check the test can make without it.
+const foreignContextErr = "kernel: context was not issued by this kernel"
+
+// TestAZeroKernelCannotAct pins the gate on every exported Kernel method.
+//
+// A module is Go code in this address space importing this package. Every field of Kernel is
+// unexported, so module code can write &kernel.Kernel{} and call any method on it. The zero
+// value has a usable mutex and shutdown == false, so the shutdown check every method had
+// passed for exactly the receiver it must refuse, and the method then acted on package state
+// that is not scoped to the receiver at all. Verified before the gate existed: a zero Kernel
+// could publish kernel metadata, install the console credential, remove the net resolver, and
+// install a memory sampler reporting the host at 100% - which is how a module holding zero
+// operations made the kernel terminate its largest plugin.
+//
+// This is not the containment limit AGENT.md documents. That limit is about a module acting
+// OUTSIDE the kernel - its own socket, its own file read - which no field here can stop and
+// which the gate does not claim to. What the gate stops is a module acting THROUGH the kernel
+// with the kernel's authority, and having the kernel record the result as its own action.
+//
+// The list is asserted against the type by reflection, so a method added later without the
+// gate fails here rather than shipping. That is the part that keeps this from being a
+// regression test for the twenty methods that exist today.
+func TestAZeroKernelCannotAct(t *testing.T) {
+	harness.QuietConsole(t)
+
+	k := harness.BootOne(t)
+	require.NotNil(t, k, "the host holds the booted kernel")
+
+	z := &kernel.Kernel{}
+
+	// Each case is one method, with arguments that are valid enough to reach the gate. What
+	// is asserted is not that the arguments are good but that the receiver is refused first:
+	// a gate that ran after argument validation would let a caller learn something from the
+	// error, and one that ran after the shutdown check would let a zero receiver through.
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"Publish", func() error { return z.Publish("forged.key", "forged") }},
+		{"PostEvent", func() error {
+			return z.PostEvent(kernel.EventJobFinished, 999, "forged")
+		}},
+		{"PostEventToPid", func() error {
+			return z.PostEventToPid(kernel.EventPeerDisconnected, 1, 1, "forged")
+		}},
+		{"Load", func() error {
+			_, err := z.Load(kernel.Manifest{Name: "forged", Version: "1"})
+			return err
+		}},
+		{"Unload", func() error { return z.Unload(1) }},
+		{"Shutdown", func() error { return z.Shutdown() }},
+		{"InstallSecret", func() error {
+			return z.InstallSecret(kernel.SecretSpec{Alias: "forged/a", Value: []byte("sk-x")})
+		}},
+		{"RevokeSecret", func() error { return z.RevokeSecret("forged/a") }},
+		{"InstallConsoleCredential", func() error {
+			return z.InstallConsoleCredential([]byte("forged-console-credential"))
+		}},
+		{"OomSetMemorySampler", func() error {
+			return z.OomSetMemorySampler(forgedSampler{})
+		}},
+		{"NetSetResolver", func() error { return z.NetSetResolver(nil) }},
+		{"PeerSetTransport", func() error { return z.PeerSetTransport(nil) }},
+		{"PeerDial", func() error {
+			_, err := z.PeerDial(kernel.PeerDialSpec{Endpoint: "forged.example"})
+			return err
+		}},
+		{"PeerProbe", func() error { _, err := z.PeerProbe(1, 0); return err }},
+		{"PeerForward", func() error {
+			_, err := z.PeerForward(kernel.PeerForwardRequest{NodeID: "forged"})
+			return err
+		}},
+		{"PeerAnnounce", func() error {
+			return z.PeerAnnounce(kernel.PeerAnnouncement{NodeID: "forged"})
+		}},
+		{"PeerPeers", func() error { _, err := z.PeerPeers(); return err }},
+		{"PeerDeliver", func() error {
+			_, err := z.PeerDeliver("forged", kernel.PeerFrame{})
+			return err
+		}},
+		{"AdjudicateSlash", func() error {
+			_, err := z.AdjudicateSlash(kernel.SlashID("forged"))
+			return err
+		}},
+		{"IssueReceipt", func() error {
+			_, err := z.IssueReceipt(kernel.ReceiptSpec{})
+			return err
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			require.Error(t, err, "%s must refuse a receiver that is not the booted kernel", tc.name)
+			assert.Equal(t, foreignKernelErr, err.Error(),
+				"and the refusal must name the reason, so an operator can tell a forged handle "+
+					"from a shut-down kernel")
+		})
+	}
+
+	// Reflection over the exported method set, so the case list above cannot silently stop
+	// covering the type. A method that is not in the list fails here, and the fix is to add a
+	// case, not to widen this check. There are no exemptions: every exported method returns an
+	// error and is in the list, or is InitContext, whose different shape is asserted below.
+	covered := map[string]bool{}
+	for _, tc := range cases {
+		covered[tc.name] = true
+	}
+
+	t.Run("InitContext", func(t *testing.T) {
+		// InitContext returns a bare SContext rather than (SContext, error), so it cannot
+		// report a refusal and returns nil instead. What it must not return is the receiver's
+		// initCtx field, because on a zero Kernel that is a nil *sContext and a typed nil
+		// inside an interface is not nil: ctx == nil reads false, the comma-ok assertion every
+		// syscall entry point makes succeeds with a nil pointer behind it, and the first
+		// dereference panics. That turns "not issued by this kernel" into a crash, and a crash
+		// is not distinguishable from a refusal by the module that caused it.
+		//
+		// Verified before the fix: TTYOpen, TTYWrite, KVGet, NetDial, PeerDial, EventWait,
+		// SchedSpawn and SlashReport all panicked on it, and sched.go's recovery caught each
+		// one, so the observable result was that a module could reliably terminate itself with
+		// a nil dereference instead of receiving an error.
+		ctx := z.InitContext()
+		// Compared with == and not with assert.Nil, which reflects: reflect.IsNil reports true
+		// for a typed nil too, so it cannot tell the fix from the bug the fix removes. The raw
+		// comparison is also what a kernel entry point evaluates, which makes it the assertion
+		// that matters here.
+		assert.True(t, ctx == nil,
+			"a foreign receiver gets an untyped nil, so ctx == nil reads true and every entry "+
+				"point's !ok branch refuses it")
+		assert.NotPanics(t, func() {
+			_, err := kernel.TTYOpen(ctx)
+			require.Error(t, err)
+			assert.Equal(t, foreignContextErr, err.Error(),
+				"and the refusal is the one that already means this context was not issued here")
+		}, "a syscall receiving it is refused rather than crashing")
+
+		// The booted kernel still hands out a working context, so the gate did not turn
+		// InitContext into something that refuses everyone.
+		require.NotNil(t, k.InitContext())
+		assert.Equal(t, kernel.PID(1), k.InitContext().PID(),
+			"and it is init's, which is what the host loads modules under")
+	})
+	covered["InitContext"] = true
+
+	typ := reflect.TypeOf(z)
+	for i := range typ.NumMethod() {
+		name := typ.Method(i).Name
+		assert.True(t, covered[name],
+			"Kernel.%s is not covered by this test. If it acts on kernel state, add a case "+
+				"asserting it refuses a zero receiver; if it is a read-only accessor like "+
+				"InitContext, add it to the exemption above with the reason.", name)
+	}
+
+	// The gate did not break the host's own path.
+	require.NoError(t, k.Publish("gate.check", "host"))
+	v, ok := kernel.MetadataSnapshot()["gate.check"]
+	require.True(t, ok)
+	assert.Equal(t, "host", v)
+
+	// And nothing the forged handle attempted took effect, which is the assertion that
+	// distinguishes "refused" from "refused after doing it".
+	assert.NotContains(t, kernel.MetadataSnapshot(), "forged.key")
+	assert.False(t, kernel.OomStatsSnapshot().Sampler, "no forged memory sampler was installed")
+	assert.Empty(t, kernel.OomHistory(), "and no module was terminated on its say-so")
+	for _, info := range kernel.SecretInventory() {
+		assert.NotEqual(t, "forged/a", info.Alias, "no forged secret was installed")
+	}
+
+	// The real kernel is still the real kernel afterwards: a gate that tripped on the booted
+	// handle would be a gate that refuses everyone.
+	assert.NotNil(t, k.InitContext())
+	require.NoError(t, k.PostEvent(kernel.EventConfigReloaded, 0, "host-posted"))
+}
+
+// forgedSampler is what a module would install to lie about host memory: a total that makes
+// the process look like it is using all of it, so koom terminates the largest plugin.
+type forgedSampler struct{}
+
+func (forgedSampler) TotalMemoryBytes() uint64 { return 1 << 20 }
+func (forgedSampler) ReservedBytes() uint64    { return 1 << 20 }
+
+// TestOnlyTheBootedKernelCanAssertAKernelFact is the kepoll half of the same gate, asserted
+// end to end rather than as a refusal: a subscriber must not be able to receive an event that
+// no kernel subsystem observed.
+//
+// This is the property AGENT.md states for kepoll - that a peer's claim is never
+// indistinguishable from a kernel fact - and it was false while PostEvent was a package
+// function. The closed name set stops a module inventing a name; it does not stop a module
+// using a real name to assert something untrue, and Event carries no origin field a
+// subscriber could check.
+func TestOnlyTheBootedKernelCanAssertAKernelFact(t *testing.T) {
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
+
+	victim := &harness.Probe{}
+	harness.RegisterProbe(t, "subscriber", victim)
+	_, err := k.Load(kernel.Manifest{
+		Name: "subscriber", Version: "1",
+		MinKernelAPI: kernel.KernelAPI, MaxKernelAPI: kernel.KernelAPI,
+		Require: []kernel.Op{kernel.OpEventWait},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, victim.Ctx)
+
+	fd, err := kernel.EventSubscribe(victim.Ctx, []kernel.KernelEventName{
+		kernel.EventJobFinished, kernel.EventPeerDisconnected,
+	})
+	require.NoError(t, err)
+
+	// A second module, granted nothing at all. It is ordinary in-process Go code like every
+	// other module, so if posting were reachable it would reach it.
+	forger := &harness.Probe{}
+	harness.RegisterProbe(t, "forger", forger)
+	fpid, err := k.Load(kernel.Manifest{
+		Name: "forger", Version: "1",
+		MinKernelAPI: kernel.KernelAPI, MaxKernelAPI: kernel.KernelAPI,
+	})
+	require.NoError(t, err)
+	granted, _ := kernel.GrantsFor(fpid)
+	require.Empty(t, granted, "the forger holds no operation at all")
+
+	// Its attempt to assert a kernel fact is refused at the handle, not by a policy check:
+	// there is no operation to grant and no avc line to write.
+	z := &kernel.Kernel{}
+	assert.Equal(t, foreignKernelErr,
+		z.PostEvent(kernel.EventJobFinished, 999, "forged-job").Error())
+
+	// Nothing arrived. The wait is bounded so this cannot hang if the assertion is wrong.
+	got, err := kernel.EventWait(victim.Ctx, fd,
+		kernel.KernelClock().Deadline(150*time.Millisecond))
+	assert.ErrorIs(t, err, kernel.ErrNoEvents, "no forged fact reached the subscriber")
+	assert.Empty(t, got)
+
+	// And when the host does post, the subscriber receives it - so the refusal above is the
+	// gate and not a subscription that never fires either way.
+	require.NoError(t, k.PostEventToPid(kernel.EventJobFinished, victim.Ctx.PID(), 7, "real-job"))
+	got, err = kernel.EventWait(victim.Ctx, fd,
+		kernel.KernelClock().Deadline(2*time.Second))
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, kernel.EventJobFinished, got[0].Name)
+	assert.Equal(t, kernel.PID(7), got[0].Subject)
+	assert.Equal(t, "real-job", got[0].Detail)
+}

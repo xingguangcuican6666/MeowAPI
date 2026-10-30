@@ -401,7 +401,7 @@ func UnloadModule(ctx SContext, pid PID) error {
 	// record closes so a peer learns from the event rather than from a failed call.
 	// The detail is the module's own name, read from the process table while the
 	// record is still open.
-	PostEvent(EventPeerDisconnected, pid, nameForPID(pid))
+	postEvent(EventPeerDisconnected, pid, nameForPID(pid))
 	kscm.terminate(pid)
 	kaudit.record(AuditUnload, c, "module unloaded", map[string]any{
 		"module": rec.Name, "pid": pid, "fds_reclaimed": closed,

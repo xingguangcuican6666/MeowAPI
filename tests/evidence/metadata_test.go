@@ -43,7 +43,7 @@ func TestMetadataIsScopedPerModule(t *testing.T) {
 	t.Cleanup(func() { kernel.Unregister("metareader") })
 
 	// Published before the module loads, so its OnLoad can see it.
-	k.Publish("kernel.boot.id", "test-boot")
+	require.NoError(t, k.Publish("kernel.boot.id", "test-boot"))
 	// A value owned by init, not published to modules.
 	require.NoError(t, k.InitContext().SyscallMetadataSet("init.private", "secret"))
 

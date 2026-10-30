@@ -139,3 +139,18 @@ func ProbeOpenFailingHandle(ctx SContext, label string, err error) (FD, error) {
 	}
 	return install(c.pid, &failingHandle{err: err}, label)
 }
+
+// ProbeTypedNilContext returns a nil *sContext stored in the SContext interface. This is the
+// one value the guards in alive() and contextOf exist for, and it cannot be produced from
+// outside the package: SContext is sealed, *sContext is unexported, and every path that
+// hands out a context hands out either a real one or an untyped nil.
+//
+// A typed nil is the value that makes `c, ok := ctx.(*sContext)` misleading. The assertion
+// SUCCEEDS - ok is true and c is nil - so the !ok branch every entry point uses to refuse a
+// foreign context never runs, and the first dereference of c.pid or c.name panics instead of
+// refusing. InitContext used to be able to produce exactly this from a foreign receiver,
+// which is why eight syscalls panicked rather than returning an error.
+func ProbeTypedNilContext() SContext {
+	var c *sContext
+	return c
+}

@@ -33,6 +33,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/xingguangcuican6666/MeowAPI/kernel"
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 )
 
 // These tests drive kvfs through the surface a module actually gets: a probe
@@ -40,35 +41,17 @@ import (
 // OnLoad. Nothing here reaches package-private state, which is the point - if a
 // test needed an internal to prove a guarantee, a module would too.
 //
-// Every helper here is prefixed "state" and every probe type with "state", because
-// six subsystem groups are adding test files to one package at once and the shared
-// fixtures in helpers_test.go cannot be edited.
+// Every helper here is prefixed "state" so it cannot collide with the other test files in
+// this package. The shared fixtures are in tests/harness, which every suite may edit and add
+// to.
 
-// stateQuiet gives a test its own console sink so fault records can be asserted
-// without polluting stderr and without tests racing on the global sink. It is a
-// copy of quietConsole in helpers_test.go rather than a call to it, because that
-// file is not editable from here and a second definition of the same name would
-// not compile.
+// stateQuiet gives a test its own console sink so fault records can be asserted without
+// polluting stderr and without tests racing on the global sink. It is the shared helper from
+// tests/harness rather than a private copy of it: the harness is editable from every suite,
+// and one copy per suite is how a fix to console capture becomes six.
 func stateQuiet(t *testing.T) *bytes.Buffer {
 	t.Helper()
-	var buf bytes.Buffer
-	sink := &stateLockedBuffer{buf: &buf}
-	kernel.KernelConsole().SetOutput(sink)
-	t.Cleanup(func() { kernel.KernelConsole().SetOutput(nil) })
-	return &buf
-}
-
-// stateLockedBuffer serialises console writes. The kernel emits from whatever
-// goroutine calls it, and a test asserts on the buffer afterwards.
-type stateLockedBuffer struct {
-	mu  sync.Mutex
-	buf *bytes.Buffer
-}
-
-func (l *stateLockedBuffer) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.buf.Write(p)
+	return harness.QuietConsole(t)
 }
 
 // stateFaults extracts the fault-level records a test emitted.

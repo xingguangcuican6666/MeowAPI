@@ -461,7 +461,7 @@ func TestAuditWindowIsConfigurableAndFloored(t *testing.T) {
 	assert.Equal(t, 24, kernel.AuditWindow())
 
 	for range 200 {
-		k.Publish("k", "v")
+		require.NoError(t, k.Publish("k", "v"))
 	}
 	retained, evicted := kernel.AuditLen()
 	assert.LessOrEqual(t, retained, 24, "the window must cap retained entries")

@@ -298,10 +298,21 @@ func (b *eventBus) dropAll(pid PID) {
 	}
 }
 
-// Post delivers one event to every subscription that wants it. It is called by kernel
-// subsystems only; there is no syscall for it, so a module cannot post an event and
-// have another module treat it as a kernel fact.
-func PostEvent(name KernelEventName, subject PID, detail string) {
+// postEvent delivers one event to every subscription that wants it.
+//
+// Unexported on purpose, and the reason is not that there is no post syscall - there is no
+// post syscall, but that alone would protect nothing. A module is Go code in this address
+// space importing this package, so any exported function here is callable by one, and a
+// module holding zero operations could post `job.finished` about a job that never ran and
+// `peer.disconnected` about a peer that is still alive. The closed name set does not help:
+// it stops a module inventing a name, not a module using a real one to assert a false fact,
+// and Event carries no origin field a subscriber could check.
+//
+// The host reaches this through (*Kernel).PostEvent, which is gated on the receiver being
+// the booted kernel. That is the same construction peer.go gives for PeerDeliver and the one
+// bootconfig.go gives for nodeSigningKey: where a package-level function would be an oracle,
+// the capability moves onto a handle only the host holds.
+func postEvent(name KernelEventName, subject PID, detail string) {
 	if !kernelEventNames[name] {
 		// An unknown name is a defect in the kernel, not in a module, so it is a
 		// fault rather than a quiet no-op: a subsystem that posts a name nobody
@@ -330,9 +341,10 @@ func PostEvent(name KernelEventName, subject PID, detail string) {
 	}
 }
 
-// PostEventToPid delivers one event only to a specific pid's subscriptions. Used
-// where the event is about one module and waking every subscriber would be noise.
-func PostEventToPid(name KernelEventName, pid PID, subject PID, detail string) {
+// postEventToPid delivers one event only to a specific pid's subscriptions. Used where the
+// event is about one module and waking every subscriber would be noise. Unexported for the
+// reason postEvent is.
+func postEventToPid(name KernelEventName, pid PID, subject PID, detail string) {
 	if !kernelEventNames[name] {
 		fault(nil, "post of an undefined kernel event name", map[string]any{
 			"name": string(name),
@@ -352,6 +364,39 @@ func PostEventToPid(name KernelEventName, pid PID, subject PID, detail string) {
 	for _, s := range subs {
 		s.post(e)
 	}
+}
+
+// PostEvent delivers one kernel event to every subscription that asked for its name. It is
+// a method on the booted kernel rather than a package function so that a module cannot
+// assert a kernel fact it did not observe; see postEvent.
+func (k *Kernel) PostEvent(name KernelEventName, subject PID, detail string) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
+	k.shutdownM.Lock()
+	shutdown := k.shutdown
+	k.shutdownM.Unlock()
+	if shutdown {
+		return errors.New("kernel: already shut down")
+	}
+	postEvent(name, subject, detail)
+	return nil
+}
+
+// PostEventToPid delivers one kernel event to a single pid's subscriptions. Same reasoning as
+// PostEvent.
+func (k *Kernel) PostEventToPid(name KernelEventName, pid PID, subject PID, detail string) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
+	k.shutdownM.Lock()
+	shutdown := k.shutdown
+	k.shutdownM.Unlock()
+	if shutdown {
+		return errors.New("kernel: already shut down")
+	}
+	postEventToPid(name, pid, subject, detail)
+	return nil
 }
 
 // SyscallEvent is the event half of the syscall surface.
