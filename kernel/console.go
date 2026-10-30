@@ -57,8 +57,8 @@ type Record struct {
 // Console is the kernel UART. It is the only output channel the kernel itself
 // owns; modules write to it through the log:write operation, never directly.
 //
-// Console retention is bounded and drops the oldest records. The process table
-// in namespace.go is the unbounded append-only audit log; the console is a
+// Console retention is bounded and drops the oldest records. The process table in
+// proc.go is the unbounded append-only record of what ran; the console is a
 // diagnostic stream and must not become a memory leak.
 type Console struct {
 	mu      sync.Mutex
