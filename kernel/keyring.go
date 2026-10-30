@@ -434,20 +434,22 @@ func validHeaderName(header string) error {
 // There is no policy check here because there is no context to check. See the policy
 // note at the top of this file.
 func (k *Kernel) InstallSecret(spec SecretSpec) error {
-	// Both refusals wipe, because the contract above says the caller's slice is zeroed
-	// on return whether the call succeeded or was refused, and these are refusals.
-	// installSecret wipes on every path of its own; what it cannot reach is a call that
-	// never gets to it. The value is a credential either way, and which check refused is
-	// not something that changes what leaving it in the caller's heap means.
+	// One deferred wipe rather than one per refusal branch, for the reason the contract
+	// above states: the caller's slice is zeroed on return whether the call succeeded
+	// or was refused, which is a property of the function and should not depend on each
+	// branch remembering it. installSecret wipes on every path of its own; what it
+	// cannot reach is a call that never gets to it. Safe to run after the installer
+	// because installSecret copies spec.Value into its own buffer before storing
+	// anything, so no stored credential aliases the caller's slice.
+	defer wipe(spec.Value)
+
 	if err := k.hostOnly(); err != nil {
-		wipe(spec.Value)
 		return err
 	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
 	if shutdown {
-		wipe(spec.Value)
 		return errors.New("kernel: already shut down")
 	}
 	return installSecret(k.initCtx, spec, k.initCtx.pid)
@@ -473,15 +475,21 @@ func (k *Kernel) RevokeSecret(alias string) error {
 // SecretRegister takes custody of a credential on a context's behalf. Requires
 // secret:read, which no live context holds in the current policy table.
 func SecretRegister(ctx SContext, spec SecretSpec) error {
+	// One deferred wipe covering every path, matching the two host installers: the
+	// caller handed over ownership by making the call, so the bytes are zeroed on
+	// return whether the call succeeded, was refused for a context this kernel did not
+	// issue, or was denied by policy. The foreign-context branch used to return without
+	// wiping while the policy branch wiped, so one refusal left the caller holding a
+	// credential it believed it had handed over; a defer makes that asymmetry
+	// unrepresentable instead of fixed once. Safe to run after installSecret because
+	// installSecret copies spec.Value into its own buffer before storing anything.
+	defer wipe(spec.Value)
+
 	c, ok := ctx.(*sContext)
 	if !ok {
 		return errForeignContext
 	}
 	if err := c.syscall(OpSecretRead); err != nil {
-		// Wipe even on refusal: the caller handed over ownership, and a refused call
-		// must not leave the credential in the caller's buffer with nobody
-		// responsible for it.
-		wipe(spec.Value)
 		return err
 	}
 	return installSecret(c, spec, c.pid)

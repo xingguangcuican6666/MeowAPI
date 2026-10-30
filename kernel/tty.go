@@ -350,15 +350,23 @@ var kttys = &ttyRegistry{open: map[PID]int{}, byHandle: map[*ttyHandle]struct{}{
 // while a comparison could be reading the buffer would leave a window in which a
 // concurrently arriving all-zero candidate matched a fully wiped credential.
 func (k *Kernel) InstallConsoleCredential(credential []byte) error {
-	// Wiped before the authority check, not after it, because the contract above is
-	// "every return path including refusals" and this one is a refusal. The bytes are
-	// the caller's and the caller has already given up ownership by making the call;
-	// which of the two checks refused is not something that changes what a credential
-	// left in the caller's heap means. A host that reached this through a handle that
-	// is not the booted kernel is a host with a bug, and the bug is worth reporting
-	// without also leaving the key recoverable.
+	// One deferred wipe rather than one per refusal branch, so the contract above -
+	// "wiped on every return path including refusals" - is a property of the function
+	// and not a property of each branch remembering. A refusal path added later
+	// inherits it, and a path that returns above the authority check below cannot
+	// bypass it. The bytes are the caller's and the caller has already given up
+	// ownership by making the call; which check refused is not something that changes
+	// what a credential left in the caller's heap means. A host that reached this
+	// through a handle that is not the booted kernel is a host with a bug, and the bug
+	// is worth reporting without also leaving the key recoverable.
+	//
+	// Safe to run after the installer because installConsoleCredential copies into its
+	// own buffer before storing anything, so no stored credential aliases this slice.
+	// It also runs outside the registry lock, so the rotation ordering documented
+	// above is unaffected.
+	defer wipe(credential)
+
 	if err := k.hostOnly(); err != nil {
-		wipe(credential)
 		return err
 	}
 	generation := ttyGeneration()
@@ -367,7 +375,6 @@ func (k *Kernel) InstallConsoleCredential(credential []byte) error {
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
 	if shutdown {
-		wipe(credential)
 		return errors.New("kernel: already shut down")
 	}
 	return installConsoleCredential(k.initCtx, generation, credential)

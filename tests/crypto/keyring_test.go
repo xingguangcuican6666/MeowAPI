@@ -818,6 +818,21 @@ func TestSecretRegisterAndReadAreContextGated(t *testing.T) {
 	assert.Contains(t, err.Error(), "secret:read")
 	assert.Equal(t, byte(0), value[0], "a refused register must still wipe the caller's value")
 
+	// The other refusal in the same function, and the one a policy denial cannot
+	// reach: a context this kernel did not issue. Custody was offered, so the bytes
+	// are zeroed here too - a caller that presented a foreign context gets an error
+	// and nothing back, and must not be left holding a credential it believed it had
+	// handed over. This is the refusal the deferred wipe in SecretRegister covers;
+	// without the defer it returned the error with the value untouched.
+	foreign := []byte(krSecretValue)
+	before := kernel.SecretCount()
+	err = kernel.SecretRegister(nil, kernel.SecretSpec{Alias: "foreign.key", Value: foreign})
+	require.Error(t, err)
+	assert.False(t, kernel.IsDenied(err), "a foreign context is not a policy denial")
+	assert.Equal(t, byte(0), foreign[0],
+		"a register refused for a foreign context must still wipe the caller's value")
+	assert.Equal(t, before, kernel.SecretCount(), "and must not have registered anything")
+
 	krInstall(t, k, "provider.api.key", "", "", krSecretValue)
 	_, err = init.SyscallSecretRead("provider.api.key")
 	require.Error(t, err)
