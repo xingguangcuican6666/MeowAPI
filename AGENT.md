@@ -156,6 +156,7 @@ something the kernel learned during the boot or something it was told before it,
 | `kernel/crypto.go` | kcrypto | randomness, hashing, verification for everyone; signing for the kernel | none |
 | `kernel/keyring.go` | kkeyring | secret custody by use, prefix-scoped, plaintext only for `secret:read` | none |
 | `kernel/receipt.go` | kreceipt | signed settlement receipts over a canonical encoding | none |
+| `kernel/verifier.go` | kverifier | manifest appraisal against a signature on the load path, before any module code runs; no signing entry point exists for a module to appraise its own widened declaration | none |
 | `kernel/sched.go` | ksched | supervised jobs and timers, deadline clamped to the sealed ceiling | none |
 | `kernel/signal.go` | ksignal | reload, drain, kill, abort, with termination as the default for drain | none |
 | `kernel/watchdog.go` | kwatchdog | detects overdue kernel-run work, captures a stack, asks for termination | none |
@@ -173,7 +174,6 @@ something the kernel learned during the boot or something it was told before it,
 | `kernel/fdtable.go` | kfdtable | per-pid integer handles; reclamation on unload | none |
 | `kernel/bootconfig.go` | kboot | the sealed trust root, cluster roots, resource ceilings | none |
 | `kernel/console.go` | - | kernel console: JSON/text, level filter, retention, fault emitter | `console.java` |
-| `kernel/nilcontext_test.go` | - | internal test: a typed nil context is refused, not panicked | none |
 | `kernel/dump.go` | - | read-only kernel state rendering for debugging | none |
 
 ### What each subsystem must guarantee
@@ -700,7 +700,13 @@ unreachable from any module. `kernel/fdtable_test.go` and
 `kernel/audit_syscall_test.go` use those probes, and `install()` is private on
 purpose because a handle is only meaningful inside the pid that owns it. Moving
 them under `tests/` would mean exporting a way to mint a bare handle, which is the
-one thing the fd table exists to prevent.
+one thing the fd table exists to prevent. The fourth is `kernel/nilcontext_test.go`,
+which needs `ProbeTypedNilContext()` from `export_test.go` because a nil
+`*sContext` inside an `SContext` is a value no external test package can construct,
+and it sweeps the entry points and the two dereferencing helpers that are
+unexported. These four are the only test files in `kernel/`, which is why the file
+map above does not list them: that table is the implementation surface, one row per
+file a module's behavior can depend on.
 
 Kernel security tests are mandatory, not optional. They live in
 `tests/security/kernel_test.go` as an external test package so they can only use

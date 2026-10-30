@@ -315,10 +315,11 @@ func TestAnUnpostedEventNeverArrives(t *testing.T) {
 	harness.QuietConsole(t)
 	k := harness.BootOne(t)
 
-	// stream.aborted is the one closed-set name this file does not wire: it is about a client
-	// disconnecting from a stream, which is carried inline on a pipe chunk rather than as an
-	// event, and posting it would mean inventing a second channel for a fact kpipe already
-	// delivers. Subscribing to it must therefore hear nothing.
+	// stream.aborted is the one closed-set name this file does not wire, and the reason is
+	// file ownership rather than a judgement that it should not be posted. The site that knows
+	// the fact is abortStream() in pipe.go, which latches the abort and broadcasts to both ends;
+	// pipe.go is the other half of this kepoll work, and it owns pipe.readable too. Subscribing
+	// to the name from here must therefore hear nothing.
 	pid, ctx, fd := evSubscribe(t, k, []kernel.Op{kernel.OpSignalSend}, kernel.EventStreamAborted)
 	defer func() { _ = k.Unload(pid) }()
 
@@ -348,13 +349,18 @@ func TestEveryClosedSetNameIsEitherPostedOrDocumented(t *testing.T) {
 		kernel.EventConfigReloaded:   "boot.go, from Publish, which is what publishes configuration",
 		kernel.EventPeerDisconnected: "module.go, on unload",
 	}
-	// Names in the closed set that no kernel path posts, each with the reason. A name here is
-	// a deliberate gap, not an oversight, and adding a post site for one means removing it
-	// from this map - which is the review question the map exists to force.
+	// Names in the closed set that no kernel path posts yet, each with the file that owns the
+	// site and why the post is not here. Neither is a judgement that it should never be posted:
+	// both sites live in pipe.go, so wiring them from this file would mean editing across a
+	// boundary that is being worked in parallel. Adding a post site for one means removing it
+	// from this map, which is the review question the map exists to force.
 	unposted := map[kernel.KernelEventName]string{
-		kernel.EventPipeReadable: "kpipe owns this; its four broadcast sites are wired separately",
-		kernel.EventStreamAborted: "a client disconnect is carried inline on a pipe chunk, so a " +
-			"second channel for the same fact would let the two disagree",
+		kernel.EventPipeReadable: "pipe.go owns the site: the wake-up broadcasts on close, write, " +
+			"read and abort",
+		kernel.EventStreamAborted: "pipe.go owns the site too: abortStream() is what latches the " +
+			"abort and broadcasts to both ends. The abort already travels inline on a pipe chunk, " +
+			"so a post is a second channel for one fact and has to be written where both are " +
+			"visible, which is not this file",
 	}
 
 	for _, name := range kernel.KernelEvents() {
@@ -365,13 +371,13 @@ func TestEveryClosedSetNameIsEitherPostedOrDocumented(t *testing.T) {
 			continue
 		}
 		assert.True(t, isKnown,
-			"%q is in the closed set but is neither posted by a kernel path nor listed as a "+
-				"deliberate gap: a subscription to it silently never fires, which is exactly the "+
-				"defect this file covers", name)
+			"%q is in the closed set but is neither posted by a kernel path nor listed with the "+
+				"file that owns its site: a subscription to it silently never fires, which is "+
+				"exactly the defect this file covers", name)
 		assert.NotEmpty(t, why,
-			"%q is a deliberate gap, and the reason is what makes it deliberate rather than "+
-				"forgotten", name)
+			"%q has no post site, and naming the file that owns one is what keeps it pending "+
+				"rather than forgotten", name)
 	}
 	assert.Len(t, posted, 6, "six of the eight names are posted by kernel paths")
-	assert.Len(t, unposted, 2, "and two are deliberate gaps")
+	assert.Len(t, unposted, 2, "and two have their site in pipe.go, which this file does not edit")
 }
