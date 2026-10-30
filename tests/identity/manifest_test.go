@@ -63,7 +63,13 @@ func TestUntrustedDomainGetsNothing(t *testing.T) {
 		}
 	}
 	assert.True(t, sawRejected, "a rejected module must appear in the process table")
-	assert.Nil(t, probe.Ctx, "a rejected module must never receive a context")
+	// A raw comparison, not assert.Nil: Ctx is an interface, and testify's isNil
+	// answers true for BOTH an untyped nil and a nil *sContext stored in one, since
+	// the typed case reaches reflect's IsNil instead of the `object == nil`
+	// short-circuit. assert.Nil would therefore pass on the very defect this line
+	// exists to exclude - a rejected module handed a typed-nil context that satisfies
+	// the type assertion with ok == true and panics on first dereference.
+	assert.True(t, probe.Ctx == nil, "a rejected module must never receive a context")
 	assert.NotEmpty(t, harness.Faults(buf), "a rejection must emit a fault record")
 }
 
