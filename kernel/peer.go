@@ -715,6 +715,29 @@ func peerEndpoint(ep string) error {
 	if strings.ContainsAny(ep, "\n\r") {
 		return peerErr("peer endpoint %q contains a line break", ep)
 	}
+	// Userinfo is refused outright, and this is the load-bearing part of the endpoint
+	// grammar rather than a tidy-up. The kernel reduces an endpoint to the host a
+	// manifest declares, and the transport then dials the endpoint string itself. Those
+	// are two different parsers looking at one string, and "userinfo" is the component
+	// whose meaning depends entirely on which parser gets there first: RFC 3986 says
+	// the host begins after the LAST "@" in the authority, so in
+	// "allowed.example:80@evil.example" the host is evil.example and allowed.example:80
+	// is a username. A reducer that strips the port first reads the same string as
+	// allowed.example and admits it.
+	//
+	// That is not a hypothetical. It was this file's behaviour until the ordering was
+	// fixed, and the two changes go together because fixing the order alone would leave
+	// the guarantee resting on this reducer agreeing with every transport's parser,
+	// forever, including ones that do not exist yet. Refusing the component makes the
+	// question unaskable: there is no spelling of an endpoint in which the checked host
+	// and the dialed host can disagree, because the only construct that could express
+	// the disagreement is not an endpoint.
+	//
+	// manifest.go's validateHost refuses "/@:?#" in a declared host for the same reason,
+	// so this is the house rule applied to the string that is actually dialed.
+	if strings.Contains(ep, "@") {
+		return peerErr("peer endpoint %q contains userinfo, which a mesh endpoint may not carry", ep)
+	}
 	return nil
 }
 
@@ -1113,6 +1136,14 @@ func PeerDial(ctx SContext, spec PeerDialSpec) (PeerSession, error) {
 	// init, which is not in the module table and has no manifest of its own. The host
 	// supplied the transport and sealed the cluster roots, so it is the authority here
 	// for the reason stated in the policy note at the top of this file.
+	// The shape check runs first, before anything is derived from the string. Both
+	// calls below reduce the endpoint to a host, and reducing a string that has not
+	// been validated means the reduction is the first thing to interpret attacker-
+	// chosen bytes rather than the last. peerDial checks the shape again; that copy is
+	// for the host path, which reaches peerDial directly and never comes through here.
+	if err := peerEndpoint(spec.Endpoint); err != nil {
+		return PeerSession{}, err
+	}
 	if err := peerEndpointAllowed(c, spec.Endpoint); err != nil {
 		return PeerSession{}, err
 	}
@@ -1340,19 +1371,54 @@ func peerEndpointAllowed(ctx *sContext, endpoint string) error {
 // what the host transport understands, so it may carry a port, a scheme or a path;
 // AllowedHosts carries bare hostnames because that is what validateHost accepts. Parsing
 // here is what lets the two be compared without either one loosening its own rules.
+//
+// The order of the strips below is the whole content of this function, and it follows
+// RFC 3986: scheme, then the authority's terminator, then userinfo at the last "@",
+// then the port. Stripping the port before the userinfo inverts the meaning of any
+// endpoint containing both, which is the confusion peerEndpoint refuses userinfo to
+// make unreachable.
+//
+// A bracketed IPv6 literal keeps its brackets, so "[2001:db8::1]:443" reduces to
+// "[2001:db8::1]" and can never equal a declared host. That is fail-closed and
+// deliberate rather than an oversight: validateHost refuses a host containing ":", so
+// an IPv6 literal is not declarable in AllowedHosts at all, and a module therefore
+// cannot dial one. The host path can, because it reaches peerDial directly and has no
+// manifest to be bounded by. Making IPv6 declarable is a change to validateHost and to
+// how an operator reads a declaration, not a change to this function.
 func peerHostOf(endpoint string) string {
 	h := endpoint
+
+	// Scheme first, because a scheme is the only component that can contain ":"
+	// before the authority does.
 	if i := strings.Index(h, "://"); i >= 0 {
 		h = h[i+3:]
 	}
+	// Then the authority's end: a path, query or fragment terminates it.
 	if i := strings.IndexAny(h, "/?#"); i >= 0 {
 		h = h[:i]
 	}
-	if i := strings.LastIndex(h, ":"); i >= 0 {
-		h = h[:i]
-	}
-	if i := strings.IndexByte(h, '@'); i >= 0 {
+	// Then userinfo, at the LAST "@", per RFC 3986. This must come before the port:
+	// the two both look like "x:y" and a password may contain a colon, so stripping
+	// the port first lets "allowed.example:80@evil.example" reduce to
+	// allowed.example while every conforming parser reads evil.example. peerEndpoint
+	// refuses userinfo outright, so this branch is unreachable for a validated
+	// endpoint; it is written correctly because a reducer that is wrong in the order
+	// it happens not to reach is a reducer nobody can trust the next time the grammar
+	// widens.
+	if i := strings.LastIndex(h, "@"); i >= 0 {
 		h = h[i+1:]
+	}
+	// Then the port, which is what remains after the authority's last colon - unless
+	// the host is a bracketed IPv6 literal, whose colons are part of the address.
+	if strings.HasPrefix(h, "[") {
+		if i := strings.Index(h, "]"); i >= 0 {
+			rest := h[i+1:]
+			if strings.HasPrefix(rest, ":") {
+				h = h[:i+1]
+			}
+		}
+	} else if i := strings.LastIndex(h, ":"); i >= 0 {
+		h = h[:i]
 	}
 	return h
 }

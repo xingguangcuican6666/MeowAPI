@@ -869,12 +869,13 @@ func resetOom() {
 // ---------------------------------------------------------------------------
 // INTEGRATION.
 //
-// 1. bootconfig.go: BootLimits gains the five fields OomThresholds reads -
-//    MaxAccountedBytesPerModule, OomHostWarnBP, OomHostKillBP, OomMaxVictimsPerSweep and
-//    OomPatrolMillis - plus their entries in defaultLimits and withDefaults. They are
-//    limits rather than globals so the operator seals them with the rest of the trust root,
-//    and hashBootConfig hashes only the values map, so adding them does not change
-//    BootDigest.
+// 1. bootconfig.go: BootLimits gains the four fields OomThresholds reads -
+//    MaxAccountedBytesPerModule, OomHostWarnBP, OomHostKillBP and OomMaxVictimsPerSweep -
+//    plus their entries in defaultLimits, withDefaults and loadBootConfig's digested values
+//    map. They are limits rather than globals so the operator seals them with the rest of
+//    the trust root. The patrol interval is deliberately NOT one of them: it is derived from
+//    the sealed call ceiling the way watchdogInterval is, so the two patrols in this kernel
+//    are timed by one rule rather than by two that could drift.
 //
 // 2. kernel.go: resetOom() is in resetKernel(), AFTER resetModules, because a termination
 //    started by a late sweep would otherwise have no module table to tear down against.

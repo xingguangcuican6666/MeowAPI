@@ -50,8 +50,17 @@ type bootConfig struct {
 	// which trust root a given kernel ran under.
 	digest string
 
-	// signingKey and limits sit beside the map rather than inside it, because the
-	// map is readable by any module and the key material must not be.
+	// signingKey sits beside the map rather than inside it because the map is readable by
+	// any module - SyscallBootAll has no operation gate, and correctly so, since a module
+	// needs to read its own configuration - and key material must not be.
+	//
+	// limits sits beside it for a different reason, and the distinction matters because the
+	// two look alike. Limits are NOT secret: Limits() and SyscallBootLimits() are both
+	// ungated, so a module can already read every ceiling, and copying the same numbers into
+	// the digested map below reveals nothing that was not already readable. They are kept as
+	// a struct rather than as map strings because that is the form every enforcing subsystem
+	// reads them in, and re-parsing eleven integers on every quota check would be a second
+	// source of truth for a number that has to be one number.
 	signingKey string
 	limits     BootLimits
 }
@@ -215,7 +224,10 @@ func loadBootConfig(tr BootTrustRoot) error {
 	}
 	tr.Limits.withDefaults()
 
-	values := make(map[string]string, 8+len(tr.Extra))
+	// Sized from what is actually inserted: node.id, eleven limits, and Extra. Cluster root
+	// keys are appended in the loop below, so they are not counted here and the map grows
+	// once for them, which is the same as guessing a number that happens to be close.
+	values := make(map[string]string, 12+len(tr.ClusterRootKeys)+len(tr.Extra))
 	values["node.id"] = tr.NodeID
 	for i, k := range tr.ClusterRootKeys {
 		values[fmt.Sprintf("cluster.root.%d", i)] = k
@@ -227,6 +239,17 @@ func loadBootConfig(tr BootTrustRoot) error {
 	values["limits.max_shared_bytes"] = fmt.Sprint(tr.Limits.MaxSharedBytes)
 	values["limits.max_kv_bytes_per_module"] = fmt.Sprint(tr.Limits.MaxKVBytesPerModule)
 	values["limits.call_timeout_millis"] = fmt.Sprint(tr.Limits.CallTimeoutMillis)
+	// Every sealed limit goes into the digested map, including the four koom added. The
+	// rule is not "limits that existed before go in"; it is that a ceiling the operator
+	// sealed is part of the root an investigator must be able to identify afterwards. A
+	// limit that is sealed but absent from the digest is a limit whose value the deployment
+	// record cannot prove, and the two boots that differ only in when the kernel starts
+	// killing modules would then be indistinguishable in the audit chain - which is the one
+	// thing the digest exists to prevent.
+	values["limits.max_accounted_bytes_per_module"] = fmt.Sprint(tr.Limits.MaxAccountedBytesPerModule)
+	values["limits.oom_host_warn_bp"] = fmt.Sprint(tr.Limits.OomHostWarnBP)
+	values["limits.oom_host_kill_bp"] = fmt.Sprint(tr.Limits.OomHostKillBP)
+	values["limits.oom_max_victims_per_sweep"] = fmt.Sprint(tr.Limits.OomMaxVictimsPerSweep)
 	for k, v := range tr.Extra {
 		values["extra."+k] = v
 	}

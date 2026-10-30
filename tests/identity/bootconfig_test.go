@@ -21,8 +21,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 package identity
 
 import (
-	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
+	"reflect"
 	"testing"
+
+	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -350,4 +352,121 @@ func TestModuleReadsTrustRoot(t *testing.T) {
 	assert.Len(t, digest, 64)
 	assert.Positive(t, limits.MaxModules)
 	assert.Positive(t, allCount)
+}
+
+// TestEverySealedLimitIsAttestedByTheDigest is the test the digest's own documentation
+// promises and nothing delivered.
+//
+// BootDigest is written into the AuditBoot chain record as trust_root_digest, and its
+// comment says an operator records it so a later investigation can prove which root a
+// kernel ran under. For that to be true, every value the operator sealed has to move the
+// digest. The pre-existing TestTrustRootDigestIsStableAndCoversConfig is named "CoversConfig"
+// but mutates only ClusterRootKeys, so the whole limits class was untested - and when koom
+// added four limits, they were sealed and enforced but never digested. Two boots differing
+// only in OomHostKillBP, that is "terminate a module at 95% of host memory" versus "at 50%",
+// produced the same digest, and an investigator reading the chain could not tell them apart.
+//
+// It walks BootLimits by reflection rather than listing fields, which is the part that makes
+// it worth more than a regression test for the four: the next limit anyone adds fails here
+// until they also add it to loadBootConfig's values map. Listing the eleven fields by hand
+// would pass today and silently stop covering the twelfth.
+func TestEverySealedLimitIsAttestedByTheDigest(t *testing.T) {
+	harness.QuietConsole(t)
+
+	// digestOf boots with one mutated field and returns the resulting digest.
+	digestOf := func(mutate func(*kernel.BootLimits)) string {
+		tr := harness.BootTrust()
+		mutate(&tr.Limits)
+		k, err := kernel.Boot(kernel.BootConfig{TrustRoot: tr})
+		require.NoError(t, err)
+		d := kernel.BootDigest()
+		require.NoError(t, k.Shutdown())
+		return d
+	}
+
+	base := digestOf(func(*kernel.BootLimits) {})
+	require.Len(t, base, 64)
+
+	// A probe value that differs from the default for every field kind present in
+	// BootLimits. Picking per kind rather than per field is what lets this stay a
+	// reflection walk: a new field of an existing kind is covered automatically, and a new
+	// KIND fails the switch below rather than being silently skipped.
+	fields := reflect.TypeOf(kernel.BootLimits{})
+	for i := range fields.NumField() {
+		f := fields.Field(i)
+		name := f.Name
+
+		t.Run(name, func(t *testing.T) {
+			mutated := digestOf(func(l *kernel.BootLimits) {
+				v := reflect.ValueOf(l).Elem().Field(i)
+				switch f.Type.Kind() {
+				case reflect.Int:
+					v.SetInt(int64(i) + 7)
+				case reflect.Int64:
+					v.SetInt(int64(i)*1024 + 4096)
+				default:
+					t.Fatalf("BootLimits.%s has kind %s, which this test does not know how to "+
+						"mutate; extend the switch rather than skipping the field, because a "+
+						"skipped field is a sealed limit nobody attests",
+						name, f.Type.Kind())
+				}
+			})
+
+			assert.NotEqual(t, base, mutated,
+				"changing BootLimits.%s must change the trust root digest, or a deployment "+
+					"record cannot prove which value this kernel was sealed with", name)
+		})
+	}
+
+	// The default itself must be reachable and stable, so the mutations above are compared
+	// against something real rather than against an accident.
+	assert.Equal(t, base, digestOf(func(*kernel.BootLimits) {}),
+		"the same root hashes identically")
+}
+
+// TestSealedLimitsAreReadableByAModuleWithoutAGrant pins the fact that the confidentiality
+// comment in bootconfig.go used to claim and no longer does: limits are not secret.
+//
+// A module needs to know its own quotas to avoid hitting them, so Limits() and
+// SyscallBootLimits() are deliberately ungated. This matters for the digest test above,
+// because it is what makes copying those same numbers into the digested map safe: it reveals
+// nothing that was not already readable. If that ever changes - if limits become gated - the
+// reasoning in bootconfig.go's comment has to be revisited, and this test is what notices.
+func TestSealedLimitsAreReadableByAModuleWithoutAGrant(t *testing.T) {
+	harness.QuietConsole(t)
+
+	tr := harness.BootTrust()
+	tr.Limits.MaxAccountedBytesPerModule = 1234
+	tr.Limits.OomHostKillBP = 4321
+	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: tr})
+	require.NoError(t, err)
+	defer func() { _ = k.Shutdown() }()
+
+	// A module holding nothing at all still reads the ceilings, which is the point: there is
+	// no capability to grant because there is nothing to protect.
+	probe := &harness.Probe{}
+	harness.RegisterProbe(t, "limitreader", probe)
+	pid, err := k.Load(kernel.Manifest{
+		Name: "limitreader", Version: "1",
+		MinKernelAPI: kernel.KernelAPI, MaxKernelAPI: kernel.KernelAPI,
+	})
+	require.NoError(t, err)
+	defer func() { _ = k.Unload(pid) }()
+	require.NotNil(t, probe.Ctx)
+	// GrantsFor's bool reports whether a grant set is RECORDED for the pid, not whether it is
+	// empty, so the assertion that matters is on the set itself. A loaded module always has a
+	// recorded set; this one declares nothing, so it holds nothing.
+	granted, recorded := kernel.GrantsFor(pid)
+	require.True(t, recorded, "a loaded module has a recorded grant set")
+	assert.Empty(t, granted, "and this one was granted nothing")
+
+	assert.EqualValues(t, 1234, probe.Ctx.SyscallBootLimits().MaxAccountedBytesPerModule)
+	assert.Equal(t, 4321, probe.Ctx.SyscallBootLimits().OomHostKillBP)
+
+	// And the digested copies are readable through the same ungated surface, so putting them
+	// in the map leaked nothing.
+	got, ok := probe.Ctx.SyscallBootGet("limits.oom_host_kill_bp")
+	require.True(t, ok, "the limit is in the digested map")
+	assert.Equal(t, "4321", got)
+	assert.Equal(t, kernel.BootDigest(), probe.Ctx.SyscallBootDigest())
 }
