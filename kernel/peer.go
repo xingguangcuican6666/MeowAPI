@@ -712,9 +712,14 @@ func peerEndpoint(ep string) error {
 			return peerErr("peer endpoint %q contains a control or non-ASCII character", ep)
 		}
 	}
-	if strings.ContainsAny(ep, "\n\r") {
-		return peerErr("peer endpoint %q contains a line break", ep)
-	}
+	// There is no separate line-break check here, and that absence is deliberate rather
+	// than an omission: the rune filter above refuses every r <= 0x20, and \n is 0x0a
+	// and \r is 0x0d, so a line break is already refused and a second check for it could
+	// never fire. peerLabel does carry one, because a label is prose and its filter is
+	// narrower - it bounds length and refuses line breaks, and non-ASCII is allowed in a
+	// name an operator typed. The two functions differ in what they permit, so they
+	// differ in which checks are reachable.
+	//
 	// Userinfo is refused outright, and this is the load-bearing part of the endpoint
 	// grammar rather than a tidy-up. The kernel reduces an endpoint to the host a
 	// manifest declares, and the transport then dials the endpoint string itself. Those

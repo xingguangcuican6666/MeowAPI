@@ -1467,6 +1467,231 @@ func TestPeerFieldValidationRefusesForgedLines(t *testing.T) {
 		"an empty method is not a shape violation: %v", err)
 }
 
+// endpointRecorder is a transport that records the endpoint string the kernel actually
+// handed over. It exists because the boundary check and the dial look at different
+// representations of one string: the check reduces the endpoint to a host, while the
+// transport receives the endpoint as written. Asserting on the returned error alone
+// cannot tell those apart, and the difference is exactly where a bypass lives.
+type endpointRecorder struct {
+	fakeTransport
+	mu        sync.Mutex
+	endpoints []string
+}
+
+func (r *endpointRecorder) Exchange(endpoint string, frame kernel.PeerFrame, deadline int64) (kernel.PeerFrame, error) {
+	r.mu.Lock()
+	r.endpoints = append(r.endpoints, endpoint)
+	r.mu.Unlock()
+	return r.fakeTransport.Exchange(endpoint, frame, deadline)
+}
+
+func (r *endpointRecorder) reached() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.endpoints...)
+}
+
+// TestPeerEndpointUserinfoCannotSmuggleAnUndeclaredHost is the regression test for a real
+// bypass in this file's own boundary check, found by feeding the reducer adversarial
+// endpoints rather than by reading it.
+//
+// The kernel reduces an endpoint to the host a manifest declares, and the transport then
+// dials the endpoint string itself. Those are two parsers reading one string, and userinfo
+// is the component whose meaning depends on which reads it first. RFC 3986 puts the host
+// after the LAST "@" in the authority, so in "allowed.example:80@evil.example" the host is
+// evil.example and allowed.example:80 is a username. The reducer stripped the port before
+// the userinfo, so it read the same string as allowed.example, matched it against the
+// declaration, and admitted it. A module declaring one host could reach another, and the
+// declaration an operator reviewed did not describe what the module could do.
+//
+// The fix has two halves and this test pins both. peerEndpoint refuses userinfo outright,
+// which makes the disagreement unexpressible rather than merely unparsed; and the reducer
+// strips in RFC order, so it reads any future grammar widening the same way a conforming
+// parser does. Fixing only the order would leave the guarantee resting on this reducer
+// agreeing with every transport's parser forever, including ones that do not exist yet.
+func TestPeerEndpointUserinfoCannotSmuggleAnUndeclaredHost(t *testing.T) {
+	buf := harness.QuietConsole(t)
+	k, _, _ := meshBoot(t)
+	rt := &endpointRecorder{}
+	require.NoError(t, k.PeerSetTransport(rt))
+
+	const declared = "allowed.example"
+	name := peerNodeName("ms-userinfo")
+	mod := &msProbe{}
+	kernel.Register(name, func() (kernel.Module, error) { return mod, nil })
+	defer kernel.Unregister(name)
+	pid, err := k.Load(kernel.Manifest{
+		Name: name, Version: "1", MinKernelAPI: kernel.KernelAPI, MaxKernelAPI: kernel.KernelAPI,
+		Require:      []kernel.Op{kernel.OpPeerDial},
+		AllowedHosts: []string{declared},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = k.Unload(pid) })
+
+	// Every spelling in which a declared host appears before an "@" and an undeclared one
+	// after it. Each is refused, and the refusal is the shape check rather than the
+	// boundary comparison, because the userinfo is what makes the string unreadable.
+	for _, ep := range []string{
+		"allowed.example:80@evil.example",
+		"https://allowed.example:443@evil.example/x",
+		"allowed.example@evil.example",
+		"allowed.example:@evil.example",
+		"allowed.example@evil.example:8080",
+		"user:pass@evil.example",
+	} {
+		t.Run(ep, func(t *testing.T) {
+			before := len(rt.reached())
+			_, err := kernel.PeerDial(mod.ctx, kernel.PeerDialSpec{Endpoint: ep})
+			require.Error(t, err, "an endpoint carrying userinfo must be refused")
+			assert.Contains(t, err.Error(), "userinfo")
+			assert.Len(t, rt.reached(), before,
+				"and it must never reach the transport: the check precedes the dial")
+		})
+	}
+
+	// The property that matters more than the error text: nothing above was handed to the
+	// transport, so no spelling reached a host the operator did not declare.
+	for _, got := range rt.reached() {
+		assert.NotContains(t, got, "evil.example",
+			"the transport must never be handed an undeclared host")
+	}
+
+	// These refusals write NO escalation, and that is correct rather than a gap. An
+	// escalation records a module reaching past its declared boundary, which is evidence
+	// about the module. A malformed endpoint never reaches the boundary comparison, so
+	// there is no boundary fact to record - and treating a shape error as a boundary probe
+	// would let a caller with a broken string generate escalation records about a
+	// declaration it never tested. TestPeerHostReductionFollowsTheDeclaredGrammar asserts
+	// the escalation for the case that really is a boundary refusal.
+	assert.Empty(t, auditEntries(t, kernel.AuditEscalation),
+		"a shape refusal must not be recorded as a boundary probe")
+	assert.Empty(t, harness.Faults(buf), "and must not fault either")
+}
+
+// TestPeerEndpointShapeIsCheckedBeforeItIsParsed pins the ordering that makes the
+// reduction trustworthy. peerEndpointAllowed reduces the string, so the shape check has to
+// run first: reducing an unvalidated string means the reducer is the first thing to
+// interpret attacker-chosen bytes rather than the last.
+//
+// The observable difference is which error comes back for a string that is both malformed
+// and undeclared. A shape refusal names the endpoint's grammar; a boundary refusal names
+// the declaration. If the boundary check ran first, an endpoint carrying a newline would
+// report a boundary violation, which is a lie about why it was refused and would send an
+// operator to look at their manifest instead of at the caller.
+func TestPeerEndpointShapeIsCheckedBeforeItIsParsed(t *testing.T) {
+	harness.QuietConsole(t)
+	k, _, _ := meshBoot(t)
+	rt := &endpointRecorder{}
+	require.NoError(t, k.PeerSetTransport(rt))
+
+	name := peerNodeName("ms-shape-order")
+	mod := &msProbe{}
+	kernel.Register(name, func() (kernel.Module, error) { return mod, nil })
+	defer kernel.Unregister(name)
+	pid, err := k.Load(kernel.Manifest{
+		Name: name, Version: "1", MinKernelAPI: kernel.KernelAPI, MaxKernelAPI: kernel.KernelAPI,
+		Require:      []kernel.Op{kernel.OpPeerDial},
+		AllowedHosts: []string{"allowed.example"},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = k.Unload(pid) })
+
+	// Malformed AND undeclared. The refusal must name the shape, not the boundary.
+	// A newline is refused by the rune filter rather than by a line-break check, because
+	// the filter covers every r <= 0x20 and \n is 0x0a. What the test pins is the ORDER:
+	// the refusal names the string's shape, not the declaration.
+	_, err = kernel.PeerDial(mod.ctx, kernel.PeerDialSpec{Endpoint: "evil.example\nINJECTED"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "control or non-ASCII character")
+	assert.NotContains(t, err.Error(), "allowed_hosts",
+		"the shape check must run first, so the refusal says why the string was unreadable")
+
+	_, err = kernel.PeerDial(mod.ctx, kernel.PeerDialSpec{Endpoint: "evil.example@x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "userinfo")
+	assert.NotContains(t, err.Error(), "allowed_hosts")
+
+	assert.Empty(t, rt.reached(), "neither malformed endpoint may reach the transport")
+}
+
+// TestPeerHostReductionFollowsTheDeclaredGrammar pins the shapes an operator may declare
+// and a module may dial, including the one that is deliberately impossible. A reducer with
+// no test is a reducer whose next change nobody can check.
+func TestPeerHostReductionFollowsTheDeclaredGrammar(t *testing.T) {
+	harness.QuietConsole(t)
+	k, _, _ := meshBoot(t)
+	rt := &endpointRecorder{}
+	require.NoError(t, k.PeerSetTransport(rt))
+
+	name := peerNodeName("ms-grammar")
+	mod := &msProbe{}
+	kernel.Register(name, func() (kernel.Module, error) { return mod, nil })
+	defer kernel.Unregister(name)
+	pid, err := k.Load(kernel.Manifest{
+		Name: name, Version: "1", MinKernelAPI: kernel.KernelAPI, MaxKernelAPI: kernel.KernelAPI,
+		Require:      []kernel.Op{kernel.OpPeerDial},
+		AllowedHosts: []string{"allowed.example"},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = k.Unload(pid) })
+
+	// Admitted: the host reduces to the declared one. The transport has no handshake
+	// answer configured, so the dial fails afterwards; what is asserted is that the
+	// boundary check passed and the endpoint was handed over unchanged.
+	for _, ep := range []string{
+		"allowed.example",
+		"allowed.example:8080",
+		"https://allowed.example",
+		"https://allowed.example/path",
+		"allowed.example?query=1",
+	} {
+		before := len(rt.reached())
+		_, err := kernel.PeerDial(mod.ctx, kernel.PeerDialSpec{Endpoint: ep})
+		require.Greater(t, len(rt.reached()), before,
+			"%q reduces to the declared host and must be admitted", ep)
+		assert.Equal(t, ep, rt.reached()[len(rt.reached())-1],
+			"the transport must be handed the endpoint as written, not the reduced host")
+		if err != nil {
+			assert.NotContains(t, err.Error(), "allowed_hosts",
+				"%q must not be refused by the boundary: %v", ep, err)
+		}
+	}
+
+	// Refused: the host does not reduce to the declared one. Each of these is a different
+	// way of not matching, and each must name the boundary rather than the shape.
+	for _, ep := range []string{
+		"evil.example",
+		"allowed.example.evil.com",
+		"xallowed.example",
+		"ALLOWED.EXAMPLE",
+		"allowed.example.",
+		"//allowed.example",
+		"[2001:db8::1]:8080",
+	} {
+		_, err := kernel.PeerDial(mod.ctx, kernel.PeerDialSpec{Endpoint: ep})
+		require.Error(t, err, "%q must not match the declared host", ep)
+		assert.Contains(t, err.Error(), "allowed_hosts",
+			"%q is a boundary refusal, not a shape one: %v", ep, err)
+	}
+
+	// Case sensitivity is a consequence worth stating rather than discovering: a manifest
+	// declaring "Allowed.Example" and a module dialing "allowed.example" do not match, so
+	// the declaration must be written exactly as the transport spells the host. Fail-closed
+	// is the right direction for a name comparison, but it is surprising enough that the
+	// test records it.
+	_, err = kernel.PeerDial(mod.ctx, kernel.PeerDialSpec{Endpoint: "Allowed.Example"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "allowed_hosts")
+
+	// An IPv6 literal is refused at the boundary rather than admitted, because
+	// validateHost rejects a host containing ":" so a literal is not declarable at all.
+	// Fail-closed: a module cannot dial one, and the host path can because it has no
+	// manifest bounding it.
+	_, err = kernel.PeerDial(mod.ctx, kernel.PeerDialSpec{Endpoint: "https://[2001:db8::1]:443/x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "allowed_hosts")
+}
+
 // TestPeerAnnounceEpochDistinguishesARestartFromAReplay pins the reason the epoch field
 // exists. A bare sequence check cannot tell an honest peer that restarted and began
 // numbering from 1 again from a captured announcement being replayed, and it would refuse
