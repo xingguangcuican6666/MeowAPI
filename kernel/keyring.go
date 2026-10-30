@@ -434,13 +434,20 @@ func validHeaderName(header string) error {
 // There is no policy check here because there is no context to check. See the policy
 // note at the top of this file.
 func (k *Kernel) InstallSecret(spec SecretSpec) error {
+	// Both refusals wipe, because the contract above says the caller's slice is zeroed
+	// on return whether the call succeeded or was refused, and these are refusals.
+	// installSecret wipes on every path of its own; what it cannot reach is a call that
+	// never gets to it. The value is a credential either way, and which check refused is
+	// not something that changes what leaving it in the caller's heap means.
 	if err := k.hostOnly(); err != nil {
+		wipe(spec.Value)
 		return err
 	}
 	k.shutdownM.Lock()
 	shutdown := k.shutdown
 	k.shutdownM.Unlock()
 	if shutdown {
+		wipe(spec.Value)
 		return errors.New("kernel: already shut down")
 	}
 	return installSecret(k.initCtx, spec, k.initCtx.pid)

@@ -197,7 +197,7 @@ is broken even when every test passes.
 | klock | The kernel owns the lock, so an owner that dies cannot strand its waiters. A clean unload releases it; a forced termination condemns it, because telling a waiter the work it waited for completed when it did not is the worst thing this path can do. Waits have mandatory deadlines and grants follow arrival order, so a noisy module cannot control a quiet one's latency. An exclusive lock is not re-entrant and every acquire queues: the kernel knows a pid, not a goroutine, so a same-pid shortcut hands one exclusive lock to two goroutines at once. Read locks may nest. |
 | kepoll | Delivery is bounded: a full backlog drops the oldest and counts the drop, so a module that stops draining cannot grow the kernel's heap. Only the booted kernel can post an event, so a peer's claim is never indistinguishable from a kernel fact. The closed name set does not provide that and never did: it stops a module inventing a name, not a module using a real one to assert something untrue, and `Event` carries no origin field a subscriber could check. Posting is a method on the kernel handle, which module code cannot obtain, and `tests/security` asserts a subscriber receives nothing from a module that tries. |
 | kcrypto | Key material does not cross the syscall boundary in either direction. Signing is reachable by no live context after boot. Randomness comes from `crypto/rand` alone, and a failed entropy read fails the call rather than returning a partially filled buffer. |
-| kkeyring | A module names an alias and an action and receives the result, never the credential. Scope is by declared prefix; an out-of-scope alias and an unknown one are indistinguishable, so the call is not an oracle for what a deployment holds. |
+| kkeyring | A module names an alias and an action and receives the result, never the credential. Scope is by declared prefix; an out-of-scope alias and an unknown one are indistinguishable, so the call is not an oracle for what a deployment holds. A credential handed to the kernel stops existing in the caller's heap: `SecretSpec.Value` transfers ownership and is zeroed on every return path, including a refusal, because a host that read it from an environment variable or a file must not be left holding a recoverable copy of something it believes it gave away. `tests/security` asserts that for both refusals the host-only install can return. |
 | kreceipt | A receipt is signed over a canonical encoding, so verification recomputes rather than trusts. Sequence numbers are per boot and per node, so a cursor surviving a restart cannot repeat one or open a gap. |
 | kverifier | A manifest is appraised against a signature before any module code runs, so a declaration that was reviewed cannot be widened between review and deployment. The signature binds name, version and digest together, so one minted for a module cannot be replayed onto another or onto a widened copy of itself. There is no signing entry point anywhere in the kernel: a package-level signer would be an oracle any in-process module could call to appraise its own widened declaration, which is the attack this subsystem exists to stop. The posture can only tighten once a boot has appraised anything, and it is derived from the sealed trust root when the host has not chosen one. |
 | krlimit | Both ceilings hold under concurrency, and the refusal is a typed saturation error rather than a policy denial, so a gateway answers 429 instead of 403. Slots held by a dying module come back, which is what stops one broken adapter becoming a gateway-wide outage. |
@@ -302,6 +302,18 @@ kernel domain.
 boot guard. Because the guard is released, the invariants above are testable more
 than once per process - which is the only reason the security test suite can exist
 at all.
+
+Retiring init is what makes a second boot safe from the first one, and the reason
+is not obvious from the process table, which `resetKernel` empties correctly and
+which is what a reader checks. It is the state that is NOT in the table: kvfs
+namespaces by module name and metadata is owned by pid, and the next boot's init
+is named "init" at pid 1 again. So a context retained across a shutdown does not
+write into a dead kernel's state, it writes into the next boot's - and a fresh
+process table reports nothing wrong while that happens. The retire is the only
+thing standing between a stale handle and the boot that follows it, and
+`tests/security` pins it by reading back through the new boot's own context rather
+than by asserting the refusal alone: a refusal that stopped nothing observable
+would pass the weaker form.
 
 ### Security context
 

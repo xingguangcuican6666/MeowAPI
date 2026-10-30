@@ -401,6 +401,168 @@ type forgedSampler struct{}
 func (forgedSampler) TotalMemoryBytes() uint64 { return 1 << 20 }
 func (forgedSampler) ReservedBytes() uint64    { return 1 << 20 }
 
+// TestAContextRetainedAcrossShutdownCannotActOnTheNextBoot pins the retire in Shutdown,
+// which no test covered: removing `k.initCtx.retire()` left all 20 packages green.
+//
+// What the retire stops is not the stale context acting on its own boot - that boot's state is
+// gone, so most of what it could do lands nowhere. It is the stale context acting on the NEXT
+// boot's state. Both boots allocate init as pid 1, and kvfs namespaces by module name, so a
+// context retained from boot 1 writes into the same namespace boot 2's init reads. The process
+// table really is fresh, which is what tests/identity asserts, and that is exactly why the gap
+// stayed hidden: the table looks correct while the namespace accepts a write from a handle that
+// belonged to a kernel that no longer exists.
+//
+// AGENT.md states the property - "A retired context returns kernel: context retired from every
+// syscall. This is what makes the root context handoff irreversible in practice rather than only
+// in intent" - and states it for Shutdown too, which is the reason this asserts both domains the
+// stale context reaches for: per-pid state and the kernel's own metadata store.
+func TestAContextRetainedAcrossShutdownCannotActOnTheNextBoot(t *testing.T) {
+	harness.QuietConsole(t)
+
+	k1, err := kernel.Boot(kernel.BootConfig{})
+	require.NoError(t, err)
+	stale := k1.InitContext()
+	require.NotNil(t, stale)
+	require.NoError(t, k1.Shutdown())
+
+	k2, err := kernel.Boot(kernel.BootConfig{})
+	require.NoError(t, err, "the boot guard is released by Shutdown")
+	defer func() { _ = k2.Shutdown() }()
+	fresh := k2.InitContext()
+	require.NotNil(t, fresh)
+
+	const retiredErr = "kernel: context retired"
+
+	// Each stale call is asserted rather than required, so one missing retire reports every
+	// refusal it should have caused instead of stopping at the first. They are independent
+	// calls into independent subsystems, and the read-backs below are what make the failure
+	// legible: without them a report would say "no error" three times and not say what the
+	// stale handle got away with.
+	refused := func(what string, err error) {
+		t.Helper()
+		assert.Error(t, err, "%s from a context retained across a shutdown must be refused", what)
+		if err != nil {
+			assert.Equal(t, retiredErr, err.Error(),
+				"and %s is refused as retired, not as foreign: this kernel issued it", what)
+		}
+	}
+
+	// Per-pid namespaced state, which is the one that crosses boots: both inits are pid 1 and
+	// both are named "init", so the write lands in the namespace the fresh context reads.
+	refused("a kvfs write", kernel.KVPut(stale, "stale.key", []byte("from a previous boot")))
+	leaked, err := kernel.KVGet(fresh, "stale.key")
+	assert.Error(t, err, "nothing reached the new boot's namespace")
+	assert.Empty(t, leaked, "and boot 2 cannot read what boot 1's handle wrote")
+
+	// The kernel's own metadata store, which is package state rather than per-pid state and so
+	// is the other thing a stale handle would otherwise write into. Read back through the fresh
+	// context rather than through MetadataSnapshot, because the snapshot exposes only published
+	// entries and both inits are pid 1: a write the stale handle managed would land under the
+	// same owner the fresh context reads, which is what makes the read-back a real assertion
+	// instead of a check that would pass either way.
+	refused("a metadata write", stale.SyscallMetadataSet("stale.metadata", "from a previous boot"))
+	v, err := fresh.SyscallMetadataGet("stale.metadata")
+	require.NoError(t, err, "reading metadata is init's own privilege and is not what is under test")
+	assert.Nil(t, v, "nothing reached the new boot's metadata store")
+
+	// A fault-level record is the highest-authority console write in the policy table, and a
+	// stale handle is not allowed to add one to the new boot's chain either.
+	refused("a fault-level log", stale.SyscallLog(kernel.LogFault, "a fault from a previous boot"))
+
+	// The refusal is about the handle and not about the kernel being unusable: the fresh
+	// context does all three things the stale one was refused.
+	require.NoError(t, kernel.KVPut(fresh, "fresh.key", []byte("v")))
+	got, err := kernel.KVGet(fresh, "fresh.key")
+	require.NoError(t, err)
+	assert.Equal(t, "v", string(got))
+
+	require.NoError(t, fresh.SyscallMetadataSet("fresh.metadata", "v"))
+	v, err = fresh.SyscallMetadataGet("fresh.metadata")
+	require.NoError(t, err)
+	assert.Equal(t, "v", v, "the new boot's own init can still write its metadata")
+
+	require.NoError(t, fresh.SyscallLog(kernel.LogInfo, "the new boot logs"))
+}
+
+// TestARefusedInstallStillWipesTheCallersSecret covers the two methods on the kernel handle
+// that take caller-owned credential bytes, against both refusals each can return.
+//
+// Both document that ownership transfers and the caller's slice is zeroed on return whether
+// the call succeeded or was refused. Two refusal paths did not honour that: the authority gate
+// and the shutdown check. They were added later than the contract, and each returns before
+// reaching installSecret and installConsoleCredential, which are the functions that wipe on
+// their own paths. A refusal that returns early is still a return, and the credential is still
+// in the caller's heap: a host that read the value from an environment variable or a file now
+// has a recoverable copy it believes the kernel took off its hands.
+//
+// The shutdown half was already covered for the console credential by
+// tests/evidence/tty_test.go, and the gate half is what a mutation found missing - it is the
+// regression the gate itself introduced, which is why the test lives beside the gate's other
+// assertions rather than in either subsystem's suite.
+func TestARefusedInstallStillWipesTheCallersSecret(t *testing.T) {
+	harness.QuietConsole(t)
+
+	// 32 bytes: inside the console credential's floor and ceiling, and a legal secret value.
+	secret := func() []byte {
+		b := make([]byte, 32)
+		for i := range b {
+			b[i] = byte('a' + i%26)
+		}
+		return b
+	}
+
+	t.Run("a shut-down kernel", func(t *testing.T) {
+		k := harness.BootOne(t)
+		require.NoError(t, k.Shutdown())
+
+		value := secret()
+		err := k.InstallSecret(kernel.SecretSpec{Alias: "refused/secret", Value: value})
+		require.Error(t, err)
+		assert.Equal(t, make([]byte, 32), value,
+			"a refused secret install must still wipe the caller's value")
+
+		cred := secret()
+		err = k.InstallConsoleCredential(cred)
+		require.Error(t, err)
+		assert.Equal(t, make([]byte, 32), cred,
+			"a refused console credential must still wipe the caller's value")
+	})
+
+	t.Run("a handle that is not the booted kernel", func(t *testing.T) {
+		z := &kernel.Kernel{}
+
+		value := secret()
+		err := z.InstallSecret(kernel.SecretSpec{Alias: "refused/secret", Value: value})
+		require.Error(t, err)
+		assert.Equal(t, foreignKernelErr, err.Error())
+		assert.Equal(t, make([]byte, 32), value,
+			"the authority gate is a refusal like any other, and the bytes are the caller's")
+
+		cred := secret()
+		err = z.InstallConsoleCredential(cred)
+		require.Error(t, err)
+		assert.Equal(t, foreignKernelErr, err.Error())
+		assert.Equal(t, make([]byte, 32), cred,
+			"and which check refused does not change what an unwiped credential means")
+	})
+
+	t.Run("the host path still installs and still wipes", func(t *testing.T) {
+		k := harness.BootOne(t)
+
+		value := secret()
+		require.NoError(t, k.InstallSecret(kernel.SecretSpec{Alias: "wiped/ok", Value: value}))
+		assert.Equal(t, make([]byte, 32), value, "an accepted install wipes too, as before")
+
+		found := false
+		for _, info := range kernel.SecretInventory() {
+			if info.Alias == "wiped/ok" {
+				found = true
+			}
+		}
+		assert.True(t, found, "and the refusal above is not the wipe turning into a no-op")
+	})
+}
+
 // TestOnlyTheBootedKernelCanAssertAKernelFact is the kepoll half of the same gate, asserted
 // end to end rather than as a refusal: a subscriber must not be able to receive an event that
 // no kernel subsystem observed.

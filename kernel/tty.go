@@ -350,7 +350,15 @@ var kttys = &ttyRegistry{open: map[PID]int{}, byHandle: map[*ttyHandle]struct{}{
 // while a comparison could be reading the buffer would leave a window in which a
 // concurrently arriving all-zero candidate matched a fully wiped credential.
 func (k *Kernel) InstallConsoleCredential(credential []byte) error {
+	// Wiped before the authority check, not after it, because the contract above is
+	// "every return path including refusals" and this one is a refusal. The bytes are
+	// the caller's and the caller has already given up ownership by making the call;
+	// which of the two checks refused is not something that changes what a credential
+	// left in the caller's heap means. A host that reached this through a handle that
+	// is not the booted kernel is a host with a bug, and the bug is worth reporting
+	// without also leaving the key recoverable.
 	if err := k.hostOnly(); err != nil {
+		wipe(credential)
 		return err
 	}
 	generation := ttyGeneration()
