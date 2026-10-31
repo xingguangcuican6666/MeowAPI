@@ -369,6 +369,24 @@ func Check(root string) ([]Finding, Stats, error) {
 			return nil
 		}
 
+		// A linked worktree's .git is a FILE holding a "gitdir: <path>" pointer rather
+		// than a directory, so the name-based prune above does not reach it and the file
+		// gets scanned. That makes the reported count differ by one between a normal
+		// checkout and a worktree of the same tree, which is a measurement that moves for
+		// no reason anyone can act on. Skipping the root .git entry whether it is a file
+		// or a directory makes the count a property of the tree rather than of how it was
+		// checked out.
+		//
+		// The skip is deliberately narrow: root-level .git only, not any file with a
+		// prunable name at any depth. A planted file named "vendor" or "stage" mid-tree
+		// stays scanned, because widening this would exempt exactly the paths a payload
+		// would be hidden under. The root .git cannot be forged into anything useful: in
+		// a normal checkout it is already a directory that the prune above handles, and in
+		// a worktree it is git's own pointer file.
+		if rel == ".git" {
+			return nil
+		}
+
 		st.Scanned++
 		if isInstructionFile(rel) {
 			st.InstructionFiles++

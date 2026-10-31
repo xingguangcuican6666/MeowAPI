@@ -335,6 +335,51 @@ func TestScanRootIsNotPrunedAsNested(t *testing.T) {
 	assert.Zero(t, st.NestedCheckouts)
 }
 
+// TestWorktreeGitFileIsNotScanned covers the linked-worktree shape. There .git is a
+// FILE holding a "gitdir:" pointer, so the name-based prune above - which only runs in
+// the directory branch - does not reach it, and the pointer file was counted as scanned
+// surface. That made the reported count differ by one between a normal checkout and a
+// worktree of the same tree: measured at 114 in a linked worktree whose tracked
+// non-stage file count is 113. The count should describe the tree, not how it was
+// checked out.
+//
+// The skip is root-level .git only. A file with a prunable name deeper in the tree stays
+// scanned, because widening it would exempt exactly the paths a payload would hide under
+// - see TestSkipDirsAreNotHonouredAsFiles.
+func TestWorktreeGitFileIsNotScanned(t *testing.T) {
+	root := t.TempDir()
+	// What git really writes into a linked worktree.
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".git"),
+		[]byte("gitdir: /repo/.git/worktrees/probe\n"), 0o644))
+	write(t, root, "AGENT.md", "# AGENT.md\n\nPure ASCII.\n")
+	write(t, root, "kernel/boot.go", "package kernel\n")
+
+	findings, st, err := Check(root)
+	require.NoError(t, err)
+	assert.Empty(t, findings)
+	assert.Equal(t, 2, st.Scanned, "the .git pointer file is not instruction surface")
+	assert.Zero(t, st.NestedCheckouts, "and it is not a nested checkout either")
+}
+
+// TestSkipDirsAreNotHonouredAsFiles pins the narrowness of that skip. A file named
+// "vendor" or "stage" mid-tree must still be scanned: honouring skipDirs for files
+// would let a planted path exempt itself from the check, which is the opposite of what
+// the tool is for. The payload is a Rule B tag character rather than a homoglyph,
+// because a file with this name is not instruction surface and Rule A does not apply to
+// it - Rule B applies to every text file, which is the one that catches this.
+func TestSkipDirsAreNotHonouredAsFiles(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "AGENT.md", "# AGENT.md\n")
+	// A file, not a directory, carrying a prunable name.
+	write(t, root, "pkg/vendor", "package p\n\nvar _ = \""+string(rune(0xE0041))+"\"\n")
+
+	findings, st, err := Check(root)
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "a file named like a skip directory is still scanned")
+	assert.Equal(t, "B", findings[0].Rule)
+	assert.Equal(t, 2, st.Scanned)
+}
+
 // TestBinaryFilesAreSkipped prevents false positives on images, archives and
 // compiled artifacts, which legitimately contain bytes above 0x7E.
 func TestBinaryFilesAreSkipped(t *testing.T) {
