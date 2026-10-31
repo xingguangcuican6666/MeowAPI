@@ -243,22 +243,34 @@ func TestATimedOutRunIsBothEvents(t *testing.T) {
 		"the run must actually time out, or this case asserts nothing about deadline.passed")
 	require.NoError(t, ctx.SyscallClose(ran))
 
-	// Both names arrive from one dispatch, and they arrive in ONE call: EventWait drains the
-	// whole pending backlog rather than returning one event, so waiting twice would time out on
-	// the second wait even though both facts were posted. That batching is the subscription's
-	// documented shape, and asserting it here is what keeps this case from being rewritten into
-	// a loop that looks equivalent and is not.
-	got, err := ctx.SyscallEventWait(fd, kernel.KernelClock().Deadline(5*time.Second))
-	require.NoError(t, err)
+	// Both names arrive, and this waits for both rather than draining once and demanding
+	// both. The two posts are two separate acquisitions of the subscription's lock, so a
+	// waiter woken by the first can drain and return before the second lands - which is
+	// what this case did on a loaded runner, reporting `deadline.passed` at Seq 1 and no
+	// `job.finished` while the kernel had posted both correctly and in order. Accumulating
+	// across waits until every wanted name has been seen keeps the property (one dispatch
+	// makes both facts observable) without requiring them to be observable in one drain,
+	// and it still fails if either post is missing, because the deadline then expires.
+	want := []kernel.KernelEventName{kernel.EventDeadlinePassed, kernel.EventJobFinished}
+	deadline := kernel.KernelClock().Deadline(5 * time.Second)
 	seen := map[kernel.KernelEventName]kernel.Event{}
-	for _, e := range got {
-		seen[e.Name] = e
+	for len(seen) < len(want) {
+		got, err := ctx.SyscallEventWait(fd, deadline)
+		require.NoError(t, err, "waited for %v and received %v before the deadline", want, seen)
+		for _, e := range got {
+			seen[e.Name] = e
+		}
 	}
-	require.Contains(t, seen, kernel.EventDeadlinePassed, "the expired deadline is posted")
-	require.Contains(t, seen, kernel.EventJobFinished, "and so is the terminal state")
+	for _, name := range want {
+		require.Contains(t, seen, name)
+	}
 	assert.Equal(t, pid, seen[kernel.EventDeadlinePassed].Subject)
 	assert.Equal(t, "wired-timeout", seen[kernel.EventDeadlinePassed].Detail,
 		"the detail is the run label, which is what makes the event actionable")
+	assert.Equal(t, string(kernel.SchedTimedOut), seen[kernel.EventJobFinished].Detail,
+		"and job.finished carries the terminal state it reached")
+	assert.Equal(t, seen[kernel.EventDeadlinePassed].Seq+1, seen[kernel.EventJobFinished].Seq,
+		"posted once each, in the order finish() posts them: the deadline expired, then the run ended")
 }
 
 // TestPublishedConfigurationIsAnEvent covers config.reloaded, which is broadcast rather than
