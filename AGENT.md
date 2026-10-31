@@ -940,10 +940,13 @@ mistake them for intent:
 - `mirror/` is a Java design prototype, and nothing in this repository builds or
   runs it. A local worktree may still hold `mirror/bin/` and `mirror/mirror.jar`
   from an earlier compile; both are gitignored, so a clean checkout does not have
-  them. That is why `instrcheck` reports 133 files scanned here and 111 in CI, and
-  why neither number is a repository fact to quote. The sources are the
-  specification; the compiled output would go stale the moment a source changed,
-  which is the reason the gitignore entry gives for excluding it.
+  them. That is why `instrcheck` reports a larger file count here than in CI: the
+  local number is tracked non-`stage/` files plus whatever ignored artifacts this
+  worktree happens to hold, and the CI number is the first term alone. Both move
+  with the tree, so neither is a fact to quote - measure it, and say which tree it
+  was measured in. The sources are the specification; the compiled output would go
+  stale the moment a source changed, which is the reason the gitignore entry gives
+  for excluding it.
 - The 13 Java sources under `mirror/src/` carry no license header. Whose they are
   and what they should say is the owner's decision, and nothing in this repo has
   made it.
