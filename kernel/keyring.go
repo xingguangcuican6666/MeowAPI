@@ -760,8 +760,14 @@ func refuseSecretScope(ctx *sContext, alias, action string) {
 // match against, a host to bind to - and the caller keeps it: it may log the host it
 // asked about, retry a match, or sign a second message with the same slice. Zeroing
 // it would silently change a contract this function never offered and corrupt a
-// caller that reuses the buffer. applySecret wipes the kernel's own copies of the
-// secret value and the rendered header, which is where the custody boundary is.
+// caller that reuses the buffer.
+//
+// The custody boundary is inside applySecret, which wipes what it copied out of the
+// keyring before returning on every path. One thing there is deliberately not wiped:
+// a rendered header value. It is sealed into the fd table as the payload the module
+// asked for, so wiping it would discard the result of the call, and it is reclaimed
+// instead - sealedSecret.Close wipes it, and a walk of the fd table on unload, panic
+// or forget closes every sealed value the module held.
 func SecretUse(ctx SContext, alias string, action SecretAction, data []byte) (SecretResult, error) {
 	c, ok := ctx.(*sContext)
 	if !ok {
