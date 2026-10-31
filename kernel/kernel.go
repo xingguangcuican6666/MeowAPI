@@ -133,11 +133,12 @@ func resetKernel() {
 	// boot is readable by the next boot's init, with nothing on that boot's chain to
 	// say so. tests/security's TestResetClearsWhatUnloadNeverTouches pins that half.
 	resetKVFS()
-	// resetFSScopes is the one entry in this list that no test in tests/ can pin, and
-	// the reason is structural rather than an oversight: LoadModule calls SetFSScope
-	// unconditionally, so any pid that reaches an fs check has its scope overwritten
-	// from its own manifest first, and a scope surviving from a previous boot is
-	// unreachable through every exported observation. Measured under its removal: a
+	// resetFSScopes is not reachable from any external test, because fsScopes has no
+	// exported reader - deliberately, since a module must not be able to enumerate the
+	// boundaries it is held to. What an external suite can prove is the property that
+	// matters: LoadModule calls SetFSScope unconditionally, so any pid that reaches an
+	// fs check has its scope overwritten from its own manifest first, and a scope
+	// surviving from a previous boot cannot be used. Measured under its removal: a
 	// boot-2 module was still refused the path the host had widened into boot 1's
 	// same-numbered pid.
 	//
@@ -151,8 +152,10 @@ func resetKernel() {
 	// held for a pid that will not be reused, and nothing but this reset frees them.
 	//
 	// So: a leak guard for an edge of the unload path, and a containment guard if any
-	// future path grants fs access without going through the loader. Do not delete it
-	// on the grounds that nothing tests it.
+	// future path grants fs access without going through the loader. It is pinned in
+	// package by fsscope_test.go, which plants a scope for a pid no loader ever
+	// assigned - so no ClearFSScope can reach it - and reads it back after a full boot
+	// and shutdown. Mutation-tested: removing this call fails that test.
 	resetFSScopes()
 	// resetFS clears where the data roots are; resetFSScopes above clears what each
 	// pid may touch inside one. Both must be empty before a new boot installs its

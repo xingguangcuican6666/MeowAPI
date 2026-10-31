@@ -93,6 +93,36 @@ func TestUnloadDropsTheFSScope(t *testing.T) {
 	assert.Empty(t, write)
 }
 
+// TestResetFSScopesClearsWhatUnloadNeverReaches closes the gap the note in resetKernel
+// used to describe as unclosable. It said "no test in tests/ can pin" this reset, which
+// is true and reads as though it were a limitation of testing rather than of where the
+// test lives: fsScopes has no exported reader, so nothing outside this package can
+// observe the map. In-package it is observable, through the same probe the cases above
+// use, and the shape that pins it is a scope belonging to a pid no module owns - so no
+// ClearFSScope call can ever reach it - surviving a full boot and shutdown.
+//
+// Mutation-tested: removing resetFSScopes() from resetKernel leaves the planted entry in
+// place and this test fails; with it, the entry is gone.
+func TestResetFSScopesClearsWhatUnloadNeverReaches(t *testing.T) {
+	// A pid no loader ever assigned, so no unload path can clear it. What survives a
+	// boot is then decided by resetKernel alone.
+	const orphan PID = 4711
+	SetFSScope(orphan, []string{"planted-by-a-test"}, []string{"planted-write"})
+
+	read, write := ProbeFSScopeFor(orphan)
+	require.Equal(t, []string{"planted-by-a-test"}, read, "the scope is installed before the boot")
+	require.Equal(t, []string{"planted-write"}, write)
+
+	k, err := Boot(BootConfig{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = k.Shutdown() })
+	require.NoError(t, k.Shutdown())
+
+	read, write = ProbeFSScopeFor(orphan)
+	assert.Empty(t, read, "a boot must not inherit a scope no unload path could have cleared")
+	assert.Empty(t, write)
+}
+
 // fsscopeProbe is a module that does nothing: these tests are about what the loader
 // and the unloader do around it.
 type fsscopeProbe struct{}
