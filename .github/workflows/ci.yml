@@ -139,61 +139,65 @@ jobs:
       # failure rather than a pass. If the tests stop running, this goes red.
       - name: assert the security suite actually ran
         run: |
-          set -euo pipefail
-          out="$(go test -count=1 -v ./kernel/ ./tests/... ./internal/... ./tools/... 2>&1)"
-          passed="$(printf '%s' "$out" | grep -c '^--- PASS' || true)"
-          failed="$(printf '%s' "$out" | grep -c '^--- FAIL' || true)"
-          echo "passed=$passed failed=$failed"
-          if [ "$failed" -ne 0 ]; then
-            echo "$out" | grep '^--- FAIL'
+          set -uo pipefail
+          # -json rather than -v, and the reason is what -v cannot answer. The text
+          # form's "^--- SKIP" line is unindented only for a top-level test, so a skip
+          # inside a subtest is invisible to a count built from it - measured: a subtest
+          # that always skips reports its parent as PASS at column zero and the step
+          # exits 0. -json emits one event per test WITH its package and its full
+          # subtest path, which is also what makes an allowlist entry unforgeable by a
+          # same-named test in another package.
+          #
+          # The exit code is deliberately not fatal here: this step's job is to name
+          # what happened, and a failing run that prints nothing but "exit code 1" is
+          # worse than one that lists the failures. The -race step above fails first in
+          # practice, but this one still reports.
+          go test -json -count=1 ./kernel/ ./tests/... ./internal/... ./tools/... \
+            > /tmp/suite.json 2> /tmp/suite.err || true
+          report="$(awk -f tools/ci/suite-report.awk /tmp/suite.json)"
+          printf '%s\n' "$report"
+          eval "$report"
+          if [ "${BUILD_FAIL:-0}" -ne 0 ]; then
+            # Reported separately from a test failure, because a build failure means no
+            # test ran at all. The floor below would also fire and say "got 0", which is
+            # true but is the wrong diagnosis to read first.
+            echo "::error::$BUILD_FAIL package(s) failed to build, so no test in them ran"
+            printf '%s\n' "${BUILD_FAILURES:-}"
             exit 1
           fi
-          # The floor rises as the suite grows and is never lowered. It is a guard
-          # against the suite silently not running, not against a slow test day.
-          #
-          # A top-level t.Skip removes one PASS, so a floor counted over PASS alone
-          # would fail the build for an environment difference. Five tests legitimately
-          # skip on machine conditions rather than on defects: four in tests/egress need
-          # a non-loopback private IPv4 interface on the runner, and
-          # TestFSResolveRefusesEveryEscape needs os.Symlink to work. Those five names
-          # are the allowlist below, and a skip that is not on it fails the build with
-          # its name printed.
-          #
-          # The allowlist is by name rather than by count, and a measured case is the
-          # reason. A count cap would let a regression hide: removing resetShm() from
-          # resetKernel turns TestShmPoolIsClearedAcrossRestart into a skip rather than a
-          # failure, because that test skips when the pool survived Shutdown, and the
-          # PASS + SKIP total is unchanged by a pass becoming a skip. Naming the skips
-          # that are permitted, and only those, is what keeps "the runner lacks a private
-          # interface" distinguishable from "a defect made this test decline to assert".
-          # A skip added to the allowlist is a decision a reviewer sees, not a hole.
-          allowed_skips=" TestASuccessfulDialUsesTheValidatedAddress TestThePoolReturnsTheSameSocketAndRevalidatesOnReuse TestThePoolCeilingClosesRatherThanRefuses TestSocketsAreReclaimedWhenTheModuleIsUnloaded TestFSResolveRefusesEveryEscape "
-          skipped=0
-          unexpected=""
-          for name in $(printf '%s' "$out" | grep '^--- SKIP' | sed 's/^--- SKIP: //; s/ .*//'); do
-            skipped=$((skipped + 1))
-            case "$allowed_skips" in
-              *" $name "*) ;;
-              *) unexpected="$unexpected $name" ;;
-            esac
-          done
-          echo "skipped=$skipped"
-          if [ -n "$unexpected" ]; then
-            echo "::error::tests skipped that are not environment-dependent:$unexpected"
-            echo "a skip is a test that declined to assert; either fix it or add the"
-            echo "name to the allowlist in ci.yml with the environment reason"
+          if [ "${FAILED:-0}" -ne 0 ]; then
+            echo "::error::$FAILED test(s) failed"
+            printf '%s\n' "${FAILURES:-}"
+            exit 1
+          fi
+          # A skip is a test that declined to assert, so every skip must be either on
+          # the allowlist in tools/ci/suite-report.awk or a failure. The allowlist names
+          # package AND test and caps each at one skip, which closes the two ways a
+          # count cap leaks: an allowlisted name skipping in a different package for a
+          # different reason, and a single allowlisted name skipping hundreds of times
+          # to satisfy a floor while no test passes at all.
+          if [ "${UNEXPECTED:-0}" -ne 0 ]; then
+            echo "::error::$UNEXPECTED test(s) skipped that are not environment-dependent"
+            printf '%s\n' "${UNEXPECTED_LIST:-}"
+            echo "either fix the test or add its package and name to allowed_skips in"
+            echo "tools/ci/suite-report.awk with the environment reason it skips for"
+            exit 1
+          fi
+          if [ "${EXCESS:-0}" -ne 0 ]; then
+            echo "::error::$EXCESS skip(s) beyond what the allowlist permits"
+            printf '%s\n' "${EXCESS_LIST:-}"
             exit 1
           fi
           # The floor has no slack, deliberately, and that is safe only because the
-          # allowlist above is by name. Counted as PASS + SKIP, the total is 615 on a
-          # runner with a private IPv4 interface and symlinks, and 615 on one with
-          # neither - the five tests that skip are the same five, and they are counted.
-          # So "at least 615" means every top-level test ran, in every environment this
+          # allowlist above is by name. Counted as PASS + SKIP, the total is the same
+          # on a runner with a private IPv4 interface and symlinks as on one with
+          # neither - the tests that skip are the same ones, and they are counted. So
+          # "at least FLOOR" means every top-level test ran in every environment this
           # project supports. Adding margin here would reopen the hole the allowlist
           # closes: slack is what lets a test quietly stop asserting. If this number
           # has to move, it moves up with the suite.
-          if [ $((passed + skipped)) -lt 615 ]; then
-            echo "::error::expected at least 615 tests to run, got $((passed + skipped))"
+          if [ $((PASSED + SKIP_TOP)) -lt 619 ]; then
+            echo "::error::expected at least 619 tests to run, got $((PASSED + SKIP_TOP))"
             echo "a guard against the suite silently not running"
             exit 1
           fi
