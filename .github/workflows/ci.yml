@@ -176,6 +176,17 @@ jobs:
             printf '%s\n' "${BUILD_FAILURES:-}"
             exit 1
           fi
+          if [ "${PKG_FAIL:-0}" -ne 0 ]; then
+            # A package-level fail with no test to name it: a TestMain that panics, an
+            # os.Exit, or a t.Cleanup that panics. Every test in the package may have
+            # passed, so the floor cannot catch this - it lands exactly on target while
+            # the suite is red. Counted separately from FAILED for the same reason the
+            # build failure is: it is a different diagnosis and a reviewer reads them
+            # in a different order.
+            echo "::error::$PKG_FAIL package(s) failed with no failing test to name"
+            printf '%s\n' "${PKG_FAILURES:-}"
+            exit 1
+          fi
           if [ "${FAILED:-0}" -ne 0 ]; then
             echo "::error::$FAILED test(s) failed"
             printf '%s\n' "${FAILURES:-}"
@@ -183,15 +194,27 @@ jobs:
           fi
           # A skip is a test that declined to assert, so every skip must be either on
           # the allowlist in tools/ci/suite-report.awk or a failure. The allowlist names
-          # package AND test and caps each at one skip, which closes the two ways a
-          # count cap leaks: an allowlisted name skipping in a different package for a
-          # different reason, and a single allowlisted name skipping hundreds of times
-          # to satisfy a floor while no test passes at all.
+          # package AND test AND the reason text the test gives, and caps each entry at
+          # one skip. That closes the three ways a weaker list leaks: a same-named test
+          # skipping in another package, an allowlisted test skipping for a NEW reason -
+          # a defect wearing a permitted name, which can land the total exactly on the
+          # floor - and one permitted name skipping enough times to satisfy the floor
+          # with nothing passing at all.
+          #
+          # A subtest skip counts here too. It is the shape that motivated moving off
+          # `go test -v`: the text form indents a subtest's verdict under a parent that
+          # reports PASS at column zero, so a gate built on grepping could not see it,
+          # and it does not remove a pass so the floor never moves either. SKIP_SUB is
+          # echoed for the log; the failures themselves are in UNEXPECTED_LIST.
+          if [ "${SKIP_SUB:-0}" -ne 0 ]; then
+            echo "note: $SKIP_SUB subtest skip(s), which do not move the floor and are"
+            echo "      reported in the unexpected-skip list below"
+          fi
           if [ "${UNEXPECTED:-0}" -ne 0 ]; then
-            echo "::error::$UNEXPECTED test(s) skipped that are not environment-dependent"
+            echo "::error::$UNEXPECTED test(s) skipped without a permitted reason"
             printf '%s\n' "${UNEXPECTED_LIST:-}"
-            echo "either fix the test or add its package and name to allowed_skips in"
-            echo "tools/ci/suite-report.awk with the environment reason it skips for"
+            echo "either fix the test, or add its package, name AND the reason text it"
+            echo "skips with to the allowlist in tools/ci/suite-report.awk"
             exit 1
           fi
           if [ "${EXCESS:-0}" -ne 0 ]; then
@@ -207,8 +230,8 @@ jobs:
           # project supports. Adding margin here would reopen the hole the allowlist
           # closes: slack is what lets a test quietly stop asserting. If this number
           # has to move, it moves up with the suite.
-          if [ $((PASSED + SKIP_TOP)) -lt 619 ]; then
-            echo "::error::expected at least 619 tests to run, got $((PASSED + SKIP_TOP))"
+          if [ $((PASSED + SKIP_TOP)) -lt 635 ]; then
+            echo "::error::expected at least 635 tests to run, got $((PASSED + SKIP_TOP))"
             echo "a guard against the suite silently not running"
             exit 1
           fi
