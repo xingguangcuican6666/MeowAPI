@@ -722,20 +722,30 @@ introduces a new layer adds a package and a line in the file map.
 | `tests/kpanic` | what survives the way out | `panic` |
 | `tests/security` | the invariants that must never regress | `kernel` |
 
-Four files stay in `kernel/` rather than moving, and the reason is a property worth
+Six files stay in `kernel/` rather than moving, and the reason is a property worth
 keeping: `kernel/export_test.go` is `package kernel` and exposes package-private
 internals as `Probe*` functions, compiled into the kernel's own test binary and
 unreachable from any module. `kernel/fdtable_test.go` and
 `kernel/audit_syscall_test.go` use those probes, and `install()` is private on
 purpose because a handle is only meaningful inside the pid that owns it. Moving
 them under `tests/` would mean exporting a way to mint a bare handle, which is the
-one thing the fd table exists to prevent. The fourth is `kernel/nilcontext_test.go`,
-which needs `ProbeTypedNilContext()` from `export_test.go` because a nil
-`*sContext` inside an `SContext` is a value no external test package can construct,
-and it sweeps the entry points and the two dereferencing helpers that are
-unexported. These four are the only test files in `kernel/`, which is why the file
-map above does not list them: that table is the implementation surface, one row per
-file a module's behavior can depend on.
+one thing the fd table exists to prevent. `kernel/nilcontext_test.go` needs
+`ProbeTypedNilContext()` because a nil `*sContext` inside an `SContext` is a value no
+external test package can construct, and it sweeps the entry points and the two
+dereferencing helpers that are unexported. `kernel/fsscope_test.go` needs
+`ProbeFSScopeFor()` because `fsScopes` has no exported reader on purpose - a module
+must not be able to enumerate the boundaries it is held to - so `ClearFSScope` is
+unpinnable from `tests/`. `kernel/receiptlock_test.go` forces the node key cache into
+the state a cached parse failure used to leave, because with the cache fixed no input
+reaches `ed25519.Sign` with a wrong-length key and the deferred unlock in
+`issueReceipt` would otherwise be untested by construction.
+
+The rule for adding a seventh is that it must need something a module cannot
+construct or observe. "It is easier to write in-package" is not that reason, and an
+in-package test cannot prove anything about the surface a module gets - which is why
+the security suite is external by construction. These six are the only test files in
+`kernel/`, which is why the file map above does not list them: that table is the
+implementation surface, one row per file a module's behavior can depend on.
 
 Kernel security tests are mandatory, not optional. They live in
 `tests/security/kernel_test.go` as an external test package so they can only use
@@ -957,12 +967,31 @@ mistake them for intent:
   gate parses `go test -json` with `tools/ci/suite-report.awk` and counts
   top-level `PASS` + `SKIP` against a floor, because the `-v` form's
   `^--- SKIP` lines are unindented only for top-level tests: a skip inside a
-  subtest is invisible to a text grep while its parent reports PASS. The
-  allowlist of tests permitted to skip names package AND test, and each entry
-  permits exactly one skip, so a same-named test skipping in another package and
-  one name skipping in a loop are both failures rather than passes. A `t.Skip`
-  is a test that declined to assert; adding one to the allowlist is a decision a
-  reviewer sees, adding one to a test is not.
+  subtest is invisible to a text grep while its parent reports PASS. A subtest
+  skip does not remove a pass, so the floor cannot catch it either; the classifier
+  counts it separately and the step fails on it.
+- The skip allowlist keys on package, test name AND the reason text the test gave,
+  and permits exactly one skip per entry. Each of those three closes a hole a
+  weaker list leaves open: a same-named test skipping in another package, an
+  allowlisted test skipping for a NEW reason - a defect wearing a permitted name,
+  which can land the total exactly on the floor - and one permitted name skipping
+  in a loop to satisfy a floor with nothing passing. The reason text is a coupling
+  between the gate and a test's message, deliberately: rewording a legitimate
+  environment skip is a change a reviewer should see.
+- The classifier also names package-level failures, which have no test to name
+  them: a `TestMain` that panics, an `os.Exit`, a panicking `t.Cleanup`. Every
+  test in the package can have passed and the suite is still red, so the floor
+  lands on target while the build should fail. It reports build failures
+  separately for the same reason - a compile error otherwise surfaces only as
+  "expected at least N tests to run, got 0", which is true and is the wrong
+  diagnosis to read first.
+- `tools/ci/suite_report_test.go` is the regression net for the classifier. A
+  gate that decides whether the suite ran and has no test of its own is a gate
+  whose next edit is unaudited; that file holds the shapes as fixtures, including
+  hostile test names asserting the output cannot be shell-injected when the step
+  evals it. Change the awk and change the test.
+- A `t.Skip` is a test that declined to assert; adding one to the allowlist is a
+  decision a reviewer sees, adding one to a test is not.
 
 ## Governance
 
