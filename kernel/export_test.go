@@ -154,3 +154,17 @@ func ProbeTypedNilContext() SContext {
 	var c *sContext
 	return c
 }
+
+// ProbeFSScopeFor reports the read and write path boundaries installed for one pid.
+//
+// fsScopes has no exported reader on purpose: a module must not be able to enumerate
+// the boundaries it is being held to, because that turns the scope into a directory
+// listing of what the deployment cares about. ClearFSScope therefore cannot be pinned
+// from any external suite, and this probe is the only way to assert that an unload
+// actually drops the entry rather than leaving it for the next wholesale reset.
+func ProbeFSScopeFor(pid PID) (read, write []string) {
+	fsScopesMu.RLock()
+	defer fsScopesMu.RUnlock()
+	s := fsScopes[pid]
+	return append([]string(nil), s.read...), append([]string(nil), s.write...)
+}

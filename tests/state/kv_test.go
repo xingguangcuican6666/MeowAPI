@@ -828,14 +828,17 @@ func TestFSResolveRefusesEveryEscape(t *testing.T) {
 		// A relative root must not make containment undecidable. The kernel makes it
 		// absolute so the comparison is between two absolute paths.
 		//
-		// This used to skip, always: it computed filepath.Rel from the package
-		// directory to a TempDir under /tmp, which is ".." on every machine, so the
-		// guard fired and the assertion below never ran. Changing the directory
-		// instead of the expectation is what makes it a test - the property is about a
-		// root the caller spelled relatively, so the test has to stand somewhere that
-		// root IS relatively spellable. t.Chdir restores it on cleanup, and nothing in
-		// this package runs in parallel, so the process-wide directory change cannot
-		// reach another test.
+		// This used to skip in every default layout: it computed filepath.Rel from the
+		// package directory to a TempDir, and skipped whenever the answer started with
+		// "..". So it ran only when GOTMPDIR put the root at or below the package
+		// directory, which is not what a default macOS or Linux layout does - measured
+		// here as "../../../TestFSResolveRefusesEveryEscape.../001", guard fired, and the
+		// assertions below never ran. Not unreachable by construction, unreachable in
+		// practice. Changing the directory instead of the expectation is what makes it a
+		// test: the property is about a root the caller spelled relatively, so the test
+		// has to stand somewhere that root IS relatively spellable. t.Chdir restores it
+		// on cleanup, and nothing in this package runs in parallel, so the process-wide
+		// directory change cannot reach another test.
 		t.Chdir(filepath.Dir(root))
 		rel := filepath.Base(root)
 

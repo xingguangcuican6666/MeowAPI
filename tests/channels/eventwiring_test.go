@@ -253,16 +253,26 @@ func TestATimedOutRunIsBothEvents(t *testing.T) {
 	// and it still fails if either post is missing, because the deadline then expires.
 	want := []kernel.KernelEventName{kernel.EventDeadlinePassed, kernel.EventJobFinished}
 	deadline := kernel.KernelClock().Deadline(5 * time.Second)
+	// First occurrence per name, plus how many arrived. Overwriting on each event -
+	// the obvious shape, and what this did before - keeps the LAST one per name, which
+	// makes a duplicate post invisible: deadline.passed twice followed by job.finished
+	// once still leaves the last two Seq values adjacent and passes. The count is what
+	// distinguishes "each name posted once" from "each name posted at least once".
 	seen := map[kernel.KernelEventName]kernel.Event{}
+	count := map[kernel.KernelEventName]int{}
 	for len(seen) < len(want) {
 		got, err := ctx.SyscallEventWait(fd, deadline)
 		require.NoError(t, err, "waited for %v and received %v before the deadline", want, seen)
 		for _, e := range got {
-			seen[e.Name] = e
+			if _, first := seen[e.Name]; !first {
+				seen[e.Name] = e
+			}
+			count[e.Name]++
 		}
 	}
 	for _, name := range want {
 		require.Contains(t, seen, name)
+		assert.Equal(t, 1, count[name], "%s is posted once per timed-out dispatch, not at least once", name)
 	}
 	assert.Equal(t, pid, seen[kernel.EventDeadlinePassed].Subject)
 	assert.Equal(t, "wired-timeout", seen[kernel.EventDeadlinePassed].Detail,
@@ -270,7 +280,7 @@ func TestATimedOutRunIsBothEvents(t *testing.T) {
 	assert.Equal(t, string(kernel.SchedTimedOut), seen[kernel.EventJobFinished].Detail,
 		"and job.finished carries the terminal state it reached")
 	assert.Equal(t, seen[kernel.EventDeadlinePassed].Seq+1, seen[kernel.EventJobFinished].Seq,
-		"posted once each, in the order finish() posts them: the deadline expired, then the run ended")
+		"posted in the order finish() posts them: the deadline expired, then the run ended")
 }
 
 // TestPublishedConfigurationIsAnEvent covers config.reloaded, which is broadcast rather than

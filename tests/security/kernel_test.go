@@ -264,8 +264,12 @@ func TestResetClearsWhatUnloadNeverTouches(t *testing.T) {
 	t.Cleanup(func() { _ = k2.Unload(pid) })
 
 	_, err = kernel.FSReadFile(probe.Ctx, "secret.txt")
-	assert.Error(t, err, "boot 2 must not inherit boot 1's data root")
-	assert.Contains(t, err.Error(), "no data root is configured",
+	// require rather than assert, because the next line dereferences err. A
+	// non-fatal assertion lets the test panic on the very failure it exists to
+	// detect, and a panic kills the package binary - measured with resetFS()
+	// removed, the other seven tests in this file lost their verdicts entirely.
+	require.Error(t, err, "boot 2 must not inherit boot 1's data root")
+	require.Contains(t, err.Error(), "no data root is configured",
 		"and the refusal is the one that says the root was never installed here")
 
 	// Both are host-settable in the new boot, so the clear is not a permanent refusal. The

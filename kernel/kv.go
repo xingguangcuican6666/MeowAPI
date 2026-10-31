@@ -698,6 +698,18 @@ func SetFSScope(pid PID, readPaths, writePaths []string) {
 }
 
 // ClearFSScope drops a module's boundaries. Called on unload.
+//
+// It does not take a context and it does not check one, so it is a bookkeeping call
+// rather than a control: LoadModule calls SetFSScope unconditionally, so a pid that
+// reaches an fs check has its scope overwritten from its own manifest first and a
+// surviving scope is unreachable through any exported path - the same argument
+// resetFSScopes carries in resetKernel. What this protects is residency: a scope is
+// a slice of strings held for a pid that will never be reused, and without the delete
+// the only thing that frees it is a wholesale reset at the next shutdown.
+//
+// It is pinned by an in-package test because no external one can reach it: there is
+// no exported reader for the scope map, by design, since a module must not be able to
+// enumerate the boundaries it is being held to.
 func ClearFSScope(pid PID) {
 	fsScopesMu.Lock()
 	defer fsScopesMu.Unlock()

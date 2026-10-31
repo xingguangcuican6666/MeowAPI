@@ -105,6 +105,7 @@ plugins/                     one directory per module. Each is independently bui
   diag/                      reference module: the smallest conforming plugin
 tools/instrcheck/            instruction-file integrity checker, runs in CI
 tools/auditverify/           verify an audit trail without the kernel, CLI
+tools/ci/                    the suite gate's `go test -json` classifier, awk not Go
 .github/workflows/ci.yml     integrity, build, vet, race, audit end to end
 mirror/                      Java design prototype. Reference only; built by nothing here.
 stage/                       reference material from the archived fork. Not built.
@@ -310,16 +311,19 @@ which is what a reader checks. It is the state that is NOT in the table: kvfs ke
 each namespace by pid (`kvKey{owner PID; key string}`) and metadata keys entries the
 same way (`metadataKey{owner PID; key string}`), and `contextManager.reset` puts
 `nextPID` back to 1, so the next boot's init is pid 1 again and lands in the same
-namespace the previous boot's init wrote to. The fs data roots are the one thing in
-that area keyed by name rather than pid (`kfs.roots[c.name]`), and they are cleared
-by `resetFS` for a different reason - a surviving root would point a fresh module at
-a directory the previous boot chose. So a context retained across a shutdown does
-not write into a dead kernel's state, it writes into the next boot's, and a fresh
-process table reports nothing wrong while that happens. The retire is the only thing
-standing between a stale handle and the boot that follows it, and `tests/security`
-pins it by reading back through the new boot's own context rather than by asserting
-the refusal alone: a refusal that stopped nothing observable would pass the weaker
-form.
+namespace the previous boot's init wrote to.
+
+The fs data roots are keyed by name instead (`kfs.roots[c.name]`), and they are not
+alone in that - `klocks.locks`, `kroutes.byPath`, `kkeyring.byAlias` and `kboot.values`
+are name-keyed too, each cleared by its own reset. What makes the data roots worth
+naming is what a surviving value IS: a host path the next boot would serve files
+from, which is why `resetFS` clears them for containment rather than for residency.
+So a context retained across a shutdown does not write into a dead kernel's state, it
+writes into the next boot's, and a fresh process table reports nothing wrong while
+that happens. The retire is the only thing standing between a stale handle and the
+boot that follows it, and `tests/security` pins it by reading back through the new
+boot's own context rather than by asserting the refusal alone: a refusal that stopped
+nothing observable would pass the weaker form.
 
 ### Security context
 
@@ -933,13 +937,13 @@ mistake them for intent:
   imports the kernel plus the standard library only, so no production build path
   reaches an assertion library. Offline resolution is available from the local module cache via
   `GOPROXY="file://$(go env GOMODCACHE)/cache/download" GOSUMDB=off go test ./...`.
-- `mirror/` is a Java design prototype and is never built or run. A local worktree
-  may still hold `mirror/bin/` and `mirror/mirror.jar` from an earlier compile;
-  both are gitignored, so a clean checkout does not have them. That is why
-  `instrcheck` reports 131 files scanned here and 111 in CI, and why neither number
-  is a repository fact to quote. The sources are the specification; the compiled
-  output would go stale the moment a source changed, which is the reason the
-  gitignore entry gives for excluding it.
+- `mirror/` is a Java design prototype, and nothing in this repository builds or
+  runs it. A local worktree may still hold `mirror/bin/` and `mirror/mirror.jar`
+  from an earlier compile; both are gitignored, so a clean checkout does not have
+  them. That is why `instrcheck` reports 133 files scanned here and 111 in CI, and
+  why neither number is a repository fact to quote. The sources are the
+  specification; the compiled output would go stale the moment a source changed,
+  which is the reason the gitignore entry gives for excluding it.
 - The 13 Java sources under `mirror/src/` carry no license header. Whose they are
   and what they should say is the owner's decision, and nothing in this repo has
   made it.
@@ -947,11 +951,15 @@ mistake them for intent:
   an independent `grep -P` assertion so a weakened tool cannot pass the job),
   gofmt, build, vet, kernel dependency hygiene, `go test -race`, and an assertion
   that the security suite actually ran (an empty result is a failure). That last
-  gate counts top-level `PASS` + `SKIP` against a floor, and it holds a named
-  allowlist of the tests permitted to skip: a top-level `t.Skip` is a test that
-  declined to assert, so counting it without naming it would let a regression
-  turn a failure into a skip and keep the total unchanged. Adding a name to that
-  list is a decision a reviewer sees; adding a `t.Skip` to a test is not.
+  gate parses `go test -json` with `tools/ci/suite-report.awk` and counts
+  top-level `PASS` + `SKIP` against a floor, because the `-v` form's
+  `^--- SKIP` lines are unindented only for top-level tests: a skip inside a
+  subtest is invisible to a text grep while its parent reports PASS. The
+  allowlist of tests permitted to skip names package AND test, and each entry
+  permits exactly one skip, so a same-named test skipping in another package and
+  one name skipping in a loop are both failures rather than passes. A `t.Skip`
+  is a test that declined to assert; adding one to the allowlist is a decision a
+  reviewer sees, adding one to a test is not.
 
 ## Governance
 
