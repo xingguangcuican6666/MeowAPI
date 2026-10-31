@@ -657,18 +657,26 @@ func TTYWrite(ctx SContext, fd FD, level Level, msg string) error {
 // chain would read as though the module loaded and was then rejected. module.go already
 // writes AuditLoad on success and AuditReject on failure; this record adds the provenance
 // the loader cannot know.
+//
+// The credential is the caller's bytes and ownership transfers with the call, so the
+// wipe is a deferred one and therefore a property of this function. It was nine
+// remembered calls beside nine refusals instead, and that shape failed the same way
+// the installers did before 94efbcb: a return added above them wipes nothing. Probed
+// with a length no test uses, an early return left the credential bytes intact and all
+// 20 packages green. verifyConsoleCredential still wipes on its own paths, which is
+// now redundant and harmless - zeroing twice is the same as zeroing once, and the
+// installer copies before storing so nothing stored aliases this slice.
 func TTYLoadModule(ctx SContext, fd FD, credential []byte, m Manifest) (PID, error) {
+	defer wipe(credential)
+
 	c, ok := ctx.(*sContext)
 	if !ok {
-		wipe(credential)
 		return 0, errForeignContext
 	}
 	if err := c.syscall(OpTTYOpen); err != nil {
-		wipe(credential)
 		return 0, err
 	}
 	if _, err := ttyHandleFor(c, fd); err != nil {
-		wipe(credential)
 		return 0, err
 	}
 	if err := verifyConsoleCredential(c, fd, credential); err != nil {
@@ -686,19 +694,20 @@ func TTYLoadModule(ctx SContext, fd FD, credential []byte, m Manifest) (PID, err
 }
 
 // TTYUnloadModule unloads a module on the operator's behalf. Requires tty:open, the
-// console credential, and module:unload re-checked inside UnloadModule.
+// console credential, and module:unload re-checked inside UnloadModule. The credential's
+// ownership transfers with the call, so it is wiped on return by a deferred one, for the
+// reason TTYLoadModule gives.
 func TTYUnloadModule(ctx SContext, fd FD, credential []byte, pid PID) error {
+	defer wipe(credential)
+
 	c, ok := ctx.(*sContext)
 	if !ok {
-		wipe(credential)
 		return errForeignContext
 	}
 	if err := c.syscall(OpTTYOpen); err != nil {
-		wipe(credential)
 		return err
 	}
 	if _, err := ttyHandleFor(c, fd); err != nil {
-		wipe(credential)
 		return err
 	}
 	if err := verifyConsoleCredential(c, fd, credential); err != nil {
@@ -721,19 +730,19 @@ func TTYUnloadModule(ctx SContext, fd FD, credential []byte, pid PID) error {
 // The read is gated on the credential and audited even though ProcTable itself grants no
 // privilege, because a process inspection performed through a physical console is an act
 // an investigator should be able to see, and the same reasoning is why Dump is a host
-// surface rather than a syscall.
+// surface rather than a syscall. The credential's ownership transfers with the call, so
+// it is wiped on return by a deferred one, for the reason TTYLoadModule gives.
 func TTYProcessTable(ctx SContext, fd FD, credential []byte) ([]ProcSnapshot, error) {
+	defer wipe(credential)
+
 	c, ok := ctx.(*sContext)
 	if !ok {
-		wipe(credential)
 		return nil, errForeignContext
 	}
 	if err := c.syscall(OpTTYOpen); err != nil {
-		wipe(credential)
 		return nil, err
 	}
 	if _, err := ttyHandleFor(c, fd); err != nil {
-		wipe(credential)
 		return nil, err
 	}
 	if err := verifyConsoleCredential(c, fd, credential); err != nil {

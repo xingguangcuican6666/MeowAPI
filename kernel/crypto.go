@@ -237,29 +237,43 @@ var kcryptoKeys = &nodeKeyCache{}
 // produce settlement artifacts that look complete and verify nowhere. Failing
 // loudly is the only behavior that makes a missing key an outage instead of a
 // silent forgery factory.
+//
+// The cache records material that parsed, and a failed parse is never cached. That
+// is not an optimisation: caching the failure - which is what this did - makes the
+// SECOND call for the same bad material return the empty priv and keyID with a NIL
+// error, because the fast path at the top only compares material and cannot tell a
+// cached success from a cached failure. A caller that checks the error, as every
+// caller here does, then signs with a zero-length ed25519 key and panics inside
+// ed25519.Sign. Measured before the fix: call 1 returned the parse error, call 2
+// returned (nil, "", nil), and signWithNodeKey panicked with "index out of range
+// [0] with length 0". A bad key must fail on every call, not only the first.
 func nodePrivateKey() (ed25519.PrivateKey, string, error) {
 	material := nodeSigningKey()
 
 	kcryptoKeys.mu.Lock()
 	defer kcryptoKeys.mu.Unlock()
 
-	if material != "" && kcryptoKeys.material == material {
+	// The fast path is only valid for a cached SUCCESS, which priv != nil identifies:
+	// a failure leaves priv nil, and returning that with a nil error is the defect.
+	if material != "" && kcryptoKeys.material == material && kcryptoKeys.priv != nil {
 		return kcryptoKeys.priv, kcryptoKeys.keyID, nil
 	}
-	kcryptoKeys.material = material
+	// Clear before parsing, so a failure leaves nothing cached at all rather than
+	// leaving the previous boot's key behind a material string that no longer has
+	// one. The reset path already does this; a re-parse has to as well.
+	kcryptoKeys.material = ""
+	kcryptoKeys.priv = nil
+	kcryptoKeys.keyID = ""
 
 	priv, err := parseEd25519Private(material)
 	if err != nil {
-		kcryptoKeys.priv = nil
-		kcryptoKeys.keyID = ""
 		return nil, "", err
 	}
 	pub, ok := priv.Public().(ed25519.PublicKey)
 	if !ok {
-		kcryptoKeys.priv = nil
-		kcryptoKeys.keyID = ""
 		return nil, "", errors.New("kernel: node signing key does not yield an ed25519 public key")
 	}
+	kcryptoKeys.material = material
 	kcryptoKeys.priv = priv
 	kcryptoKeys.keyID = ed25519KeyID(pub)
 	return kcryptoKeys.priv, kcryptoKeys.keyID, nil

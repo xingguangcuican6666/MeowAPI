@@ -848,6 +848,103 @@ func TestTTYSurfaceIsRefusedAfterShutdown(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Local helpers, following the pattern the other evidence suites use.
 
+// TestTTYPresentersWipeTheCredentialTheyAreGiven pins that the three console entry
+// points that take a presented credential - load, unload and process table - wipe the
+// caller's slice on every path, including refusals.
+//
+// The wipe used to be nine individually remembered calls inside each function, and a
+// return added above them wiped nothing: probed by inserting one guarded on a length no
+// test uses, the credential came back intact and all 20 packages stayed green. The three
+// now carry a single deferred wipe, so a new refusal branch inherits it instead of
+// having to remember it - the same shape the installers gained in 94efbcb.
+//
+// Each case below passes its own copy, because a successful call wipes what it was
+// given; passing one slice twice would observe the second call's empty credential rather
+// than the contract.
+func TestTTYPresentersWipeTheCredentialTheyAreGiven(t *testing.T) {
+	harness.QuietConsole(t)
+	k := harness.BootOne(t)
+	cred := installCredential(t, k, 32)
+
+	fd, err := kernel.TTYOpen(k.InitContext())
+	require.NoError(t, err)
+
+	// A refusal before the credential is even compared: a handle of the wrong kind.
+	timerFD, err := kernel.SchedTimer(k.InitContext(), kernel.TimerSpec{
+		Label: ttyCounter.next("tty-wipe-timer"), DelayMillis: 60000,
+		Fn: func(kernel.SContext, <-chan struct{}) {},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = k.InitContext().SyscallClose(timerFD) })
+
+	// assertWiped checks the bytes only, because the wipe must happen on the success
+	// path as well as on refusals and a helper that also asserted an error could not
+	// be used for both.
+	assertWiped := func(t *testing.T, what string, candidate []byte) {
+		t.Helper()
+		for i, b := range candidate {
+			if b != 0 {
+				t.Fatalf("%s: byte %d of the presented credential was not wiped", what, i)
+			}
+		}
+	}
+
+	assertRefused := func(t *testing.T, what string, candidate []byte, err error) {
+		t.Helper()
+		assert.Error(t, err, "%s must be refused", what)
+		assertWiped(t, what, candidate)
+	}
+
+	name := ttyCounter.next("tty-wipe")
+	harness.RegisterProbe(t, name, &harness.NoopModule{})
+	manifest := kernel.Manifest{
+		Name: name, Version: "1", MinKernelAPI: kernel.KernelAPI, MaxKernelAPI: kernel.KernelAPI,
+	}
+
+	// Wrong-kind handle: refused before the credential reaches the comparison.
+	wrongKind := append([]byte(nil), cred...)
+	_, err = kernel.TTYLoadModule(k.InitContext(), timerFD, wrongKind, manifest)
+	assertRefused(t, "TTYLoadModule with a non-console handle", wrongKind, err)
+
+	wrongKind = append([]byte(nil), cred...)
+	_, err = kernel.TTYProcessTable(k.InitContext(), timerFD, wrongKind)
+	assertRefused(t, "TTYProcessTable with a non-console handle", wrongKind, err)
+
+	wrongKind = append([]byte(nil), cred...)
+	err = kernel.TTYUnloadModule(k.InitContext(), timerFD, wrongKind, 999)
+	assertRefused(t, "TTYUnloadModule with a non-console handle", wrongKind, err)
+
+	// Wrong credential: refused inside verifyConsoleCredential, which is a different
+	// return path and the one a host with a stale credential takes.
+	wrong := []byte("not-the-console-credential-32-bytes")
+	_, err = kernel.TTYLoadModule(k.InitContext(), fd, wrong, manifest)
+	assertRefused(t, "TTYLoadModule with the wrong credential", wrong, err)
+
+	wrong = []byte("not-the-console-credential-32-bytes")
+	_, err = kernel.TTYProcessTable(k.InitContext(), fd, wrong)
+	assertRefused(t, "TTYProcessTable with the wrong credential", wrong, err)
+
+	wrong = []byte("not-the-console-credential-32-bytes")
+	err = kernel.TTYUnloadModule(k.InitContext(), fd, wrong, 999)
+	assertRefused(t, "TTYUnloadModule with the wrong credential", wrong, err)
+
+	// And the success path, so the wipe is not a refusal-only habit.
+	good := append([]byte(nil), cred...)
+	pid, err := kernel.TTYLoadModule(k.InitContext(), fd, good, manifest)
+	require.NoError(t, err)
+	assertWiped(t, "TTYLoadModule success", good)
+
+	good = append([]byte(nil), cred...)
+	table, err := kernel.TTYProcessTable(k.InitContext(), fd, good)
+	require.NoError(t, err)
+	assert.NotEmpty(t, table)
+	assertWiped(t, "TTYProcessTable success", good)
+
+	good = append([]byte(nil), cred...)
+	require.NoError(t, kernel.TTYUnloadModule(k.InitContext(), fd, good, pid))
+	assertWiped(t, "TTYUnloadModule success", good)
+}
+
 // auditQuery reads the chain through the exported query API.
 func auditQuery(t *testing.T, kind kernel.AuditKind) []kernel.AuditEntry {
 	t.Helper()

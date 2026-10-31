@@ -389,24 +389,43 @@ func issueReceipt(ctx *sContext, target PID, spec ReceiptSpec) (Receipt, error) 
 	// could distinguish from a receipt that was issued and then suppressed - which
 	// is exactly the fraud a gap-free ledger exists to expose.
 	//
-	// The lock is taken and released explicitly rather than deferred, because the
-	// refusal counter lives behind the same mutex: counting a refusal from inside
-	// the critical section would deadlock the settlement path.
-	kreceipts.mu.Lock()
-	r.Seq = kreceipts.next[nodeID]
-	if r.Seq <= 0 {
-		r.Seq = 1
+	// The unlock is deferred, and the refusal counter is incremented inline rather
+	// than through countRefusal, because countRefusal takes this same mutex and
+	// would deadlock. Deferring rather than unlocking at each return is what keeps a
+	// panic in this window from wedging the kernel: signing calls into ed25519 with
+	// key material the cache produced, and a zero-length key makes Sign panic with
+	// "index out of range [0] with length 0". With an explicit unlock the panic left
+	// the settlement mutex held forever, and the next thing to take it was
+	// resetReceipts during Shutdown - so the failure mode was not a bad receipt but
+	// a kernel that could no longer shut down. Measured: a test that tripped it
+	// hung for the full ten-minute timeout instead of reporting a failure.
+	//
+	// The commit is a closure rather than inline, so the audit record below is
+	// written after the lock is released. Holding the settlement mutex across an
+	// audit write would put this subsystem's lock underneath kaudit's for no reason,
+	// and the two are otherwise independent.
+	commit := func() (Receipt, error) {
+		kreceipts.mu.Lock()
+		defer kreceipts.mu.Unlock()
+
+		r.Seq = kreceipts.next[nodeID]
+		if r.Seq <= 0 {
+			r.Seq = 1
+		}
+		sig, serr := signWithNodeKey(ctx, receiptPayload(r))
+		if serr != nil {
+			kreceipts.refused++
+			return Receipt{}, serr
+		}
+		r.Signature = sig.Bytes
+		kreceipts.next[nodeID] = r.Seq + 1
+		kreceipts.issued++
+		return r, nil
 	}
-	sig, err := signWithNodeKey(ctx, receiptPayload(r))
+	r, err = commit()
 	if err != nil {
-		kreceipts.refused++
-		kreceipts.mu.Unlock()
 		return Receipt{}, err
 	}
-	r.Signature = sig.Bytes
-	kreceipts.next[nodeID] = r.Seq + 1
-	kreceipts.issued++
-	kreceipts.mu.Unlock()
 
 	kaudit.record(AuditSettle, ctx, "receipt issued", map[string]any{
 		"node_id": nodeID, "seq": r.Seq, "pid": target, "trace": r.Trace,

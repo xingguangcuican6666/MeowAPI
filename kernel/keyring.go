@@ -751,6 +751,17 @@ func refuseSecretScope(ctx *sContext, alias, action string) {
 // the same error. Distinguishing them would turn this call into an oracle for which
 // credentials a deployment holds, and that inventory is worth more to an attacker
 // than any single low-value secret.
+//
+// It does NOT take ownership of data, and it deliberately does not wipe it. That is
+// the difference between this and the six sites that do: the installers and the
+// console presenters take a credential the caller hands over and will never look at
+// again, so ownership transfers with the call and zeroing the caller's buffer is the
+// point. Here data is the module's own buffer - a prompt to sign, a candidate to
+// match against, a host to bind to - and the caller keeps it: it may log the host it
+// asked about, retry a match, or sign a second message with the same slice. Zeroing
+// it would silently change a contract this function never offered and corrupt a
+// caller that reuses the buffer. applySecret wipes the kernel's own copies of the
+// secret value and the rendered header, which is where the custody boundary is.
 func SecretUse(ctx SContext, alias string, action SecretAction, data []byte) (SecretResult, error) {
 	c, ok := ctx.(*sContext)
 	if !ok {

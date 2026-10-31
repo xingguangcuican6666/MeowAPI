@@ -338,17 +338,49 @@ func TestCryptoSignIsDeniedToEveryLiveContext(t *testing.T) {
 // trust root holds no signing key must refuse to sign rather than produce something
 // that looks signed, because an unsigned artifact that looks signed is the failure
 // mode every verifier downstream forgets to check.
+//
+// It asserts on the FIRST refusal and also on the second and third, and the
+// repetition is the regression: the key cache used to memoise a FAILED parse, so the
+// fast path at the top of nodePrivateKey returned the empty key and a NIL error on
+// every call after the first. A refusal that only happens once is not a refusal - a
+// caller checking the error, as every caller does, goes on to sign with a
+// zero-length key and panics inside ed25519.Sign. Measured before the fix: call 1
+// reported the parse failure, call 2 returned (nil, "", nil), and the third call
+// through the signing path panicked with "index out of range [0] with length 0".
+//
+// The key material here is non-empty and unparseable rather than empty, and that is
+// not incidental. The cache fast path only fires for material != "", so an EMPTY key
+// is never cached and cannot reproduce this at all - which is why the defect survived
+// a suite that already had a keyless-signing test. Restoring the old caching
+// semantics under this test's empty key leaves the whole suite green; under this
+// non-empty one it fails on the second attempt.
 func TestCryptoSignWithoutKeyFailsLoudly(t *testing.T) {
 	crxQuiet(t)
 	_, pub := crxKeyPair(t)
 	k := crxBoot(t, kernel.BootTrustRoot{
-		NodeID: "crx-node", ClusterRootKeys: []string{pub}, SigningKeyPEM: "",
+		NodeID: "crx-node", ClusterRootKeys: []string{pub},
+		// Present but unusable: a truncated seed, which is the shape an operator
+		// mistake takes more often than an omitted field.
+		SigningKeyPEM: "not-an-ed25519-seed",
 	})
 
 	_, err := k.IssueReceipt(kernel.ReceiptSpec{Prompt: []byte("p"), Completion: []byte("c")})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "signing key")
+	assert.Contains(t, err.Error(), "key material")
 	assert.Zero(t, kernel.ReceiptStats().Issued, "a refused issue must not consume a number")
+
+	// The same refusal every time, through the same path a second and third caller
+	// would take. A cached failure would make one of these return nil.
+	for attempt := 2; attempt <= 3; attempt++ {
+		_, again := k.IssueReceipt(kernel.ReceiptSpec{Prompt: []byte("p"), Completion: []byte("c")})
+		require.Error(t, again, "attempt %d must refuse as loudly as the first", attempt)
+		assert.Equal(t, err.Error(), again.Error(),
+			"attempt %d reports the same reason rather than degrading to a nil error", attempt)
+	}
+	assert.Zero(t, kernel.ReceiptStats().Issued, "and no attempt consumed a number")
+	assert.NotPanics(t, func() {
+		_, _ = k.IssueReceipt(kernel.ReceiptSpec{Prompt: []byte("p"), Completion: []byte("c")})
+	}, "a bad key must never reach ed25519.Sign with a zero-length key")
 
 	// Verification still works against the declared roots, so refusing to sign does
 	// not blind the node to everyone else's signatures.
