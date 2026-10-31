@@ -156,6 +156,17 @@ jobs:
             > /tmp/suite.json 2> /tmp/suite.err || true
           report="$(awk -f tools/ci/suite-report.awk /tmp/suite.json)"
           printf '%s\n' "$report"
+          # go routes its own diagnostics into the -json stream, so stderr is empty in
+          # the cases the classifier handles - a build failure, a setup failure and a
+          # missing pattern all arrive as build-output plus build-fail events. What
+          # stderr still carries is a failure of the tool itself, where the stream can be
+          # empty or truncated and the report would read as zero tests run. Printed
+          # whenever it is non-empty rather than only in that case, because an unread
+          # file is a place for a diagnosis to hide.
+          if [ -s /tmp/suite.err ]; then
+            echo "--- go test stderr ---"
+            cat /tmp/suite.err
+          fi
           eval "$report"
           if [ "${BUILD_FAIL:-0}" -ne 0 ]; then
             # Reported separately from a test failure, because a build failure means no
