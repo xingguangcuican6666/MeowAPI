@@ -825,17 +825,38 @@ func TestFSResolveRefusesEveryEscape(t *testing.T) {
 	})
 
 	t.Run("relative root is resolved against the working directory", func(t *testing.T) {
-		// A relative root must not make containment undecidable. The kernel makes
-		// it absolute so the comparison is between two absolute paths.
-		wd, err := os.Getwd()
-		require.NoError(t, err)
-		rel, err := filepath.Rel(wd, root)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			t.Skip("the temp root is not reachable by a relative path from here")
-		}
+		// A relative root must not make containment undecidable. The kernel makes it
+		// absolute so the comparison is between two absolute paths.
+		//
+		// This used to skip, always: it computed filepath.Rel from the package
+		// directory to a TempDir under /tmp, which is ".." on every machine, so the
+		// guard fired and the assertion below never ran. Changing the directory
+		// instead of the expectation is what makes it a test - the property is about a
+		// root the caller spelled relatively, so the test has to stand somewhere that
+		// root IS relatively spellable. t.Chdir restores it on cleanup, and nothing in
+		// this package runs in parallel, so the process-wide directory change cannot
+		// reach another test.
+		t.Chdir(filepath.Dir(root))
+		rel := filepath.Base(root)
+
 		got, err := kernel.FSResolve(rel, "cache/blob")
 		require.NoError(t, err)
-		assert.True(t, filepath.IsAbs(got))
+		assert.True(t, filepath.IsAbs(got), "a relative root resolves to an absolute path")
+
+		// The stronger half, and the one the skipped version could not assert: a root
+		// spelled relatively resolves to the SAME path as that root spelled absolutely,
+		// so containment decided against one is containment decided against the other.
+		// Compared through FSResolve on both rather than against `root` itself, because
+		// FSResolve evaluates symlinks and /tmp is a link on some systems.
+		viaAbs, err := kernel.FSResolve(root, "cache/blob")
+		require.NoError(t, err)
+		assert.Equal(t, viaAbs, got, "relative and absolute spellings resolve identically")
+
+		// And the containment rule still holds against a relative root, which is the
+		// reason the kernel absolutizes rather than joining strings: a ".." that escapes
+		// must be refused however the root was spelled.
+		_, err = kernel.FSResolve(rel, "../secret.txt")
+		assert.Error(t, err, "a relative root does not make escape undecidable")
 	})
 
 	// The outside file is untouched by every attempt above, which is the property
