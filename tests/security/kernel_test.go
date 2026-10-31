@@ -22,6 +22,8 @@ package security
 
 import (
 	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -200,6 +202,81 @@ func TestResetClearsTheSubsystemStateAddedSince(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, kernel.SeccompFiltered(fresh))
 	assert.Zero(t, kernel.OomCondemned())
+}
+
+// TestResetClearsWhatUnloadNeverTouches covers two entries in resetKernel that no test
+// reached, because both clear state belonging to something the teardown path never unloads.
+// Removing either left all 20 packages green; removing both together let a boot-2 module read
+// boot-1's data root and boot-2's init read boot-1's key, with nothing on boot 2's chain.
+//
+// resetKVFS: a loaded module's namespace is also dropped by KVDropNamespace in UnloadModule,
+// which is what tests/state asserts, so the reset looked redundant. It is not, because init is
+// never in the handle's module list - boot.go appends only cfg.Modules - so unloadAll never
+// walks it and nothing but the reset clears init's own keys. Both boots allocate init as pid 1,
+// so that state is in the namespace the next boot's init reads.
+//
+// resetFS: data roots are keyed by module NAME rather than pid, deliberately, because a root is
+// a deployment decision that outlives a boot and the host installs one before the module loads.
+// That keying is exactly what makes the reset load-bearing: the next boot's module is looked up
+// by the same name and finds the previous boot's directory. The refusal the kernel gives is "no
+// data root is configured", which is a refusal rather than a fallback, and it is the only thing
+// standing between a restarted module and a directory the previous boot chose.
+func TestResetClearsWhatUnloadNeverTouches(t *testing.T) {
+	harness.QuietConsole(t)
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "secret.txt"), []byte("BOOT-ONE"), 0o600))
+
+	k1, err := kernel.Boot(kernel.BootConfig{})
+	require.NoError(t, err)
+
+	// init's own namespace, which no unload reaches.
+	require.NoError(t, kernel.KVPut(k1.InitContext(), "init.key", []byte("BOOT-ONE")))
+	require.Positive(t, kernel.KVBytes(1))
+
+	// A data root installed for a name that is not loaded in this boot, which is the shape
+	// the host uses: the root is installed before the module loads.
+	require.NoError(t, kernel.FSSetDataRoot("carrier", root))
+
+	require.NoError(t, k1.Shutdown())
+
+	assert.Zero(t, kernel.KVBytes(1), "init's namespace must not survive the shutdown")
+
+	k2, err := kernel.Boot(kernel.BootConfig{})
+	require.NoError(t, err)
+	defer func() { _ = k2.Shutdown() }()
+
+	// Asserted through the new boot's own handles rather than by inspecting the old ones:
+	// the property is what a restarted kernel can reach, not what a dead one held.
+	leaked, err := kernel.KVGet(k2.InitContext(), "init.key")
+	assert.Error(t, err, "boot 2's init must not find boot 1's key")
+	assert.Empty(t, leaked)
+
+	probe := &harness.Probe{}
+	harness.RegisterProbe(t, "carrier", probe)
+	pid, err := k2.Load(kernel.Manifest{
+		Name: "carrier", Version: "0.1.0", MinKernelAPI: kernel.KernelAPI,
+		MaxKernelAPI: kernel.KernelAPI,
+		Require:      []kernel.Op{kernel.OpFSRead},
+		ReadPaths:    []string{"secret.txt"},
+	})
+	require.NoError(t, err, "the name is free again in a fresh boot")
+	t.Cleanup(func() { _ = k2.Unload(pid) })
+
+	_, err = kernel.FSReadFile(probe.Ctx, "secret.txt")
+	assert.Error(t, err, "boot 2 must not inherit boot 1's data root")
+	assert.Contains(t, err.Error(), "no data root is configured",
+		"and the refusal is the one that says the root was never installed here")
+
+	// Both are host-settable in the new boot, so the clear is not a permanent refusal. The
+	// root goes on a different name rather than on the loaded one, because FSSetDataRoot
+	// refuses to re-point a root while that module is live - the containment rule the
+	// refusal exists to keep, and one this assertion must not trip over.
+	require.NoError(t, kernel.FSSetDataRoot("next-carrier", t.TempDir()))
+	require.NoError(t, kernel.KVPut(k2.InitContext(), "boot.two", []byte("v")))
+	got, err := kernel.KVGet(k2.InitContext(), "boot.two")
+	require.NoError(t, err)
+	assert.Equal(t, "v", string(got))
 }
 
 // resetTestSampler reports a host at 100% so a single sweep produces a record worth

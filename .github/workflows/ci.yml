@@ -150,8 +150,50 @@ jobs:
           fi
           # The floor rises as the suite grows and is never lowered. It is a guard
           # against the suite silently not running, not against a slow test day.
-          if [ "$passed" -lt 614 ]; then
-            echo "::error::expected at least 614 passing security tests, got $passed"
+          #
+          # A top-level t.Skip removes one PASS, so a floor counted over PASS alone
+          # would fail the build for an environment difference. Five tests legitimately
+          # skip on machine conditions rather than on defects: four in tests/egress need
+          # a non-loopback private IPv4 interface on the runner, and
+          # TestFSResolveRefusesEveryEscape needs os.Symlink to work. Those five names
+          # are the allowlist below, and a skip that is not on it fails the build with
+          # its name printed.
+          #
+          # The allowlist is by name rather than by count, and a measured case is the
+          # reason. A count cap would let a regression hide: removing resetShm() from
+          # resetKernel turns TestShmPoolIsClearedAcrossRestart into a skip rather than a
+          # failure, because that test skips when the pool survived Shutdown, and the
+          # PASS + SKIP total is unchanged by a pass becoming a skip. Naming the skips
+          # that are permitted, and only those, is what keeps "the runner lacks a private
+          # interface" distinguishable from "a defect made this test decline to assert".
+          # A skip added to the allowlist is a decision a reviewer sees, not a hole.
+          allowed_skips=" TestASuccessfulDialUsesTheValidatedAddress TestThePoolReturnsTheSameSocketAndRevalidatesOnReuse TestThePoolCeilingClosesRatherThanRefuses TestSocketsAreReclaimedWhenTheModuleIsUnloaded TestFSResolveRefusesEveryEscape "
+          skipped=0
+          unexpected=""
+          for name in $(printf '%s' "$out" | grep '^--- SKIP' | sed 's/^--- SKIP: //; s/ .*//'); do
+            skipped=$((skipped + 1))
+            case "$allowed_skips" in
+              *" $name "*) ;;
+              *) unexpected="$unexpected $name" ;;
+            esac
+          done
+          echo "skipped=$skipped"
+          if [ -n "$unexpected" ]; then
+            echo "::error::tests skipped that are not environment-dependent:$unexpected"
+            echo "a skip is a test that declined to assert; either fix it or add the"
+            echo "name to the allowlist in ci.yml with the environment reason"
+            exit 1
+          fi
+          # The floor has no slack, deliberately, and that is safe only because the
+          # allowlist above is by name. Counted as PASS + SKIP, the total is 615 on a
+          # runner with a private IPv4 interface and symlinks, and 615 on one with
+          # neither - the five tests that skip are the same five, and they are counted.
+          # So "at least 615" means every top-level test ran, in every environment this
+          # project supports. Adding margin here would reopen the hole the allowlist
+          # closes: slack is what lets a test quietly stop asserting. If this number
+          # has to move, it moves up with the suite.
+          if [ $((passed + skipped)) -lt 615 ]; then
+            echo "::error::expected at least 615 tests to run, got $((passed + skipped))"
             echo "a guard against the suite silently not running"
             exit 1
           fi

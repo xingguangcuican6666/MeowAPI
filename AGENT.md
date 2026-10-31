@@ -92,6 +92,7 @@ tests/                       external test suites, one package per architectural
   crypto/                    kcrypto, kkeyring, kreceipt
   supervision/               ksched, ksignal, kwatchdog
   evidence/                  kaudit, the console, dump, metadata visibility, ktty
+  verifier/                  kverifier appraisal, the posture, the ledger
   mesh/                      kpeer and kslashing
   fs/                        kfs containment, boundaries, the data-root seal
   kpanic/                    kpanic flush ordering, containment, the subprocess paths
@@ -105,7 +106,7 @@ plugins/                     one directory per module. Each is independently bui
 tools/instrcheck/            instruction-file integrity checker, runs in CI
 tools/auditverify/           verify an audit trail without the kernel, CLI
 .github/workflows/ci.yml     integrity, build, vet, race, audit end to end
-mirror/                      Java design prototype. Reference only, never built or run.
+mirror/                      Java design prototype. Reference only; built by nothing here.
 stage/                       reference material from the archived fork. Not built.
 ```
 
@@ -305,15 +306,20 @@ at all.
 
 Retiring init is what makes a second boot safe from the first one, and the reason
 is not obvious from the process table, which `resetKernel` empties correctly and
-which is what a reader checks. It is the state that is NOT in the table: kvfs
-namespaces by module name and metadata is owned by pid, and the next boot's init
-is named "init" at pid 1 again. So a context retained across a shutdown does not
-write into a dead kernel's state, it writes into the next boot's - and a fresh
-process table reports nothing wrong while that happens. The retire is the only
-thing standing between a stale handle and the boot that follows it, and
-`tests/security` pins it by reading back through the new boot's own context rather
-than by asserting the refusal alone: a refusal that stopped nothing observable
-would pass the weaker form.
+which is what a reader checks. It is the state that is NOT in the table: kvfs keys
+each namespace by pid (`kvKey{owner PID; key string}`) and metadata keys entries the
+same way (`metadataKey{owner PID; key string}`), and `contextManager.reset` puts
+`nextPID` back to 1, so the next boot's init is pid 1 again and lands in the same
+namespace the previous boot's init wrote to. The fs data roots are the one thing in
+that area keyed by name rather than pid (`kfs.roots[c.name]`), and they are cleared
+by `resetFS` for a different reason - a surviving root would point a fresh module at
+a directory the previous boot chose. So a context retained across a shutdown does
+not write into a dead kernel's state, it writes into the next boot's, and a fresh
+process table reports nothing wrong while that happens. The retire is the only thing
+standing between a stale handle and the boot that follows it, and `tests/security`
+pins it by reading back through the new boot's own context rather than by asserting
+the refusal alone: a refusal that stopped nothing observable would pass the weaker
+form.
 
 ### Security context
 
@@ -699,10 +705,17 @@ introduces a new layer adds a package and a line in the file map.
 | `tests/lifecycle` | what a module is allowed to be | `module`, `usage` |
 | `tests/admission` | how much work the kernel will carry | `admission` (krlimit, kqos, kcputime) |
 | `tests/state` | what a module may remember | `kv`, `shm` |
-| `tests/channels` | how modules reach each other | `channels` (kpipe, klock, kepoll) |
+| `tests/channels` | how modules reach each other | `channels` (kpipe, klock), `eventwiring` (kepoll's post sites) |
 | `tests/crypto` | what the kernel holds on a module's behalf | `crypto`, `keyring`, `receipt` |
 | `tests/supervision` | work the kernel runs instead of the module | `sched`, `signal`, `watchdog`, `oom` |
-| `tests/evidence` | what is recorded about all of it | `audit_clock`, `console`, `dump`, `metadata` |
+| `tests/evidence` | what is recorded about all of it | `audit_clock`, `console`, `dump`, `metadata`, `tty` |
+| `tests/verifier` | whether a declaration is the one that was reviewed | `verifier` |
+| `tests/mesh` | how this node treats other nodes | `peer`, `slashing` |
+| `tests/fs` | what a module may touch on the host's disk | `fs` |
+| `tests/egress` | where a module may reach on the network | `egress` |
+| `tests/seccomp` | what arguments a loaded instance may still pass | `seccomp` |
+| `tests/tokenizer` | whether a module's reported usage is true | `tokenizer` |
+| `tests/kpanic` | what survives the way out | `panic` |
 | `tests/security` | the invariants that must never regress | `kernel` |
 
 Four files stay in `kernel/` rather than moving, and the reason is a property worth
@@ -920,10 +933,25 @@ mistake them for intent:
   imports the kernel plus the standard library only, so no production build path
   reaches an assertion library. Offline resolution is available from the local module cache via
   `GOPROXY="file://$(go env GOMODCACHE)/cache/download" GOSUMDB=off go test ./...`.
+- `mirror/` is a Java design prototype and is never built or run. A local worktree
+  may still hold `mirror/bin/` and `mirror/mirror.jar` from an earlier compile;
+  both are gitignored, so a clean checkout does not have them. That is why
+  `instrcheck` reports 131 files scanned here and 111 in CI, and why neither number
+  is a repository fact to quote. The sources are the specification; the compiled
+  output would go stale the moment a source changed, which is the reason the
+  gitignore entry gives for excluding it.
+- The 13 Java sources under `mirror/src/` carry no license header. Whose they are
+  and what they should say is the owner's decision, and nothing in this repo has
+  made it.
 - CI is `.github/workflows/ci.yml`: instruction-file integrity (`instrcheck` plus
   an independent `grep -P` assertion so a weakened tool cannot pass the job),
   gofmt, build, vet, kernel dependency hygiene, `go test -race`, and an assertion
-  that the security suite actually ran (an empty result is a failure).
+  that the security suite actually ran (an empty result is a failure). That last
+  gate counts top-level `PASS` + `SKIP` against a floor, and it holds a named
+  allowlist of the tests permitted to skip: a top-level `t.Skip` is a test that
+  declined to assert, so counting it without naming it would let a regression
+  turn a failure into a skip and keep the total unchanged. Adding a name to that
+  list is a decision a reviewer sees; adding a `t.Skip` to a test is not.
 
 ## Governance
 

@@ -124,7 +124,27 @@ func resetKernel() {
 	resetCPU()
 
 	// Module state and shared memory.
+	//
+	// resetKVFS looks redundant next to KVDropNamespace in UnloadModule, and a test
+	// that loads a module, shuts down and asserts an empty namespace passes without
+	// it - the unload already dropped that namespace. What only this clears is INIT's:
+	// init is never appended to the handle's module list, so unloadAll never walks it,
+	// and pids restart at 1 with each boot. Without the reset, a key init wrote in one
+	// boot is readable by the next boot's init, with nothing on that boot's chain to
+	// say so. tests/security's TestResetClearsWhatUnloadNeverTouches pins that half.
 	resetKVFS()
+	// resetFSScopes is the one entry in this list that no test in tests/ can pin, and
+	// the reason is structural rather than an oversight: LoadModule calls SetFSScope
+	// unconditionally, so any pid that reaches an fs call has its scope overwritten
+	// from its own manifest before the check reads it, and a scope surviving from a
+	// previous boot is unreachable through every exported observation. Measured under
+	// its removal: a boot-2 module was still refused the path the host had widened
+	// into boot 1's same-numbered pid. What the removal does show is retention - with
+	// three modules loaded in boot 1 and one in boot 2, the map held three entries
+	// after each shutdown instead of zero, and stays at the high-water mark for the
+	// rest of the process. So this is a leak guard today, and it becomes a containment
+	// guard the moment any path hands a pid an fs grant without going through the
+	// loader. Do not delete it on the grounds that nothing tests it.
 	resetFSScopes()
 	// resetFS clears where the data roots are; resetFSScopes above clears what each
 	// pid may touch inside one. Both must be empty before a new boot installs its

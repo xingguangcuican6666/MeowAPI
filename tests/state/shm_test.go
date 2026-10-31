@@ -1105,15 +1105,13 @@ func TestShmPoolIsClearedAcrossRestart(t *testing.T) {
 	assert.Zero(t, kernel.ShmSnapshot().Segments)
 	assert.Zero(t, kernel.FDCount(pid))
 
-	if n := kernel.ShmPoolBytes(); n != 0 {
-		// resetShm() belongs in resetKernel() in kernel/kernel.go, which this change
-		// cannot edit. Until the integrator adds it, released buffers sit in the slab
-		// cache across a restart, so the pool is not empty and neither is the counter
-		// set. TestShmReleaseZeroesBufferIsKiommu covers the scrubbing half, which
-		// does not depend on the reset.
-		t.Skipf("the pool survived Shutdown holding %d bytes: add resetShm() to "+
-			"resetKernel() in kernel/kernel.go and this becomes a hard assertion", n)
-	}
+	// The pool must be empty too, which is the part the two assertions above do not
+	// cover: released buffers sit in the slab cache for reuse, and the cache is
+	// package state that outlives the module that filled it. This was a conditional
+	// skip until resetShm() landed in resetKernel, and the skip is what made removing
+	// that call invisible - the pool stayed non-zero, the test declined to assert, and
+	// all 20 packages went green. A regression here is now a failure.
+	assert.Zero(t, kernel.ShmPoolBytes(), "the slab cache must not survive a restart")
 	assert.Zero(t, kernel.ShmSnapshot().CachedBytes)
 	assert.Zero(t, kernel.ShmSnapshot().Allocations)
 	assert.Zero(t, kernel.ShmSnapshot().Zeroed)

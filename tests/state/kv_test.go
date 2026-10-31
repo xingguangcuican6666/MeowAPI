@@ -518,16 +518,6 @@ func TestKVNamespaceIsDroppedOnUnload(t *testing.T) {
 	require.NoError(t, k.Unload(pid))
 	assert.Zero(t, kernel.FDCount(pid), "unload must reclaim every handle the module held")
 
-	if n := kernel.KVBytes(pid); n != 0 {
-		// UnloadModule in kernel/module.go must call kernel.KVDropNamespace(pid) and
-		// kernel.ClearFSScope(pid) beside its existing reclaimFDs(pid). Neither file
-		// is editable from this change, so until the integrator adds the two calls
-		// this assertion cannot be evaluated. TestKVDropNamespaceIsComplete below
-		// asserts the primitive itself, so the behavior is covered either way.
-		t.Skipf("KVBytes(%d) = %d after unload: add kernel.KVDropNamespace(pid) and "+
-			"kernel.ClearFSScope(pid) to UnloadModule in kernel/module.go and this "+
-			"becomes a hard assertion", pid, n)
-	}
 	assert.Zero(t, kernel.KVBytes(pid), "unload must drop the module's whole namespace")
 }
 
@@ -1020,6 +1010,13 @@ func TestFSScopeIsPerModule(t *testing.T) {
 // TestKVStateDoesNotSurviveRestart is the reset-path assertion: a kernel booted
 // after Shutdown must be indistinguishable from a first-booted one, which for kvfs
 // means no module state and no path scopes carried over.
+//
+// It does NOT pin resetKVFS, and the reason is worth knowing before trusting it to.
+// Shutdown unloads every module, and UnloadModule drops the namespace itself, so this
+// test passes with or without the reset in resetKernel - which is why removing
+// resetKVFS() left it green while tests/security's
+// TestResetClearsWhatUnloadNeverTouches failed. What this covers is the module-facing
+// view of a restart: the same name loads again and starts empty.
 func TestKVStateDoesNotSurviveRestart(t *testing.T) {
 	stateQuiet(t)
 
@@ -1034,10 +1031,6 @@ func TestKVStateDoesNotSurviveRestart(t *testing.T) {
 	kernel.SetFSScope(pid, []string{"cache"}, []string{"cache"})
 	require.NoError(t, k1.Shutdown())
 
-	if n := kernel.KVBytes(pid); n != 0 {
-		t.Skipf("KVBytes(%d) = %d after Shutdown: add resetKVFS() and resetFSScopes() to "+
-			"resetKernel() in kernel/kernel.go and this becomes a hard assertion", pid, n)
-	}
 	assert.Zero(t, kernel.KVBytes(pid), "kvfs state must not survive a restart")
 	assert.Zero(t, kernel.KVCount(pid))
 	assert.Zero(t, kernel.FDCount(pid))
