@@ -350,6 +350,51 @@ func TestOnlyTheLastReasonLineBeforeTheSkipIsUsed(t *testing.T) {
 	assert.Equal(t, 0, num(t, got, "UNEXPECTED"), "the last reason line is the skip's own")
 }
 
+// TestAReasonWithAQuoteStillMatches pins the accidental-truncation case the jsonend fix
+// addresses. A skip reason is built from an error whose text is not ours to choose, so it
+// can contain a quote - and a quote BEFORE the allowlisted substring used to truncate it
+// away, refusing a legitimate environment skip as unexpected. A quote after the substring
+// never mattered, which is why all five current entries were safe: each reason reads
+// "symlinks are not available here: %v" with the variable trailing. This case puts the
+// quote first, which is the shape that actually broke.
+func TestAReasonWithAQuoteStillMatches(t *testing.T) {
+	got := runClassify(t,
+		skipReason("tests/state", "TestFSResolveRefusesEveryEscape", "kv_test.go:742",
+			`cannot create "escape" link: symlinks are not available here`),
+		skip("tests/state", "TestFSResolveRefusesEveryEscape"),
+	)
+	assert.Equal(t, 1, num(t, got, "SKIP_TOP"))
+	assert.Equal(t, 0, num(t, got, "UNEXPECTED"),
+		"a quote before the allowlisted substring must not truncate the reason away")
+}
+
+// TestAnUnexpectedSkipReportsItsReasonUnescaped pins jsonunescape, which is easy to get
+// wrong in the other direction: the assertion has to be about the TEXT the classifier
+// reports, not about whether a match succeeded. My first version of this case appended a
+// backslash-heavy suffix to an allowlisted reason and asserted the skip stayed permitted
+// - which passed with jsonunescape deleted, because the allowlisted substring sat before
+// the suffix and matching never looked at it. Mutation-tested: reverting the extractor to
+// "cut at the first quote" fails TestAReasonWithAQuoteStillMatches, and reverting
+// jsonunescape fails this one and nothing else.
+//
+// So the case is an UNEXPECTED skip, where the reason text is echoed into the failure
+// list, and the assertion is that a doubled backslash in the stream arrives as the single
+// one the test actually printed. That is what makes the diagnosis in a CI log readable
+// rather than showing JSON's encoding of the message.
+func TestAnUnexpectedSkipReportsItsReasonUnescaped(t *testing.T) {
+	got := runClassify(t,
+		skipReason("tests/state", "TestSomethingNew", "kv_test.go:12",
+			`cannot resolve \\wsl$\eth0 for "iface"`),
+		skip("tests/state", "TestSomethingNew"),
+	)
+	assert.Equal(t, 1, num(t, got, "UNEXPECTED"))
+	list := got["UNEXPECTED_LIST"]
+	assert.Contains(t, list, `\\wsl$\eth0`,
+		"the reported reason must be the text the test printed, not JSON's encoding of it")
+	assert.NotContains(t, list, `\\\\wsl`, "and not the doubled form from the raw stream")
+	assert.Contains(t, list, `"iface"`, "quotes in the reason survive too")
+}
+
 // TestHostileTestNamesCannotInjectShell is the safety property of eval'ing the output.
 // Go replaces spaces in a subtest name with underscores but leaves quotes alone, so a
 // name like TestIt's compiles and reaches this stream. Every value the classifier prints

@@ -64,9 +64,16 @@ function jsonstr(line, key,    needle, start, rest, stop) {
 # jsonend returns the offset of the closing quote of a JSON string body, skipping the
 # ones that are escaped. Scanning to the first quote instead truncates any value that
 # contains one, and these do: a test name may hold a quote, and a skip reason is built
-# from an error whose text is not ours to choose - os.Symlink's failure message goes
-# straight into t.Skipf. A truncated reason fails to match its allowlist entry, which
-# would turn a legitimate environment skip into a red build.
+# from an error whose text is not ours to choose.
+#
+# What the truncation breaks depends on WHERE the quote falls, and the distinction
+# matters because it decides how much this fix buys. The allowlist matches a substring,
+# so a quote after the substring leaves the match intact - which is the shape all five
+# current entries have, since each reason reads "symlinks are not available here: %v"
+# with the variable after the fixed text. A quote BEFORE the substring truncates it away
+# and the skip is refused as unexpected. Measured both orders: with "cannot create
+# \"escape\" link: symlinks are not available here" the old scan loses the match, and
+# with the error trailing the text it does not.
 function jsonend(s,    i, c) {
     for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
