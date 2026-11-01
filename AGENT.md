@@ -49,6 +49,7 @@ internal/console/            the operator console: daemon, session protocol, pas
                              keyboard, never what a pid may do.
 kernel/                      EL1 trust root. No business logic, standard library only.
   kernel.go                  package doc, the ABI version, the one reset path
+  narrow.go                  knarrow: operations withdrawn from a domain at runtime
   context.go                 SContext alias, identity, the concrete *sContext that every
                              entry point asserts to, transition rule
   policy.go                  Op set, domain rules, grant narrowing, check(), denials
@@ -148,6 +149,7 @@ something the kernel learned during the boot or something it was told before it,
 | File | Subsystem | Responsibility | prototype counterpart (not in this repo) |
 | --- | --- | --- | --- |
 | `kernel/kernel.go` | - | package doc, `KernelAPI`, `resetKernel`, the one reset path | none |
+| `kernel/narrow.go` | knarrow | the runtime withdrawal set: `NarrowPolicy`, `PolicyNarrowing`, the per-boot reset. Tightening only | none |
 | `kernel/context.go` | core | `SContext` alias, identity, `contextOf` and the concrete `*sContext` every entry point resolves to, the spawn transition rule | `scontext.java` |
 | `kernel/policy.go` | - | the `Op` set, domain rules, manifest grant narrowing, `check()`, `DeniedError` | `policy.java` |
 | `kernel/proc.go` | - | context manager, pid/uid allocation, the append-only process table | `scm.java`, `smap.java` |
@@ -232,7 +234,8 @@ stays in memory for the life of the request; what this code does control is that
 never reaches disk or a log line.
 
 **The command table.** `help`, `auth`, `whoami`, `status`, `ps`, `ls`, `log`, `audit`,
-`dump`, `bin`, `load`, `unload`, `reload`, `passwd`, `quit`, `poweroff`. A command
+`dump`, `bin`, `load`, `unload`, `reload`, `policy`, `harden`, `passwd`, `quit`,
+`poweroff`. A command
 marked privileged needs an authenticated session; a command that then performs a
 kernel act is re-checked inside ktty against its own credential, which is why the two
 layers are not redundant. The table is dynamic: a component in `root/bin` contributes
@@ -251,6 +254,33 @@ shield the panic, record `failed` on every failure path, never retry a failed pa
 and let an unloaded component be loaded again. Loading a `.so` is not isolation - the
 component runs in-process with the daemon's privileges - and only what it does THROUGH
 the kernel is bounded.
+
+### Runtime policy change
+
+The compiled rules table in `policy.go` is the ceiling and stays that way. What may
+change while the kernel runs is a set of operations WITHDRAWN from a domain, in
+`kernel/narrow.go`, and the asymmetry is the design: a refusal can be added at any
+moment, against a module that is already loaded, on its next call; a grant cannot. No
+exported entry point removes an operation from the withdrawn set, and the set is never
+exposed as a live map.
+
+`Allowed` folds the withdrawal in, which is why one edit covers four callers - manifest
+validation, the effective grant list, the verifier's advisory and the per-call
+decision. `OpsFor` asks `Allowed` rather than reading the table, and the reason is worth
+recording: reading the table directly made `policy` print an operation as both held and
+withdrawn after a narrowing, which reads as "the withdrawal did nothing" and is the
+opposite of what the syscall does.
+
+The kernel domain is not narrowable. Its operations are the ones the boot sequence
+needs, and a withdrawal there would break the kernel's own ability to run - a failure
+that arrives later and somewhere else, which is the worst kind of policy change.
+Batches are all-or-nothing and idempotent; a name the domain does not hold is refused
+rather than ignored. The set is per boot: a narrowing that survived a restart would be a
+decision nobody could see they had made.
+
+`harden <domain> <op>...` is the console command and `policy` shows the posture. The
+status half needs no authentication - knowing that `log:write` was withdrawn is not a
+capability, and an operator who cannot read the posture cannot notice a change to it.
 
 ### The abi package
 
@@ -646,6 +676,16 @@ module, and must not stash it in package-level state. `OnUnload` is called under
 a hard kernel timeout; a module that hangs there is abandoned and its load
 record closed, because the kernel does not block on module code. A panic in a
 module is recovered by the kernel and reported, never propagated.
+
+A module that wants to contribute console commands does it through that same
+context, not through an exported symbol: it registers `[]abi.Command` in `OnLoad`,
+each one naming the operation an operator must hold to run it, and the kernel
+refuses a command whose operation the module does not itself hold. That is the
+static-module path. A `.so` component in `root/bin` is the other one and it is
+narrower by necessity - it cannot import this package without invalidating itself
+on every kernel change, so it exports `abi.Manifest` and `abi.Commands` as data and
+the host registers them on its behalf. Both paths end in the same registration
+call, so the refusal rules are the same.
 
 Every module ships a manifest. The manifest is data, validated before any module
 code runs:

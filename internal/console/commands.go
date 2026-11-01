@@ -501,6 +501,21 @@ func Builtins(d *Daemon) []Builtin {
 			},
 		},
 		{
+			Name:       "harden",
+			Help:       "withdraw operations from a domain for the rest of this boot: harden <domain> <op>...",
+			Privileged: true,
+			Run: func(s *Session, args []string) (string, error) {
+				return d.harden(args)
+			},
+		},
+		{
+			Name: "policy",
+			Help: "show the operation set each domain holds, and what was withdrawn",
+			Run: func(s *Session, args []string) (string, error) {
+				return d.policyReport(), nil
+			},
+		},
+		{
 			Name: "passwd",
 			Help: "set or change the operator password",
 			Run: func(s *Session, args []string) (string, error) {

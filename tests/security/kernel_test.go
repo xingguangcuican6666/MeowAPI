@@ -388,6 +388,9 @@ func TestAZeroKernelCannotAct(t *testing.T) {
 			_, err := z.IssueReceipt(kernel.ReceiptSpec{})
 			return err
 		}},
+		{"NarrowPolicy", func() error {
+			return z.NarrowPolicy(kernel.DomainPlugin, []kernel.Op{kernel.OpLogWrite})
+		}},
 	}
 
 	for _, tc := range cases {

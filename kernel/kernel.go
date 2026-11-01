@@ -207,6 +207,12 @@ func resetKernel() {
 	resetSignals()
 
 	// Grants and the module registry, then the handle table they reference.
+	//
+	// resetNarrowing sits with the grants because the two are the same question - what
+	// a context may do - read at two levels: the per-pid set a manifest narrowed, and
+	// the per-domain set an operator withdrew at runtime. A boot that kept one without
+	// the other would come up in a posture nobody chose and nobody can name.
+	resetNarrowing()
 	resetGrants()
 	resetModules()
 	// resetOom after resetModules: a late sweep that started a termination would otherwise

@@ -191,9 +191,32 @@ func opSet(list ...Op) map[Op]struct{} {
 	return m
 }
 
-// Allowed reports whether a domain holds an operation, ignoring manifest
-// narrowing. It is the ceiling. The decision is granted().
+// Allowed reports whether a domain holds an operation, ignoring manifest narrowing.
+// It is the ceiling. The decision is granted().
+//
+// A runtime narrowing is folded in here rather than at each caller, and that is the
+// only reason the check is correct everywhere: manifest validation, the effective
+// grant list, the verifier's advisory and the per-call decision all ask this one
+// function, so a withdrawn operation is refused by every one of them without any of
+// them being edited. A narrowing that had to be wired in at four call sites would be
+// one forgotten call site away from being a decoration.
 func Allowed(dom Domain, op Op) bool {
+	set, ok := rules[dom]
+	if !ok {
+		return false
+	}
+	_, ok = set[op]
+	if !ok {
+		return false
+	}
+	return !narrowedIn(dom, op)
+}
+
+// ceilingAllows reports whether the COMPILED table holds an operation, ignoring every
+// runtime narrowing. It exists for exactly one caller - NarrowPolicy validating what it
+// was asked to withdraw - because that check has to be against the compiled ceiling
+// rather than against the view the narrowing itself produces.
+func ceilingAllows(dom Domain, op Op) bool {
 	set, ok := rules[dom]
 	if !ok {
 		return false
@@ -202,11 +225,22 @@ func Allowed(dom Domain, op Op) bool {
 	return ok
 }
 
-// OpsFor returns the sorted operations a domain holds.
+// OpsFor returns the sorted operations a domain holds, with any runtime withdrawal
+// removed.
+//
+// It asks Allowed rather than reading rules[dom] directly, and that is the difference
+// between a policy view an operator can read and one that lies. Measured: with the
+// direct read, `policy` printed log:write under the plugin domain's held line AND
+// under its withdrawn line after a narrowing, and a console that shows an operation
+// as both held and withdrawn is worse than no view at all - the reader concludes the
+// withdrawal did nothing, which is the opposite of what the syscall did.
 func OpsFor(dom Domain) []Op {
 	set := rules[dom]
 	out := make([]Op, 0, len(set))
 	for o := range set {
+		if narrowedIn(dom, o) {
+			continue
+		}
 		out = append(out, o)
 	}
 	sortOps(out)

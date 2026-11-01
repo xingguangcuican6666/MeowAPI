@@ -124,6 +124,10 @@ func Dump(w io.Writer) error {
 	b.WriteString(fmt.Sprintf("rejected usage facts: %d\n", UsageRejected()))
 
 	b.WriteString("\n--- policy ---\n")
+	// The withdrawn set is printed before the effective one because the two together
+	// are the posture: a domain line alone would describe what a compiled table holds,
+	// which is not what the kernel will actually enforce after a runtime narrowing.
+	withdrawn := PolicyNarrowing()
 	for _, dom := range []Domain{DomainKernel, DomainInit, DomainPlugin, DomainUntrusted} {
 		held := OpsFor(dom)
 		if len(held) == 0 {
@@ -131,6 +135,9 @@ func Dump(w io.Writer) error {
 			continue
 		}
 		b.WriteString(fmt.Sprintf("%-17s %s\n", dom, joinOps(held)))
+		if ops := withdrawn[dom]; len(ops) > 0 {
+			b.WriteString(fmt.Sprintf("%-17s   withdrawn at runtime: %s\n", "", joinOps(ops)))
+		}
 	}
 
 	b.WriteString("\n--- admission ---\n")
