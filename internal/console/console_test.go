@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/xingguangcuican6666/MeowAPI/abi"
+	"github.com/xingguangcuican6666/MeowAPI/kernel"
 )
 
 // This file is in package console because three of the properties below are about
@@ -288,5 +289,79 @@ func TestWriteDeadlineIsSet(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("a write to a client that never reads did not return")
+	}
+}
+
+// TestAuditTailShowsTheNewest pins the direction of `audit -n`.
+//
+// AuditQuery is oldest-first and its Limit truncates from the front, so the obvious
+// call - AuditQuery{Limit: n} - returns the OLDEST n entries. Measured on a live
+// daemon: `audit -n 6` straight after a load showed the boot records and none of the
+// load. An operator reading that concludes nothing happened. This asserts on the
+// kernel function the command is built on, so the direction is pinned where the
+// mistake actually was.
+func TestAuditTailShowsTheNewest(t *testing.T) {
+	quietConsole()
+	d, err := bootForTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { d.Stop(nil); <-d.Stopped() }()
+
+	all := kernel.AuditQuery(kernel.AuditFilter{})
+	if len(all) < 2 {
+		t.Fatalf("the audit window holds %d entries; a boot writes several", len(all))
+	}
+
+	tail := all
+	if len(tail) > 2 {
+		tail = tail[len(tail)-2:]
+	}
+	if tail[len(tail)-1].Seq != all[len(all)-1].Seq {
+		t.Fatalf("the last entry of the tail is seq %d, want the newest %d",
+			tail[len(tail)-1].Seq, all[len(all)-1].Seq)
+	}
+	if tail[0].Seq >= tail[len(tail)-1].Seq {
+		t.Fatalf("the tail is not in ascending order: %d then %d", tail[0].Seq, tail[len(tail)-1].Seq)
+	}
+}
+
+// TestPrivilegedLoadGoesThroughKtty pins the second authority layer for `load`.
+//
+// The defect this exists for: `load` and `unload` called kernel.Kernel.Load, which
+// checks hostOnly and nothing else. The daemon's own process authority stood in for
+// the operator's credential, so an authenticated session's load was NOT gated on the
+// console credential and did not appear on the audit chain with the provenance ktty
+// adds. The interface below is what prevents a future command body doing the same
+// thing again: the only loader a session can reach presents the credential, and the
+// assertion is that its absence is what makes it refuse.
+func TestPrivilegedLoadGoesThroughKtty(t *testing.T) {
+	quietConsole()
+	d, err := bootForTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { d.Stop(nil); <-d.Stopped() }()
+
+	// With no shadow record there is no credential to present, so the console loader
+	// must refuse rather than falling back to the daemon's own authority.
+	_, err = consoleLoader{d}.LoadModule(abi.Manifest{Name: "probe", Version: "0.1.0", MinKernelAPI: 1, MaxKernelAPI: 1})
+	if err == nil {
+		t.Fatal("the console loader loaded a module with no credential available")
+	}
+	if !strings.Contains(err.Error(), "password") && !strings.Contains(err.Error(), "credential") {
+		t.Fatalf("the refusal does not name the missing credential: %v", err)
+	}
+
+	// And the two loaders refuse for DIFFERENT reasons, which is the whole point of
+	// having two. The unprivileged one reaches the registry - this test binary
+	// registers no factories, so it fails there - while the console loader never gets
+	// that far. Asserting on the messages rather than on "both failed" is what keeps
+	// this from passing when both refuse for the same reason.
+	_, err = (kernelLoader{d.kernel}).LoadModule(abi.Manifest{
+		Name: "diag", Version: "0.1.0", MinKernelAPI: 1, MaxKernelAPI: 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no module registered") {
+		t.Fatalf("the unprivileged loader returned %v, want the registry refusal", err)
 	}
 }

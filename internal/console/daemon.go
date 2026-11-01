@@ -198,8 +198,9 @@ func (d *Daemon) Start() error {
 		return err
 	}
 
+	startup := kernelLoader{k}
 	for _, m := range d.opts.Modules {
-		if _, err := k.Load(m); err != nil {
+		if _, err := startup.LoadModule(m); err != nil {
 			// A static module failing to load is a startup failure, not a
 			// degraded start: it was named in the configuration, and a gateway
 			// missing its own adapter is worse than one that refuses to come up.
@@ -402,6 +403,51 @@ func (d *Daemon) kernelCredential() ([]byte, error) {
 	return cred.deriveForKernel(), nil
 }
 
+// The moduleLoader interface is what every LOAD and UNLOAD path goes through, and it
+// has exactly two implementations below.
+//
+// It exists so that the privileged path is the only one a session can reach. The
+// unprivileged Kernel.Load is used once, at startup, for the modules the daemon was
+// configured with - a decision made before any session existed, under the process's
+// own authority. Everything an operator triggers goes through consoleLoader, which
+// presents the console credential to ktty inside the kernel, so the load is gated on
+// the credential AND recorded on the audit chain with the provenance the loader cannot
+// know. That is the two-layer model the file header describes, and without this
+// interface the second layer was missing for `load` and `unload`: they called
+// Kernel.Load, which checks only hostOnly - measured, and it is why this type exists.
+type moduleLoader interface {
+	LoadModule(m kernel.Manifest) (kernel.PID, error)
+	UnloadModule(pid kernel.PID) error
+}
+
+// kernelLoader is the daemon's own authority: init's context through the handle. It is
+// used for the startup manifest list and for nothing a session can ask for.
+type kernelLoader struct{ k *kernel.Kernel }
+
+func (l kernelLoader) LoadModule(m kernel.Manifest) (kernel.PID, error) { return l.k.Load(m) }
+func (l kernelLoader) UnloadModule(pid kernel.PID) error                { return l.k.Unload(pid) }
+
+// consoleLoader is an operator's authority: the credential is presented to ktty, the
+// operation and the credential are both re-checked inside the kernel, and the act lands
+// on the audit chain before the caller sees a result.
+type consoleLoader struct{ d *Daemon }
+
+func (l consoleLoader) LoadModule(m kernel.Manifest) (kernel.PID, error) {
+	cred, err := l.d.kernelCredential()
+	if err != nil {
+		return 0, err
+	}
+	return kernel.TTYLoadModule(l.d.init, l.d.ttyFD, cred, m)
+}
+
+func (l consoleLoader) UnloadModule(pid kernel.PID) error {
+	cred, err := l.d.kernelCredential()
+	if err != nil {
+		return err
+	}
+	return kernel.TTYUnloadModule(l.d.init, l.d.ttyFD, cred, pid)
+}
+
 // processTable reads the process table through ktty, so the read is on the audit
 // chain.
 func (d *Daemon) processTable() ([]kernel.ProcSnapshot, error) {
@@ -412,7 +458,8 @@ func (d *Daemon) processTable() ([]kernel.ProcSnapshot, error) {
 	return kernel.TTYProcessTable(d.init, d.ttyFD, cred)
 }
 
-// unload removes a module through the kernel handle and drops its commands.
+// unload removes a module through the console loader, so the unload is gated on the
+// credential inside the kernel and recorded with its provenance.
 func (d *Daemon) unload(pid kernel.PID) error {
 	// The name is read BEFORE the unload, because after it the module is not in
 	// LoadedModules and there is no other way to ask what was just removed. It is
@@ -423,7 +470,8 @@ func (d *Daemon) unload(pid kernel.PID) error {
 	// daemon. Removing them before the unload means there is no window in which
 	// `help` offers one.
 	removed := d.table.Unregister(pid)
-	if err := d.kernel.Unload(pid); err != nil {
+	loader := consoleLoader{d}
+	if err := loader.UnloadModule(pid); err != nil {
 		// Putting them back is not possible - the kernel refused the unload, and a
 		// command body that lives in a component the kernel still holds is still
 		// callable - but re-registering would mean re-entering Table.Register with
@@ -500,9 +548,18 @@ func (d *Daemon) auditCommand(args []string) (string, error) {
 			n = v
 		}
 	}
-	entries := kernel.AuditQuery(kernel.AuditFilter{Limit: n})
+	// The whole window is read and the tail is taken, because AuditQuery is
+	// oldest-first and its Limit truncates from the FRONT. Asking it for n entries
+	// therefore returns the OLDEST n, which is the opposite of what `audit -n`
+	// promises - measured on a live daemon: `audit -n 6` showed the boot records and
+	// none of the load and unload a moment before it. The window is bounded by the
+	// console's retention setting, so reading it whole is bounded too.
+	entries := kernel.AuditQuery(kernel.AuditFilter{})
 	if len(entries) == 0 {
 		return "the audit window is empty\n", nil
+	}
+	if len(entries) > n {
+		entries = entries[len(entries)-n:]
 	}
 	var b strings.Builder
 	for _, e := range entries {

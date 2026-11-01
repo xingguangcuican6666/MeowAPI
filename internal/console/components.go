@@ -229,7 +229,7 @@ func fileDigest(path string) (string, error) {
 // measured separately, is a second Open on a path whose first Open FAILED - that one
 // hangs the calling goroutine forever. `failed` is therefore the flag, set on every
 // failure path below and never cleared for the life of the process.
-func (c *components) load(k *kernel.Kernel, table *Table, comp *component) error {
+func (c *components) load(k moduleLoader, table *Table, comp *component) error {
 	c.mu.Lock()
 	if comp.failed {
 		reason := comp.reason
@@ -313,7 +313,7 @@ func (c *components) load(k *kernel.Kernel, table *Table, comp *component) error
 		}
 	}()
 
-	pid, err := k.Load(manifest)
+	pid, err := k.LoadModule(manifest)
 	if err != nil {
 		shim.err = err
 		return fail(fmt.Errorf("the kernel refused the component: %w", err))
@@ -452,7 +452,7 @@ func (d *Daemon) discoverComponents() {
 		if comp.loaded || comp.failed {
 			continue
 		}
-		if err := d.bin.load(d.kernel, d.table, comp); err != nil {
+		if err := d.bin.load(kernelLoader{d.kernel}, d.table, comp); err != nil {
 			d.logf("component %s: %v", filepath.Base(comp.path), err)
 			continue
 		}
@@ -535,7 +535,7 @@ func (d *Daemon) loadComponent(arg string) (kernel.PID, error) {
 		if comp.loaded {
 			return comp.pid, fmt.Errorf("%s is already loaded as pid %d", base, comp.pid)
 		}
-		if err := d.bin.load(d.kernel, d.table, comp); err != nil {
+		if err := d.bin.load(consoleLoader{d}, d.table, comp); err != nil {
 			return 0, err
 		}
 		d.logf("component %s loaded as pid %d with %d command(s)", base, comp.pid, comp.commands)
