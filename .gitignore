@@ -27,8 +27,8 @@
 # repository inside this one and silently commit another session's work in progress.
 .claude/
 
-# mirror/ is a Java design prototype: the sources are the specification, the
-# compiled output is not. Classes and jars are build artifacts and would go
-# stale the moment a source changed, which makes them worse than absent.
-mirror/bin/
-mirror/*.jar
+# mirror/ is the owner's private design reference: a Java prototype that exists to
+# explain the intended semantics and is not part of what this repository publishes.
+# It is ignored in full, not just its build output, and the ignore is what makes
+# that true for a fresh clone as well as this worktree.
+mirror/
