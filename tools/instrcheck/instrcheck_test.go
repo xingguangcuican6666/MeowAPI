@@ -380,6 +380,55 @@ func TestSkipDirsAreNotHonouredAsFiles(t *testing.T) {
 	assert.Equal(t, 2, st.Scanned)
 }
 
+// TestTheGitSkipDoesNotReachNestedPaths pins why the worktree fix is root-only. The skip
+// exists because a linked worktree's .git is a pointer FILE that would otherwise be
+// counted as scanned surface; it must not become a general exemption for any path named
+// .git, because .git inside an instruction directory is a place a payload can hide and
+// the instruction directory is exactly what this check defends.
+//
+// Measured both ways: with the skip widened to filepath.Base(rel) == ".git", a homoglyph
+// inside .claude/.git becomes invisible - exit 0 against exit 1, and the whole
+// instrcheck suite stays green. Nothing in the tree pinned that until this case.
+func TestTheGitSkipDoesNotReachNestedPaths(t *testing.T) {
+	root := t.TempDir()
+	// A .claude/ directory, which is instruction surface, holding a file named .git with
+	// a homoglyph in it. A forgeable .git must not exempt the surface it sits in.
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, ".claude/.git", "# nеw\n")
+
+	findings := checkRoot(t, root)
+	require.Len(t, findings, 1,
+		"a file named .git inside an instruction directory is still instruction surface")
+	assert.Equal(t, "A", findings[0].Rule)
+	assert.Contains(t, findings[0].Path, ".claude/.git")
+}
+
+// TestTheRootGitFileIsTheOnlyOneSkipped is the pair to the case above: the skip must
+// still do its job at the root of a linked worktree, or the count it was added for comes
+// back. Both halves are needed - a skip that reaches nothing leaves a worktree counting
+// one file too many, and a skip that reaches everything hides a payload.
+//
+// The nested case is handled by a DIFFERENT mechanism, which this asserts rather than
+// assumes: a directory holding a .git - file or directory - is a nested checkout, and the
+// whole directory is pruned. So pkg/.git is never scanned either, but it is not scanned
+// because pkg is pruned, not because a path named .git was exempted. The distinction is
+// what makes .claude/.git visible: .claude is an instruction root, isInstructionDirRoot
+// excludes it from that prune, so its contents are scanned and the name-based skip above
+// must not reach them.
+func TestTheRootGitFileIsTheOnlyOneSkipped(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".git", "gitdir: /repo/.git/worktrees/probe\n")
+	write(t, root, "AGENT.md", "# AGENT.md\n")
+	write(t, root, "pkg/.git", "gitdir: /elsewhere\n")
+
+	_, st, err := Check(root)
+	require.NoError(t, err)
+	assert.Equal(t, 1, st.Scanned, "only AGENT.md: the root .git is skipped, and pkg is pruned")
+	assert.Equal(t, 1, st.NestedCheckouts, "pkg holds a .git, so it is a nested checkout")
+}
+
 // TestBinaryFilesAreSkipped prevents false positives on images, archives and
 // compiled artifacts, which legitimately contain bytes above 0x7E.
 func TestBinaryFilesAreSkipped(t *testing.T) {
