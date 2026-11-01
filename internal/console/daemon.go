@@ -107,6 +107,15 @@ type Daemon struct {
 	stopping atomic.Bool
 	stopOnce sync.Once
 	stopped  chan struct{}
+	// ready closes once Start has finished booting, loading and discovering. It is
+	// separate from "the socket accepts" and the difference is not cosmetic: the
+	// listener binds FIRST so a daemon whose component hangs is still reachable, which
+	// means an observer that waits for the socket can arrive while Start is still
+	// writing this struct's fields. Measured - the console suite's own test read
+	// d.kernel as a data race against Start's write to it, because the socket it
+	// probed had been accepting for a few hundred microseconds already.
+	ready     chan struct{}
+	readyOnce sync.Once
 	// stopErr is written once inside stopOnce and read after stopped closes, so
 	// the happens-before edge is the channel close rather than a lock.
 	stopErr error
@@ -120,6 +129,7 @@ func New(opts Options) *Daemon {
 		opts:     opts,
 		sessions: map[*Session]struct{}{},
 		stopped:  make(chan struct{}),
+		ready:    make(chan struct{}),
 	}
 	d.log = log.New(opts.LogWriter, "", log.LstdFlags)
 	if d.log.Writer() == nil {
@@ -181,6 +191,7 @@ func (d *Daemon) Start() error {
 	k, err := kernel.Boot(d.opts.Boot)
 	if err != nil {
 		_ = d.listener.Close()
+		d.readyOnce.Do(func() { close(d.ready) })
 		return fmt.Errorf("booting the kernel: %w", err)
 	}
 	d.kernel = k
@@ -218,6 +229,7 @@ func (d *Daemon) Start() error {
 	d.discoverComponents()
 
 	go d.accept()
+	d.readyOnce.Do(func() { close(d.ready) })
 
 	<-d.stopped
 	return d.stopErr
@@ -628,9 +640,21 @@ func (d *Daemon) Stop(cause error) {
 			}
 		}
 		d.stopErr = cause
+		// A Start that never reached readiness must not leave a waiter blocked
+		// forever: a daemon that failed to boot is exactly the case someone is
+		// waiting to hear about.
+		d.readyOnce.Do(func() { close(d.ready) })
 		close(d.stopped)
 	})
 }
+
+// Ready returns a channel closed once the daemon has finished booting. A caller that
+// needs to touch the daemon's state rather than its socket waits on this.
+func (d *Daemon) Ready() <-chan struct{} { return d.ready }
+
+// StopErrForTest reports why Start returned, for a fixture that has to fail loudly
+// rather than hand a test a daemon that never came up. It is safe to call after Ready.
+func (d *Daemon) StopErrForTest() error { return d.stopErr }
 
 // Stopped returns a channel closed when the daemon has finished stopping.
 func (d *Daemon) Stopped() <-chan struct{} { return d.stopped }

@@ -199,6 +199,18 @@ It is host code and the distinction is the design: the kernel decides what a pid
 do, and this package decides who is at the keyboard. Neither substitutes for the
 other, and a privileged command goes through both.
 
+Everything a session triggers goes through one of two `moduleLoader`s, and the
+distinction is a security boundary rather than an implementation detail. Startup
+loads the modules it was configured with through the process's own authority,
+before any session exists; everything an operator asks for - `load`, `unload` -
+goes through `consoleLoader`, which presents the console credential to
+`TTYLoadModule`/`TTYUnloadModule` inside the kernel. The console commands that do
+not load a module - `ps`, `harden` - go through their own credential-gated ktty
+calls, so every privileged act a session can cause is on the audit chain with the
+provenance the loader cannot know. A command that called `Kernel.Load` directly
+would be gated only by hostOnly, which is a fact about the daemon's process rather
+than about the operator, and that is the shape the first version of `load` had.
+
 Three modes, all the same binary. No flags: attach to the daemon if its socket is
 live, otherwise re-exec with `-daemon` under `Setsid` and then attach. `-daemon`:
 run the kernel in the foreground and serve the socket. `-once`: boot, print one

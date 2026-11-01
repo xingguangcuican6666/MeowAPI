@@ -58,17 +58,22 @@ func bootForTest() (*Daemon, error) {
 		LogWriter: io.Discard,
 	})
 	go func() { _ = d.Start() }()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if Probe(d.SocketPath()) == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if Probe(d.SocketPath()) != nil {
+	// Ready, not "the socket accepts". The listener binds before the kernel boots, so
+	// a probe that succeeds says only that Start got as far as Listen - the fields a
+	// test reads are written after it. Waiting on the socket here was a data race the
+	// -race CI job caught on the console suite's own fixtures.
+	select {
+	case <-d.Ready():
+	case <-time.After(20 * time.Second):
 		d.Stop(nil)
+		<-d.Stopped()
 		_ = os.RemoveAll(dir)
 		return nil, errNoDaemonForTest
+	}
+	if d.StopErrForTest() != nil {
+		err := d.StopErrForTest()
+		_ = os.RemoveAll(dir)
+		return nil, err
 	}
 	return d, nil
 }
