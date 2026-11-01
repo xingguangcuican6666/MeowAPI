@@ -178,9 +178,12 @@ func isInstructionFile(rel string) bool {
 // everything inside it.
 //
 // That is accepted rather than overlooked. What the prune exempts is another checkout's
-// copy of a tree, which is by construction untracked here: .claude/ is gitignored, so a
-// payload in a worktree cannot be committed, and the CI job walks `git ls-files` and
-// never sees it. The alternative was tried and is worse - refusing to prune beneath an
+// copy of a tree, which is outside this repository's committed surface: .claude/ is
+// ignored (see .gitignore), so a payload in a worktree cannot be committed, and the CI
+// job walks `git ls-files` and never sees it. That premise is a dependency rather than a
+// guarantee - this tool does not read .gitignore, and nothing asserts the line is still
+// there - so if .claude/ ever becomes tracked, the trade needs re-deciding and this
+// comment is where to start. The alternative was tried and is worse - refusing to prune beneath an
 // instruction root restores a false positive on this package's own test fixtures, which
 // contain homoglyphs on purpose, once per live worktree, which is the defect 66ce1ac
 // exists to fix. A check that is red for a reason unrelated to the repository's surface

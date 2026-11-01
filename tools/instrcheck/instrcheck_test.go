@@ -412,9 +412,14 @@ func TestTheGitSkipDoesNotReachNestedPaths(t *testing.T) {
 // there hides that subtree.
 //
 // The case asserts the hiding happens, because that is the behaviour a reader will
-// otherwise rediscover as a defect. It is accepted: .claude/ is gitignored, so the
-// payload cannot be committed, and CI's assertion walks git ls-files and never sees it.
-// See isNestedCheckout's comment for why the alternative is worse.
+// otherwise rediscover as a defect. It is accepted because the payload is outside the
+// committed surface - .claude/ is ignored at .gitignore:28 and CI's assertion walks
+// `git ls-files` - and that premise is a NAMED DEPENDENCY, not a fact this test can
+// prove. A test scans a t.TempDir() and never consults .gitignore, so if that line were
+// removed, or someone force-added a file under .claude/, this test would stay green while
+// its own justification became false. If that ever happens, this boundary needs
+// re-deciding rather than silently holding. See isNestedCheckout's comment for why the
+// alternative - refusing to prune beneath an instruction root - is worse.
 func TestAPrunedWorktreeIsNotScannedByDesign(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "AGENT.md", "# ok\n")
