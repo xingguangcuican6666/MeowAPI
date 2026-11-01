@@ -224,8 +224,8 @@ func TestVerifierBindingPayloadIsCanonicalAndUnambiguous(t *testing.T) {
 	// differ.
 	left := kernel.Manifest{Name: "a", Version: "b|c", MinKernelAPI: 1, MaxKernelAPI: 1}
 	right := kernel.Manifest{Name: "a|b", Version: "c", MinKernelAPI: 1, MaxKernelAPI: 1}
-	require.NoError(t, left.Validate())
-	require.NoError(t, right.Validate())
+	require.NoError(t, kernel.ValidateManifest(&left))
+	require.NoError(t, kernel.ValidateManifest(&right))
 	assert.NotEqual(t,
 		string(kernel.VerifierBindingPayload(left)),
 		string(kernel.VerifierBindingPayload(right)),
@@ -302,7 +302,7 @@ func TestVerifierTamperedManifestRefused(t *testing.T) {
 		ServeRoutes:  []string{"/v1/chat"},
 	}
 	signed.Require = append(signed.Require, kernel.OpRouteRegister)
-	require.NoError(t, signed.Validate())
+	require.NoError(t, kernel.ValidateManifest(&signed))
 	sig := verifierSign(t, seed, signed)
 
 	cases := []struct {
@@ -399,7 +399,7 @@ func TestVerifierTamperedManifestRefused(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tampered := tc.mutate(signed)
-			require.NoError(t, tampered.Validate(),
+			require.NoError(t, kernel.ValidateManifest(&tampered),
 				"the mutation must still be a valid manifest, or the test proves validation rather than appraisal")
 			require.NotEqual(t, signed.Digest(), tampered.Digest(), "the mutation must move the digest")
 
@@ -476,7 +476,7 @@ func TestVerifierSignatureForOtherModuleIsRefused(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, tc.present.Validate())
+			require.NoError(t, kernel.ValidateManifest(&tc.present))
 			replay := sig
 			err := kernel.VerifyManifestLoad(k.InitContext(), tc.present, &replay)
 			require.Error(t, err)
@@ -523,7 +523,7 @@ func TestVerifierUntrustedKeyRefused(t *testing.T) {
 	require.NoError(t, kernel.VerifierSetPolicy(kernel.VerifierEnforce))
 
 	m := verifierManifest("adapter", kernel.OpLogWrite)
-	require.NoError(t, m.Validate())
+	require.NoError(t, kernel.ValidateManifest(&m))
 
 	t.Run("key outside the cluster roots", func(t *testing.T) {
 		sig := verifierSign(t, outsideSeed, m)
@@ -586,7 +586,7 @@ func TestVerifierAnyTrustedRootVerifies(t *testing.T) {
 	require.NoError(t, kernel.VerifierSetPolicy(kernel.VerifierEnforce))
 
 	m := verifierManifest("adapter", kernel.OpLogWrite)
-	require.NoError(t, m.Validate())
+	require.NoError(t, kernel.ValidateManifest(&m))
 
 	for _, seed := range []string{seedA, seedB} {
 		sig := verifierSign(t, seed, m)
@@ -624,7 +624,7 @@ func TestVerifierMalformedSignatureRefused(t *testing.T) {
 	require.NoError(t, kernel.VerifierSetPolicy(kernel.VerifierEnforce))
 
 	m := verifierManifest("adapter", kernel.OpLogWrite)
-	require.NoError(t, m.Validate())
+	require.NoError(t, kernel.ValidateManifest(&m))
 	good := verifierSign(t, seed, m)
 
 	cases := []struct {
@@ -1415,7 +1415,7 @@ func TestVerifierSignatureIsNotACapability(t *testing.T) {
 
 	// A fully verified module with a deliberately narrow declaration.
 	m := verifierManifest("narrow", kernel.OpLogWrite)
-	require.NoError(t, m.Validate())
+	require.NoError(t, kernel.ValidateManifest(&m))
 	sig := verifierSign(t, seed, m)
 	require.NoError(t, kernel.VerifyManifestLoad(k.InitContext(), m, &sig))
 
@@ -1573,7 +1573,7 @@ func TestVerifierRefusalPrecedesModuleCode(t *testing.T) {
 	require.NoError(t, kernel.VerifierSetPolicy(kernel.VerifierEnforce))
 
 	m := verifierManifest("late", kernel.OpLogWrite)
-	require.NoError(t, m.Validate())
+	require.NoError(t, kernel.ValidateManifest(&m))
 
 	factoryRan := false
 	onLoadRan := false
@@ -1719,7 +1719,7 @@ func TestVerifierAuditComplementsValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			bad := tc.refused(base())
-			require.Error(t, bad.Validate(),
+			require.Error(t, kernel.ValidateManifest(&bad),
 				"the refused spelling must actually be refused by manifest.go, or this row proves nothing")
 			// The audit is advisory: it never refuses, and it does not restate a
 			// refusal that is about to happen anyway.
@@ -1728,7 +1728,7 @@ func TestVerifierAuditComplementsValidation(t *testing.T) {
 				"the audit must not duplicate manifest.go's refusal of %q: %v", tc.name, findings)
 
 			good := tc.accepted(base())
-			require.NoError(t, good.Validate(),
+			require.NoError(t, kernel.ValidateManifest(&good),
 				"the accepted spelling must actually pass manifest.go")
 			findings = kernel.VerifierAuditDeclaration(good)
 			assert.True(t, verifierHasCode(findings, tc.want),
@@ -1745,7 +1745,7 @@ func TestVerifierAuditComplementsValidation(t *testing.T) {
 func TestVerifierAuditReportsWhatASignerShouldQuestion(t *testing.T) {
 	valid := func(m kernel.Manifest) kernel.Manifest {
 		m.Name, m.Version, m.MinKernelAPI, m.MaxKernelAPI = "adapter", "1.0.0", 1, 1
-		require.NoError(t, m.Validate())
+		require.NoError(t, kernel.ValidateManifest(&m))
 		return m
 	}
 
@@ -1930,7 +1930,7 @@ func TestVerifierAuditReportsWhatASignerShouldQuestion(t *testing.T) {
 				m := kernel.Manifest{Require: []kernel.Op{kernel.OpLogWrite}}
 				m.Name, m.MinKernelAPI, m.MaxKernelAPI = "adapter", 1, 1
 				m.Version = "1.0.0\nforged fault record"
-				require.NoError(t, m.Validate())
+				require.NoError(t, kernel.ValidateManifest(&m))
 				return m
 			},
 			want:     kernel.VerifierFindingIdentityForm,
@@ -1993,7 +1993,7 @@ func TestVerifierAuditIsSilentOnACleanDeclaration(t *testing.T) {
 		{Name: "adapter", Version: "1.0.0", MinKernelAPI: 1, MaxKernelAPI: 1},
 	}
 	for i, m := range clean {
-		require.NoError(t, m.Validate(), "case %d must be a valid manifest", i)
+		require.NoError(t, kernel.ValidateManifest(&m), "case %d must be a valid manifest", i)
 		assert.Empty(t, kernel.VerifierAuditDeclaration(m),
 			"case %d (%v) should have nothing for a signer to question", i, m.Require)
 	}
@@ -2004,7 +2004,7 @@ func TestVerifierAuditIsSilentOnACleanDeclaration(t *testing.T) {
 	// is expected here and is pinned by its own test below.
 	public := kernel.Manifest{Name: "adapter", Version: "1", MinKernelAPI: 1, MaxKernelAPI: 1,
 		Require: []kernel.Op{kernel.OpNetDial}, AllowedHosts: []string{"93.184.216.34", "api.example.com"}}
-	require.NoError(t, public.Validate())
+	require.NoError(t, kernel.ValidateManifest(&public))
 	findings := kernel.VerifierAuditDeclaration(public)
 	require.Len(t, findings, 1)
 	assert.Equal(t, kernel.VerifierFindingUnreachableOp, findings[0].Code)
@@ -2041,7 +2041,7 @@ func TestVerifierAuditReportsTheScopedOpsNoModuleDomainHoldsYet(t *testing.T) {
 			m := kernel.Manifest{Name: "adapter", Version: "1.0.0", MinKernelAPI: 1, MaxKernelAPI: 1,
 				Require: []kernel.Op{d.op}}
 			d.scope(&m)
-			require.NoError(t, m.Validate(),
+			require.NoError(t, kernel.ValidateManifest(&m),
 				"%s must pass manifest validation, or the finding restates a refusal", d.op)
 			require.False(t, kernel.Allowed(kernel.DomainPlugin, d.op),
 				"this finding describes the current policy table; if %s is now granted, the finding and this test are both obsolete", d.op)
@@ -2071,7 +2071,7 @@ func TestVerifierAuditReportsTheScopedOpsNoModuleDomainHoldsYet(t *testing.T) {
 		if op == kernel.OpRouteRegister {
 			m.ServeRoutes = []string{"/v1/chat"}
 		}
-		require.NoError(t, m.Validate())
+		require.NoError(t, kernel.ValidateManifest(&m))
 		assert.False(t, verifierHasCode(kernel.VerifierAuditDeclaration(m),
 			kernel.VerifierFindingUnreachableOp), "%s is reachable and must not be reported", op)
 	}
@@ -2133,7 +2133,7 @@ func TestVerifierAuditFindingCodesAreClosed(t *testing.T) {
 	// The audit never refuses: it has no error return, and a manifest that
 	// manifest.go would reject still produces findings rather than a failure.
 	broken := kernel.Manifest{Name: "", Version: "", Require: []kernel.Op{"not:an-op"}}
-	require.Error(t, broken.Validate())
+	require.Error(t, kernel.ValidateManifest(&broken))
 	assert.NotPanics(t, func() { _ = kernel.VerifierAuditDeclaration(broken) })
 }
 

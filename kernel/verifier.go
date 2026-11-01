@@ -50,7 +50,7 @@ package kernel
 //    reachable from a context: no method on *sContext, no group interface.
 //
 // 3. The load-path hook goes in kernel/module.go's LoadModule, immediately
-//    after the m.Validate() branch closes and before the registry lookup, so
+//    after the ValidateManifest(m) branch closes and before the registry lookup, so
 //    a module whose declared scope fails appraisal never reaches a factory,
 //    a context in the plugin domain, or OnLoad:
 //
@@ -1047,7 +1047,7 @@ func VerifierAuditDeclaration(m Manifest) []VerifierFinding {
 	// requests. Validate refuses the opposite direction - a scoped operation
 	// with no boundary - and accepts these, because each field is an optional
 	// input. That acceptance is exactly the gap a reviewer needs listed.
-	if len(m.AllowedHosts) > 0 && !m.requires(OpNetDial) {
+	if len(m.AllowedHosts) > 0 && !requires(&m, OpNetDial) {
 		out = append(out, VerifierFinding{
 			Code:  VerifierFindingDeadScope,
 			Field: "allowed_hosts",
@@ -1055,7 +1055,7 @@ func VerifierAuditDeclaration(m Manifest) []VerifierFinding {
 				len(m.AllowedHosts), OpNetDial),
 		})
 	}
-	if len(m.ReadPaths) > 0 && !m.requires(OpFSRead) {
+	if len(m.ReadPaths) > 0 && !requires(&m, OpFSRead) {
 		out = append(out, VerifierFinding{
 			Code:  VerifierFindingDeadScope,
 			Field: "read_paths",
@@ -1063,7 +1063,7 @@ func VerifierAuditDeclaration(m Manifest) []VerifierFinding {
 				len(m.ReadPaths), OpFSRead),
 		})
 	}
-	if len(m.WritePaths) > 0 && !m.requires(OpFSWrite) {
+	if len(m.WritePaths) > 0 && !requires(&m, OpFSWrite) {
 		out = append(out, VerifierFinding{
 			Code:  VerifierFindingDeadScope,
 			Field: "write_paths",
@@ -1071,7 +1071,7 @@ func VerifierAuditDeclaration(m Manifest) []VerifierFinding {
 				len(m.WritePaths), OpFSWrite),
 		})
 	}
-	if m.ListenAddr != "" && !m.requires(OpNetListen) {
+	if m.ListenAddr != "" && !requires(&m, OpNetListen) {
 		out = append(out, VerifierFinding{
 			Code:  VerifierFindingDeadScope,
 			Field: "listen_addr",
@@ -1085,14 +1085,14 @@ func VerifierAuditDeclaration(m Manifest) []VerifierFinding {
 	// nor requires a prefix for it, and a manifest that requests it with no
 	// prefixes loads cleanly and is then refused every credential - which the
 	// module author will read as a keyring bug.
-	if (m.requires(OpSecretUse) || m.requires(OpSecretRead)) && len(m.SecretPrefixes) == 0 {
+	if (requires(&m, OpSecretUse) || requires(&m, OpSecretRead)) && len(m.SecretPrefixes) == 0 {
 		out = append(out, VerifierFinding{
 			Code:   VerifierFindingMissingScope,
 			Field:  "secret_prefixes",
 			Detail: "a secret operation is requested with no key prefix declared, so the keyring scope is empty and every alias is invisible to this module",
 		})
 	}
-	if m.requires(OpPeerDial) && len(m.AllowedHosts) == 0 {
+	if requires(&m, OpPeerDial) && len(m.AllowedHosts) == 0 {
 		out = append(out, VerifierFinding{
 			Code:  VerifierFindingMissingScope,
 			Field: "allowed_hosts",

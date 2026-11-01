@@ -21,58 +21,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 package kernel
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"path"
 	"strings"
 )
-
-// Manifest declares what a module needs. It is data, it is validated before any
-// module code runs, and it is enforced at every call through grant narrowing.
-//
-// A manifest is the reviewable artifact. Reading one tells a reviewer what a
-// module can do, and the kernel refuses to let the module do anything the
-// manifest does not say, so the declaration cannot be narrower than the behavior.
-//
-// The scoped fields are only meaningful alongside their operation. Requesting
-// net:dial without an allowed host, or secret:read with an empty prefix, is
-// rejected rather than interpreted generously, because the generous reading of a
-// scope field is a hole.
-type Manifest struct {
-	// Name must match the registration name.
-	Name string `json:"name"`
-	// Version is the module's own version.
-	Version string `json:"version"`
-	// MinKernelAPI and MaxKernelAPI bound the kernel API this module supports. A
-	// kernel API version outside the range is a load failure, not a runtime
-	// surprise.
-	MinKernelAPI int `json:"min_kernel_api"`
-	MaxKernelAPI int `json:"max_kernel_api"`
-	// Require lists the operations the module needs.
-	Require []Op `json:"require,omitempty"`
-	// AllowedHosts bounds net:dial. Empty means no outbound network.
-	AllowedHosts []string `json:"allowed_hosts,omitempty"`
-	// ListenAddr bounds net:listen. Empty means no listening socket.
-	ListenAddr string `json:"listen_addr,omitempty"`
-	// ReadPaths and WritePaths bound fs:read and fs:write, relative to a
-	// per-module data root.
-	ReadPaths  []string `json:"read_paths,omitempty"`
-	WritePaths []string `json:"write_paths,omitempty"`
-	// SecretPrefixes bound secret:read. There is no wildcard and no
-	// read-everything grant.
-	SecretPrefixes []string `json:"secret_prefixes,omitempty"`
-	// ServeRoutes lists the exact paths this module may register in the kernel
-	// route table, each absolute and normalized. It bounds route:register the way
-	// ReadPaths bounds fs:read.
-	//
-	// There is no wildcard, and that is the control. A module that could register
-	// any path could register a path another module was about to serve, or a
-	// shorter prefix of one, and the table would stop being a reviewed surface. An
-	// empty list means the module serves nothing, which is the right default.
-	ServeRoutes []string `json:"serve_routes,omitempty"`
-}
 
 // scopedOps are granted by manifest scope rather than by the domain ceiling.
 // Each one is meaningless without a declared scope, so a manifest requesting one
@@ -110,7 +63,7 @@ func manifestErr(format string, a ...any) error {
 
 // Validate checks a manifest against the kernel's policy ceiling. A module whose
 // manifest fails never runs.
-func (m *Manifest) Validate() error {
+func ValidateManifest(m *Manifest) error {
 	if m.Name == "" {
 		return manifestErr("name is required")
 	}
@@ -148,7 +101,7 @@ func (m *Manifest) Validate() error {
 		}
 	}
 
-	if err := m.checkScopes(); err != nil {
+	if err := checkScopes(m); err != nil {
 		return err
 	}
 
@@ -164,8 +117,8 @@ func (m *Manifest) Validate() error {
 
 // checkScopes enforces that every scoped operation carries its boundary, and that
 // each boundary is in a form that cannot be widened by interpretation.
-func (m *Manifest) checkScopes() error {
-	if m.requires(OpNetDial) {
+func checkScopes(m *Manifest) error {
+	if requires(m, OpNetDial) {
 		if len(m.AllowedHosts) == 0 {
 			return manifestErr("%s requires at least one allowed host", OpNetDial)
 		}
@@ -175,10 +128,10 @@ func (m *Manifest) checkScopes() error {
 			}
 		}
 	}
-	if m.requires(OpNetListen) && m.ListenAddr == "" {
+	if requires(m, OpNetListen) && m.ListenAddr == "" {
 		return manifestErr("%s requires a listen address", OpNetListen)
 	}
-	if m.requires(OpFSRead) {
+	if requires(m, OpFSRead) {
 		if len(m.ReadPaths) == 0 {
 			return manifestErr("%s requires at least one read path", OpFSRead)
 		}
@@ -188,7 +141,7 @@ func (m *Manifest) checkScopes() error {
 			}
 		}
 	}
-	if m.requires(OpFSWrite) {
+	if requires(m, OpFSWrite) {
 		if len(m.WritePaths) == 0 {
 			return manifestErr("%s requires at least one write path", OpFSWrite)
 		}
@@ -198,7 +151,7 @@ func (m *Manifest) checkScopes() error {
 			}
 		}
 	}
-	if m.requires(OpSecretRead) {
+	if requires(m, OpSecretRead) {
 		if len(m.SecretPrefixes) == 0 {
 			return manifestErr("%s requires at least one secret key prefix", OpSecretRead)
 		}
@@ -209,7 +162,7 @@ func (m *Manifest) checkScopes() error {
 		}
 	}
 
-	if m.requires(OpRouteRegister) {
+	if requires(m, OpRouteRegister) {
 		// Serving a route is how a module becomes reachable from other modules, so
 		// the declaration is the reviewed surface. Requiring at least one exact path
 		// is what stops a wildcard-style claim: a module that could register any
@@ -239,7 +192,7 @@ func (m *Manifest) checkScopes() error {
 	return nil
 }
 
-func (m *Manifest) requires(op Op) bool {
+func requires(m *Manifest, op Op) bool {
 	for _, o := range m.Require {
 		if o == op {
 			return true
@@ -247,6 +200,12 @@ func (m *Manifest) requires(op Op) bool {
 	}
 	return false
 }
+
+// Manifest is abi.Manifest. The struct a module declares lives in the package the
+// module compiles against; the rules that decide whether the kernel accepts it stay
+// here, which is why Validate is a function in this file rather than a method on the
+// type.
+type Manifest = abi.Manifest
 
 // validateHost rejects the forms that turn a host allowlist into a hole.
 //
@@ -306,19 +265,4 @@ func knownOp(op Op) bool {
 		}
 	}
 	return false
-}
-
-// Digest is a content hash of the manifest, recorded in the process table so a
-// later investigation can prove which declaration a module actually ran under.
-//
-// It marshals through the struct rather than hashing the source bytes, so two
-// manifests that differ only in whitespace or key order hash identically. The
-// digest identifies the declaration's meaning, not its formatting.
-func (m *Manifest) Digest() string {
-	b, err := json.Marshal(m)
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
 }

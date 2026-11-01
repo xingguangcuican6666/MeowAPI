@@ -74,11 +74,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // if that changes.
 package kernel
 
-// KernelAPI is the kernel ABI version a module's manifest is checked against.
-// Bump it when the ABI changes in a way an existing module could notice, and
-// widen the supported range in the same change rather than breaking every
+import "github.com/xingguangcuican6666/MeowAPI/abi"
+
+// KernelAPI is the ABI version a module's manifest is checked against. It is
+// declared in abi, because a module writing MinKernelAPI/MaxKernelAPI has to know
+// the number, and re-exported here so every comparison in this package reads the
+// same. Bump it when the ABI changes in a way an existing module could notice,
+// and widen the supported range in the same change rather than breaking every
 // module at once.
-const KernelAPI = 1
+const KernelAPI = abi.KernelAPI
 
 // resetKernel clears every kernel subsystem in a fixed order. It is the single
 // reset path, called by Boot before it starts accounting and by Shutdown after

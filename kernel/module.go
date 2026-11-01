@@ -150,7 +150,7 @@ func LoadModule(ctx SContext, m Manifest) (PID, error) {
 		return 0, err
 	}
 
-	if err := m.Validate(); err != nil {
+	if err := ValidateManifest(&m); err != nil {
 		// Record the rejection under the untrusted domain, so the process table
 		// shows that something was refused rather than merely that nothing
 		// happened. An invisible refusal is an uninvestigable one.

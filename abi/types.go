@@ -20,6 +20,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 package abi
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+)
+
 // PID is a process id. Pids are allocated by the kernel and never reused within a
 // boot, which is what makes a pid safe to record and reason about afterwards.
 type PID int
@@ -69,3 +75,69 @@ const (
 	// caller-trap faults, boot panics. Faults are the audit trail.
 	LogFault Level = "fault"
 )
+
+// Manifest declares what a module needs. It is data, it is validated before any
+// module code runs, and it is enforced at every call through grant narrowing.
+//
+// A manifest is the reviewable artifact. Reading one tells a reviewer what a
+// module can do, and the kernel refuses to let the module do anything the
+// manifest does not say, so the declaration cannot be narrower than the behavior.
+//
+// The scoped fields are only meaningful alongside their operation. Requesting
+// net:dial without an allowed host, or secret:read with an empty prefix, is
+// rejected rather than interpreted generously, because the generous reading of a
+// scope field is a hole.
+type Manifest struct {
+	// Name must match the registration name.
+	Name string `json:"name"`
+	// Version is the module's own version.
+	Version string `json:"version"`
+	// MinKernelAPI and MaxKernelAPI bound the kernel API this module supports. A
+	// kernel API version outside the range is a load failure, not a runtime
+	// surprise.
+	MinKernelAPI int `json:"min_kernel_api"`
+	MaxKernelAPI int `json:"max_kernel_api"`
+	// Require lists the operations the module needs.
+	Require []Op `json:"require,omitempty"`
+	// AllowedHosts bounds net:dial. Empty means no outbound network.
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+	// ListenAddr bounds net:listen. Empty means no listening socket.
+	ListenAddr string `json:"listen_addr,omitempty"`
+	// ReadPaths and WritePaths bound fs:read and fs:write, relative to a
+	// per-module data root.
+	ReadPaths  []string `json:"read_paths,omitempty"`
+	WritePaths []string `json:"write_paths,omitempty"`
+	// SecretPrefixes bound secret:read. There is no wildcard and no
+	// read-everything grant.
+	SecretPrefixes []string `json:"secret_prefixes,omitempty"`
+	// ServeRoutes lists the exact paths this module may register in the kernel
+	// route table, each absolute and normalized. It bounds route:register the way
+	// ReadPaths bounds fs:read.
+	//
+	// There is no wildcard, and that is the control. A module that could register
+	// any path could register a path another module was about to serve, or a
+	// shorter prefix of one, and the table would stop being a reviewed surface. An
+	// empty list means the module serves nothing, which is the right default.
+	ServeRoutes []string `json:"serve_routes,omitempty"`
+}
+
+// Digest is a content hash of the manifest, recorded in the process table so a
+// later investigation can prove which declaration a module actually ran under.
+//
+// It marshals through the struct rather than hashing the source bytes, so two
+// manifests that differ only in whitespace or key order hash identically. The
+// digest identifies the declaration's meaning, not its formatting.
+func (m *Manifest) Digest() string {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// KernelAPI is the ABI version this package describes. A manifest declares the range
+// of API versions it supports, and the kernel refuses one whose range excludes this
+// number - so the number has to be visible to the module that writes the range as
+// well as to the kernel that checks it.
+const KernelAPI = 1

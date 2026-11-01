@@ -175,7 +175,7 @@ func TestManifestValidation(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := c.m.Validate()
+			err := kernel.ValidateManifest(&c.m)
 			if c.want == "" {
 				require.NoError(t, err)
 				return
