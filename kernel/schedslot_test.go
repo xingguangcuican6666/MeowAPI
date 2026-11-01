@@ -157,9 +157,16 @@ func TestAWokenWaiterSeesItsSlotReleased(t *testing.T) {
 // one treats a function that takes schedMu at all as the region, which is coarser and
 // therefore sound in the direction that matters.
 //
-// resetSched is the function that comes closest - it holds schedMu and walks runs - and it
-// is correct: it copies the pid list under the lock, unlocks, and only then calls
-// cancelSchedWork. finish is the other one that takes both, and it is the intended edge.
+// WHAT THIS SCAN CANNOT SEE, because the reader deserves to know rather than discover it:
+// a lock edge or a re-entrance through a CALL. It matches the literal `.mu.Lock()` in the
+// same function body, so `releaseLive` calling a helper that takes r.mu passes it, and so
+// does resetSched calling cancelSchedWork while still holding schedMu - which deadlocks
+// by re-entry rather than by inversion, and is a one-line edit away. Measured: both
+// mutants pass this scan, the whole kernel package, and the whole supervision package.
+// The re-entrance is covered behaviourally by
+// TestResetSchedDoesNotReenterItsOwnLock; the helper-call inversion has no pin, and
+// adding one would mean call-graph analysis this file is not the place for. What keeps
+// it honest is that the pattern is written down here.
 func TestNoSchedMuRegionTakesARunLock(t *testing.T) {
 	body, err := os.ReadFile("sched.go")
 	require.NoError(t, err, "this test reads its own package's source; sched.go must sit beside it")

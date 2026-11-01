@@ -33,7 +33,7 @@ import (
 // nilcontext_test.go lives here.
 //
 // What they cover is the delete path, which had no test at all. Removing
-// ClearFSScope from UnloadModule left all 23 packages green, and the reason is worth
+// ClearFSScope from UnloadModule left every package green, and the reason is worth
 // stating: LoadModule calls SetFSScope unconditionally, so a stale scope is
 // unreachable through the fs checks themselves - a loaded pid has its scope
 // overwritten from its own manifest before any boundary is consulted. What remains
