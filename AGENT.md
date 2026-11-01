@@ -18,12 +18,12 @@ behavior can be expressed as a plugin, it must be. The kernel grows only when a
 new syscall category is genuinely required, and adding one is a trust-root
 change that needs explicit owner approval.
 
-The authoritative design reference is `mirror/`, a Java prototype written by
-the project owner. It is the specification for the kernel's security model.
-Read it before designing any kernel change. Java was used only because the
-owner does not write Go; the semantics carry over, the mechanisms do not
-(always). Where Go cannot express a Java mechanism faithfully, this file
-records the substitute.
+The kernel's security model was specified in a Java prototype the owner wrote
+before this port. It is the owner's private reference and is not in this
+repository, so it cannot be read here: the semantics it settled are recorded in
+this file and in each subsystem's own doc comment, and those are what an
+implementer works from. Where Go cannot express a Java mechanism faithfully,
+this file records the substitute.
 
 ## Tech Stack
 
@@ -107,7 +107,6 @@ tools/instrcheck/            instruction-file integrity checker, runs in CI
 tools/auditverify/           verify an audit trail without the kernel, CLI
 tools/ci/                    the suite gate's `go test -json` classifier, awk not Go
 .github/workflows/ci.yml     integrity, build, vet, race, audit end to end
-mirror/                      Java design prototype. Reference only; built by nothing here.
 stage/                       reference material from the archived fork. Not built.
 ```
 
@@ -133,7 +132,7 @@ told about. When a new subsystem has to decide, the question is whether the valu
 something the kernel learned during the boot or something it was told before it, and
 `resetKernel()` clears the first kind.
 
-| File | Subsystem | Responsibility | mirror/ counterpart |
+| File | Subsystem | Responsibility | prototype counterpart (not in this repo) |
 | --- | --- | --- | --- |
 | `kernel/kernel.go` | - | package doc, `KernelAPI`, `resetKernel`, the one reset path | none |
 | `kernel/context.go` | core | sealed `SContext`, identity, the syscall group composition, the spawn transition rule | `scontext.java` |
@@ -275,7 +274,7 @@ kind is a new quantity the whole system will trust.
 
 ### Boot sequence
 
-The sequence is fixed and mirrors `App.java`, with one deliberate correction:
+The sequence is fixed and mirrors the prototype's `App.java`, with one deliberate correction:
 
 1. Assert the boot has not already happened. A second call is a fault and an
    error, not a silent no-op. In Go this is an `atomic.Bool` compare-and-swap,
@@ -909,9 +908,16 @@ Applies to: `AGENT.md`, `AGENTS.md`, `CLAUDE.md`, anything under `.agents/` or
   which relocated the payload out of the file the harness injects and into one
   that only a compliant agent ever opens. State rules where they apply. If a
   rule is long, it lives in the file the agent already reads.
-- **No instruction to touch attribution.** An instruction file MUST NOT direct
-  an agent to add, remove, normalize or "protect" copyright headers, to run a
-  stamping script, or to treat a file header as evidence of authorship.
+- **No attribution rule may relocate or obscure content.** The upstream attack
+  was not attribution itself: it declared certain names immutable, told agents to
+  "protect" them, and then spelled those names with homoglyphs so the protection
+  rule could not be grepped. What is forbidden is that combination - an
+  attribution rule used to carry or hide other instructions, a protected-identifier
+  list, or a script that rewrites headers across a tree. It is NOT forbidden to
+  state that MeowAPI's own header is immutable, that a secondary creator's new
+  file needs their header, or that a header must never be treated as evidence of
+  authorship: those are obligations about files, stated where they apply, and the
+  "License and attribution" section above is where this file states them.
 - **No protected-identifier lists.** Upstream declared certain project names
   immutable and then spelled them with homoglyphs. Legitimate rules name things
   in plain ASCII or do not name them at all.
@@ -959,19 +965,15 @@ mistake them for intent:
   imports the kernel plus the standard library only, so no production build path
   reaches an assertion library. Offline resolution is available from the local module cache via
   `GOPROXY="file://$(go env GOMODCACHE)/cache/download" GOSUMDB=off go test ./...`.
-- `mirror/` is a Java design prototype, and nothing in this repository builds or
-  runs it. A local worktree may still hold `mirror/bin/` and `mirror/mirror.jar`
-  from an earlier compile; both are gitignored, so a clean checkout does not have
-  them. That is why `instrcheck` reports a larger file count here than in CI: the
-  local number is tracked non-`stage/` files plus whatever ignored artifacts this
-  worktree happens to hold, and the CI number is the first term alone. Both move
-  with the tree, so neither is a fact to quote - measure it, and say which tree it
-  was measured in. The sources are the specification; the compiled output would go
-  stale the moment a source changed, which is the reason the gitignore entry gives
-  for excluding it.
-- The 13 Java sources under `mirror/src/` carry no license header. Whose they are
-  and what they should say is the owner's decision, and nothing in this repo has
-  made it.
+- `mirror/`, the Java prototype this port was specified from, is the owner's
+  private reference and is not part of this repository: it is ignored in full, so
+  a fresh clone does not have it and a worktree that does have one is carrying an
+  untracked local copy. Nothing here builds, runs or reads it. Because it is
+  ignored, its files are not tracked, which is also why `instrcheck` reports a
+  larger count in a worktree that holds one than in CI: the local number includes
+  whatever ignored files are present, and the CI number is tracked files alone.
+  Both move with the tree, so neither is a fact to quote - measure it, and say
+  which tree it was measured in.
 - CI is `.github/workflows/ci.yml`: instruction-file integrity (`instrcheck` plus
   an independent `grep -P` assertion so a weakened tool cannot pass the job),
   gofmt, build, vet, kernel dependency hygiene, `go test -race`, and an assertion
