@@ -1,5 +1,7 @@
-# Build artifacts
+# Build artifacts. `go build` names the binary after the module's last element, so
+# it is "MeowAPI" - the lowercase entry below was only ever right for an older name.
 /meowapi
+/MeowAPI
 /instrcheck
 /dist/
 *.exe

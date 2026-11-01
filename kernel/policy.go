@@ -25,96 +25,69 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 )
 
-// Op is a policy operation, spelled class:permission so denials read like
-// SELinux and so a policy table can be reviewed by anyone who knows it.
-//
-// The class names are the kernel subsystems. Adding an operation means adding a
-// capability, which is a trust-root change and needs owner approval.
-type Op string
+// Op is an alias of abi.Op. The operation NAMES are declared in abi because a
+// manifest lists them and a module has to be able to spell them; the policy table
+// below - which domain holds which operation, and what a manifest can narrow it to
+// - is this file's, and is not in abi. That split is the point: a module compiles
+// against the names, never against the rules.
+type Op = abi.Op
 
+// The operation constants are re-exported from abi, in declaration order, so this
+// package and a module name them identically without the string being written twice.
 const (
-	// Core context and lifecycle.
-	OpMetadataRead  Op = "metadata:read"
-	OpMetadataWrite Op = "metadata:write"
-	OpProcessFork   Op = "process:fork"
-	OpModuleLoad    Op = "module:load"
-	OpModuleUnload  Op = "module:unload"
-	// ipc:bind and ipc:call are reserved and gate nothing. No syscall checks either
-	// one; the live module-to-module mechanism is kservice's route:register and
-	// route:call. They stay declared because they are granted to two domains and a
-	// manifest in the wild may require one, so removing them is a policy surface
-	// change rather than a cleanup. Do not add a check against them without first
-	// deciding what they mean, because a check nobody reasoned about is a refusal
-	// nobody can diagnose.
-	OpIPCBind  Op = "ipc:bind"
-	OpIPCCall  Op = "ipc:call"
-	OpLogWrite Op = "log:write"
-
-	// kaudit: the tamper-evident record. Distinct from log:write, because an
-	// audit entry is evidence and a log line is commentary.
-	OpAuditAppend Op = "audit:append"
-	OpAuditRead   Op = "audit:read"
-
-	// kmeter and ktokenizer: usage accounting and the kernel's own token count.
-	OpUsageEmit   Op = "usage:emit"
-	OpMeterRecord Op = "meter:record"
-	OpMeterRead   Op = "meter:read"
-	OpTokenCount  Op = "token:count"
-
-	// kreceipt: signed settlement records.
-	OpReceiptIssue  Op = "receipt:issue"
-	OpReceiptVerify Op = "receipt:verify"
-
-	// kqos and krlimit: admission and concurrency.
-	OpQosAdmit    Op = "qos:admit"
-	OpSlotAcquire Op = "slot:acquire"
-
-	// kpipe, kshm, klock, kepoll: resource handles.
-	OpPipeOpen  Op = "pipe:open"
-	OpPipeWrite Op = "pipe:write"
-	OpPipeRead  Op = "pipe:read"
-	OpShmAlloc  Op = "shm:alloc"
-	OpShmMap    Op = "shm:map"
-	OpLockTake  Op = "lock:acquire"
-	OpEventWait Op = "event:wait"
-
-	// kservice: the route table.
-	OpRouteRegister Op = "route:register"
-	OpRouteCall     Op = "route:call"
-
-	// knet, kpeer, kslashing: controlled egress and the node mesh.
-	OpNetDial         Op = "net:dial"
-	OpNetListen       Op = "net:listen"
-	OpPeerDial        Op = "peer:dial"
-	OpPeerAnnounce    Op = "peer:announce"
-	OpSlashReport     Op = "slash:report"
-	OpSlashAdjudicate Op = "slash:adjudicate"
-
-	// kvfs: namespaced state and bounded file access.
-	OpKVRead  Op = "kv:read"
-	OpKVWrite Op = "kv:write"
-	OpFSRead  Op = "fs:read"
-	OpFSWrite Op = "fs:write"
-
-	// kkeyring and kcrypto: secret custody and primitives.
-	OpSecretRead   Op = "secret:read"
-	OpSecretUse    Op = "secret:use"
-	OpCryptoRandom Op = "crypto:random"
-	OpCryptoHash   Op = "crypto:hash"
-	OpCryptoSign   Op = "crypto:sign"
-	OpCryptoVerify Op = "crypto:verify"
-
-	// ksched, ksignal, kwatchdog, koom, kcputime: execution control.
-	OpSchedSpawn  Op = "sched:spawn"
-	OpSchedTimer  Op = "sched:timer"
-	OpSignalSend  Op = "signal:send"
-	OpCPUTimeRead Op = "cputime:read"
-
-	// ktrace and ktty: observability.
-	OpTraceSpan Op = "trace:span"
-	OpTTYOpen   Op = "tty:open"
+	OpMetadataRead    = abi.OpMetadataRead
+	OpMetadataWrite   = abi.OpMetadataWrite
+	OpProcessFork     = abi.OpProcessFork
+	OpModuleLoad      = abi.OpModuleLoad
+	OpModuleUnload    = abi.OpModuleUnload
+	OpIPCBind         = abi.OpIPCBind
+	OpIPCCall         = abi.OpIPCCall
+	OpLogWrite        = abi.OpLogWrite
+	OpAuditAppend     = abi.OpAuditAppend
+	OpAuditRead       = abi.OpAuditRead
+	OpUsageEmit       = abi.OpUsageEmit
+	OpMeterRecord     = abi.OpMeterRecord
+	OpMeterRead       = abi.OpMeterRead
+	OpTokenCount      = abi.OpTokenCount
+	OpReceiptIssue    = abi.OpReceiptIssue
+	OpReceiptVerify   = abi.OpReceiptVerify
+	OpQosAdmit        = abi.OpQosAdmit
+	OpSlotAcquire     = abi.OpSlotAcquire
+	OpPipeOpen        = abi.OpPipeOpen
+	OpPipeWrite       = abi.OpPipeWrite
+	OpPipeRead        = abi.OpPipeRead
+	OpShmAlloc        = abi.OpShmAlloc
+	OpShmMap          = abi.OpShmMap
+	OpLockTake        = abi.OpLockTake
+	OpEventWait       = abi.OpEventWait
+	OpRouteRegister   = abi.OpRouteRegister
+	OpRouteCall       = abi.OpRouteCall
+	OpNetDial         = abi.OpNetDial
+	OpNetListen       = abi.OpNetListen
+	OpPeerDial        = abi.OpPeerDial
+	OpPeerAnnounce    = abi.OpPeerAnnounce
+	OpSlashReport     = abi.OpSlashReport
+	OpSlashAdjudicate = abi.OpSlashAdjudicate
+	OpKVRead          = abi.OpKVRead
+	OpKVWrite         = abi.OpKVWrite
+	OpFSRead          = abi.OpFSRead
+	OpFSWrite         = abi.OpFSWrite
+	OpSecretRead      = abi.OpSecretRead
+	OpSecretUse       = abi.OpSecretUse
+	OpCryptoRandom    = abi.OpCryptoRandom
+	OpCryptoHash      = abi.OpCryptoHash
+	OpCryptoSign      = abi.OpCryptoSign
+	OpCryptoVerify    = abi.OpCryptoVerify
+	OpSchedSpawn      = abi.OpSchedSpawn
+	OpSchedTimer      = abi.OpSchedTimer
+	OpSignalSend      = abi.OpSignalSend
+	OpCPUTimeRead     = abi.OpCPUTimeRead
+	OpTraceSpan       = abi.OpTraceSpan
+	OpTTYOpen         = abi.OpTTYOpen
 )
 
 // AllOps is the complete operation set, in declaration order. Tests and the

@@ -23,31 +23,36 @@ package kernel
 import (
 	"errors"
 	"sync/atomic"
+
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 )
 
 // PID identifies a loaded unit of code within one boot. PIDs increase
 // monotonically from 1 and are never reused, so an audit record always refers to
 // exactly one thing that ran.
-type PID int
+// The identity types are aliases of the abi package's, not new types. That is what
+// lets a module compiled against abi hold a PID the kernel accepts, without the
+// module importing the kernel - and without a kernel change invalidating every
+// plugin ever built against it. See abi/abi.go for why that matters.
+type PID = abi.PID
 
 // UID is the kernel-allocated owner id of a context. It is assigned by the
 // kernel from the domain, never supplied by the caller: a module that could
 // choose its own uid could choose 0.
-type UID int
+type UID = abi.UID
 
 // Domain is the SELinux-form security domain of a context. Domains are the
 // subject of every policy decision.
-type Domain string
+type Domain = abi.Domain
 
+// The domain constants are re-exported rather than redeclared. A `const X = abi.X`
+// is a constant, so every switch and comparison in this package still works at
+// compile time, and there is exactly one place the strings are written down.
 const (
-	// DomainKernel is pid 0 only, and only until init has been spawned.
-	DomainKernel Domain = "u:r:kernel:s0"
-	// DomainInit is the boot sequence after it has dropped the root context.
-	DomainInit Domain = "u:r:init:s0"
-	// DomainPlugin is a validated, loaded module.
-	DomainPlugin Domain = "u:r:plugin:s0"
-	// DomainUntrusted holds modules that failed validation. They get nothing.
-	DomainUntrusted Domain = "u:r:untrusted:s0"
+	DomainKernel    = abi.DomainKernel
+	DomainInit      = abi.DomainInit
+	DomainPlugin    = abi.DomainPlugin
+	DomainUntrusted = abi.DomainUntrusted
 )
 
 // Reserved kernel uids.

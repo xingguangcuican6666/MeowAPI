@@ -21,6 +21,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 package kernel
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/abi"
+
 	"errors"
 	"fmt"
 	"sync"
@@ -47,7 +49,9 @@ import (
 // Numbers do repeat across pids, which is correct and is the isolation property -
 // pid A's handle 1 and pid B's handle 1 are unrelated resources, and neither can
 // resolve the other's.
-type FD int
+// FD is an alias of abi.FD: a handle is a number a module holds and passes back,
+// so the module has to be able to name the type.
+type FD = abi.FD
 
 // noFD is the zero value and is never valid.
 const noFD FD = 0

@@ -21,6 +21,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 package kernel
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/abi"
+
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,17 +32,18 @@ import (
 	"time"
 )
 
-// Level is the severity of a kernel console record.
-type Level string
+// Level is an alias of abi.Level: a module writes console lines through log:write,
+// so it has to be able to name a severity.
+type Level = abi.Level
 
+// Re-exported rather than redeclared, for the same reason as the domain names: one
+// place the strings are written down, and every switch over them still constant.
 const (
-	LogDebug Level = "debug"
-	LogInfo  Level = "info"
-	LogWarn  Level = "warn"
-	LogError Level = "error"
-	// LogFault is reserved for kernel-detected violations: policy denials,
-	// caller-trap faults, boot panics. Faults are the audit trail.
-	LogFault Level = "fault"
+	LogDebug = abi.LogDebug
+	LogInfo  = abi.LogInfo
+	LogWarn  = abi.LogWarn
+	LogError = abi.LogError
+	LogFault = abi.LogFault
 )
 
 // Record is one kernel console line. It is always emitted as a single JSON

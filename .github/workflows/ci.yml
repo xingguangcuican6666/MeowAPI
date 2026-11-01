@@ -160,7 +160,12 @@ jobs:
           # verdict. 0 and 1 are the two statuses that mean "go test ran"; anything else
           # is named before the report is even read.
           set +e
-          go test -json -count=1 ./kernel/ ./tests/... ./internal/... ./tools/... \
+          # The package list is explicit rather than ./... because the gate has to
+          # name what it counts: a new top-level package that is not listed here has
+          # its tests silently excluded from the floor. That is exactly what happened
+          # when abi/ was added - its two tests were green under `go test ./...` and
+          # invisible to this step, so the floor and the census disagreed by two.
+          go test -json -count=1 ./abi/ ./kernel/ ./tests/... ./internal/... ./tools/... \
             > /tmp/suite.json 2> /tmp/suite.err
           gotest_status=$?
           set -e
@@ -255,8 +260,8 @@ jobs:
           # project supports. Adding margin here would reopen the hole the allowlist
           # closes: slack is what lets a test quietly stop asserting. If this number
           # has to move, it moves up with the suite.
-          if [ $((PASSED + SKIP_TOP)) -lt 648 ]; then
-            echo "::error::expected at least 648 tests to run, got $((PASSED + SKIP_TOP))"
+          if [ $((PASSED + SKIP_TOP)) -lt 650 ]; then
+            echo "::error::expected at least 650 tests to run, got $((PASSED + SKIP_TOP))"
             echo "a guard against the suite silently not running"
             exit 1
           fi
