@@ -169,6 +169,26 @@ func isInstructionFile(rel string) bool {
 // directory (an independent clone) or a .git file (a linked worktree, whose content
 // is "gitdir: <path>"). The scan root is excluded by the caller, since the
 // repository being scanned always has one.
+//
+// THE BOUNDARY, stated here because it has been reported twice as a hole and it is a
+// decision: this tool does not scan the contents of a nested checkout, at any depth,
+// including one that sits beneath an instruction directory. `isInstructionDirRoot`
+// protects the instruction directory itself - .claude/.git cannot exempt .claude - but
+// .claude/worktrees/agent-x IS prunable, deliberately, and a marker planted there hides
+// everything inside it.
+//
+// That is accepted rather than overlooked. What the prune exempts is another checkout's
+// copy of a tree, which is by construction untracked here: .claude/ is gitignored, so a
+// payload in a worktree cannot be committed, and the CI job walks `git ls-files` and
+// never sees it. The alternative was tried and is worse - refusing to prune beneath an
+// instruction root restores a false positive on this package's own test fixtures, which
+// contain homoglyphs on purpose, once per live worktree, which is the defect 66ce1ac
+// exists to fix. A check that is red for a reason unrelated to the repository's surface
+// teaches its readers to ignore it.
+//
+// TestAPrunedWorktreeIsNotScannedByDesign pins the behaviour, including the nested
+// marker, so the next report of this shape gets an answer from a test rather than a
+// rediscovery.
 func isNestedCheckout(dir string) bool {
 	_, err := os.Lstat(filepath.Join(dir, ".git"))
 	return err == nil

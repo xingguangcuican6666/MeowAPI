@@ -405,6 +405,37 @@ func TestTheGitSkipDoesNotReachNestedPaths(t *testing.T) {
 	assert.Contains(t, findings[0].Path, ".claude/.git")
 }
 
+// TestAPrunedWorktreeIsNotScannedByDesign pins the accepted boundary of the prune, at
+// the depth where it has twice been reported as a hole: a forged .git one level INSIDE
+// an instruction directory. isInstructionDirRoot protects .claude itself, so .claude/.git
+// does not exempt .claude; it does not protect .claude/worktrees/agent-x, so a marker
+// there hides that subtree.
+//
+// The case asserts the hiding happens, because that is the behaviour a reader will
+// otherwise rediscover as a defect. It is accepted: .claude/ is gitignored, so the
+// payload cannot be committed, and CI's assertion walks git ls-files and never sees it.
+// See isNestedCheckout's comment for why the alternative is worse.
+func TestAPrunedWorktreeIsNotScannedByDesign(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "AGENT.md", "# ok\n")
+
+	// A homoglyph in instruction surface, with no marker: it is reported.
+	write(t, root, ".claude/worktrees/w1/CLAUDE.md", "# nеw\n")
+	findings := checkRoot(t, root)
+	require.Len(t, findings, 1, "without a marker the payload is instruction surface")
+	assert.Equal(t, "A", findings[0].Rule)
+
+	// One line, forgeable by anyone, one level inside the instruction directory.
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".claude/worktrees/w1/.git"),
+		[]byte("gitdir: /elsewhere\n"), 0o644))
+
+	findings, st, err := Check(root)
+	require.NoError(t, err)
+	assert.Empty(t, findings,
+		"the subtree is a nested checkout by this check's definition, and its contents are not scanned")
+	assert.Equal(t, 1, st.NestedCheckouts, "and the prune is counted, so a summary shows it happened")
+}
+
 // TestTheRootGitFileIsTheOnlyOneSkipped is the pair to the case above: the skip must
 // still do its job at the root of a linked worktree, or the count it was added for comes
 // back. Both halves are needed - a skip that reaches nothing leaves a worktree counting
