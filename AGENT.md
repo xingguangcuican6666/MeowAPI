@@ -742,14 +742,22 @@ reaches `ed25519.Sign` with a wrong-length key and the deferred unlock in
 `kernel/schedslot_test.go` reserves a run's slot directly against `schedLive` and
 contends on `schedMu` to widen a window one lock acquisition wide, which is how a
 scheduling-order defect that failed once on a loaded CI runner and passed 200 times
-locally became reproducible.
+locally became reproducible. `kernel/schedreset_test.go` arms a pending run and calls
+`resetSched` in a goroutine under a bounded select, because the edge it guards is
+re-entrance rather than inversion and a source scan cannot see it.
 
-The rule for adding an eighth is that it must need something a module cannot
-construct or observe. "It is easier to write in-package" is not that reason, and an
-in-package test cannot prove anything about the surface a module gets - which is why
-the security suite is external by construction. These seven are the only test files in
-`kernel/`, which is why the file map above does not list them: that table is the
-implementation surface, one row per file a module's behavior can depend on.
+Two of those seven declare `package kernel_test`, not `package kernel`:
+`fdtable_test.go` and `audit_syscall_test.go` are external test packages that live in
+this directory. That is the whole distinction the next paragraph turns on - they prove
+things about the surface a module gets, using the probes `export_test.go` publishes,
+and they could be moved to `tests/` only by exporting a way to mint a bare handle.
+
+The rule for adding an eighth file here is that it must need something a module cannot
+construct or observe. "It is easier to write in-package" is not that reason, and a file
+that declares `package kernel` cannot prove anything about the surface a module gets -
+which is why the security suite is external by construction. These seven are the only
+test files in `kernel/`, which is why the file map above does not list them: that table
+is the implementation surface, one row per file a module's behavior can depend on.
 
 Kernel security tests are mandatory, not optional. They live in
 `tests/security/kernel_test.go` as an external test package so they can only use
