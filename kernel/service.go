@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sort"
 	"strings"
 	"sync"
@@ -84,45 +85,12 @@ const (
 	maxCallPayloadBytes = 8 * 1024 * 1024
 )
 
-// RouteHandler serves one path. It runs on the handler module's own goroutine and
-// under the handler module's own context, which is the whole point of the design.
-type RouteHandler func(ctx SContext, req RouteRequest) (RouteResponse, error)
+// RouteHandler is abi.RouteHandler: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type RouteHandler = abi.RouteHandler
 
-// RouteRequest is one inbound call. The payload crosses as bytes, never as a Go
-// value, so a caller cannot hand a handler a live reference into its own heap.
-type RouteRequest struct {
-	// Path is the normalized route that was matched.
-	Path string `json:"path"`
-	// CallerPID is who asked. It is kernel-assigned and cannot be forged, so a
-	// handler may make a decision based on it.
-	CallerPID PID `json:"caller_pid"`
-	// CallerModule is the caller's registered name, for logs.
-	CallerModule string `json:"caller_module,omitempty"`
-	// Trace is a correlation id. The caller may propagate one it was given, which
-	// is how a trace crosses a module boundary at all: without it the caller's span
-	// tree and the handler's could never be joined. It carries no authority. Every
-	// field in the audit record that identifies who did what - CallerPID, the
-	// handler's pid - is kernel-assigned, so a caller that invents a trace id
-	// mislabels its own correlation and cannot attribute anything to anyone else.
-	// A fresh span opened by the handler gets its id from ktrace, not from here.
-	Trace TraceID `json:"trace,omitempty"`
-	// Method is a verb the caller chose, for a REST-shaped surface. It is not
-	// part of the route key: two modules cannot serve the same path with different
-	// methods, because that would make the table's uniqueness rule a lie.
-	Method string `json:"method,omitempty"`
-	// Payload is a copy of the caller's bytes.
-	Payload []byte `json:"payload,omitempty"`
-}
-
-// RouteResponse is one outbound reply.
-type RouteResponse struct {
-	// Status is the handler's own code. The kernel does not interpret it.
-	Status int `json:"status"`
-	// Payload is copied out to the caller, so the handler may reuse its buffer.
-	Payload []byte `json:"payload,omitempty"`
-	// Header carries small string pairs, for a provider-shaped response.
-	Header map[string]string `json:"header,omitempty"`
-}
+// RouteResponse is abi.RouteResponse: a handler returns it to the kernel.
+type RouteResponse = abi.RouteResponse
 
 // route is one registered path.
 type route struct {
@@ -504,19 +472,9 @@ func unregisterRoutesFor(pid PID) {
 	}
 }
 
-// SyscallRoute is the routing half of the syscall surface.
-type SyscallRoute interface {
-	// SyscallRouteRegister serves a path from this module. Requires route:register
-	// and a manifest declaration of that exact path. A second registration of the
-	// same path is refused rather than replacing the first.
-	SyscallRouteRegister(path string, h RouteHandler) error
-	// SyscallRouteCall dispatches one call. Requires route:call. The handler runs
-	// under its own context and its own grants, never under the caller's.
-	SyscallRouteCall(req RouteRequest) (RouteResponse, error)
-	// SyscallRoutes lists the paths this module serves. Requires no operation, and
-	// never lists another module's routes.
-	SyscallRoutes() []string
-}
+// SyscallRoute is abi.SyscallRoute. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallRoute = abi.SyscallRoute
 
 func (c *sContext) SyscallRouteRegister(path string, h RouteHandler) error {
 	return RouteRegister(c, path, h)
@@ -556,3 +514,7 @@ func resetRoutes() {
 	kroutes.misses = 0
 	kroutes.denied = 0
 }
+
+// RouteRequest is abi.RouteRequest: the kernel re-exports it so this package and a module
+// name the same type.
+type RouteRequest = abi.RouteRequest

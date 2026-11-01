@@ -124,6 +124,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sync"
 )
 
@@ -223,24 +224,9 @@ type TTYStats struct {
 	MaxPerPID  int   `json:"max_per_pid"`
 }
 
-// TTYWindow is one bounded read of console history.
-//
-// Base and Dropped exist because `since` cannot be a stable cursor. Console retention is
-// bounded and drops the oldest record, so an index into history shifts whenever the
-// buffer trims. A caller that treated `since` as "resume from line N" would silently skip
-// or repeat lines after a trim and never know. Base is the index the first returned
-// record occupied, and Dropped is the console's total eviction count, so a caller can
-// detect that records were lost between two reads rather than assuming continuity it does
-// not have.
-type TTYWindow struct {
-	// Base is the index into the console's history at the time of this read that the
-	// first record in Records occupied.
-	Base int `json:"base"`
-	// Records are copies of the console lines, oldest first.
-	Records []Record `json:"records"`
-	// Dropped is how many console records have been evicted in total.
-	Dropped int64 `json:"dropped"`
-}
+// TTYWindow is abi.TTYWindow: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type TTYWindow = abi.TTYWindow
 
 // Console ceilings. They are package constants rather than BootLimits fields because
 // adding a field to the sealed trust root is a change owned by kboot, and a subsystem must
@@ -898,31 +884,9 @@ func knownLevel(level Level) error {
 	return ttyErr("unknown console level %q", level)
 }
 
-// SyscallTTY is the operator console half of the syscall surface.
-//
-// Reading through it needs no credential because it hands back nothing an operator could
-// not already see on the console. The privileged acts need one, and no method here returns
-// it: the credential crosses the boundary inward only, is wiped on every path, and the
-// only observable outcome of presenting it is a permitted action or a refusal that does not
-// distinguish wrong from missing.
-type SyscallTTY interface {
-	// SyscallTTYOpen opens a console handle. Requires tty:open.
-	SyscallTTYOpen() (FD, error)
-	// SyscallTTYRead returns a bounded window of console history through one handle.
-	// Requires tty:open.
-	SyscallTTYRead(fd FD, since int) (TTYWindow, error)
-	// SyscallTTYWrite emits one console line. Requires log:write.
-	SyscallTTYWrite(fd FD, level Level, msg string) error
-	// SyscallTTYLoadModule loads a module on the operator's behalf. Requires
-	// tty:open and the console credential.
-	SyscallTTYLoadModule(fd FD, credential []byte, m Manifest) (PID, error)
-	// SyscallTTYUnloadModule unloads a module on the operator's behalf. Requires
-	// tty:open and the console credential.
-	SyscallTTYUnloadModule(fd FD, credential []byte, pid PID) error
-	// SyscallTTYProcessTable reads the process table. Requires tty:open and the
-	// console credential.
-	SyscallTTYProcessTable(fd FD, credential []byte) ([]ProcSnapshot, error)
-}
+// SyscallTTY is abi.SyscallTTY. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallTTY = abi.SyscallTTY
 
 func (c *sContext) SyscallTTYOpen() (FD, error) { return TTYOpen(c) }
 func (c *sContext) SyscallTTYRead(fd FD, since int) (TTYWindow, error) {

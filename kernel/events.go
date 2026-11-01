@@ -414,20 +414,9 @@ func (k *Kernel) PostEventToPid(name KernelEventName, pid PID, subject PID, deta
 	return nil
 }
 
-// SyscallEvent is the event half of the syscall surface.
-type SyscallEvent interface {
-	// SyscallEventSubscribe registers interest in a set of kernel event names and
-	// returns the handle that owns the subscription. Requires event:wait. Closing
-	// the handle unsubscribes.
-	SyscallEventSubscribe(names []KernelEventName) (FD, error)
-	// SyscallEventWait blocks until an event is pending on a subscription this
-	// context owns, or the deadline passes. Requires event:wait.
-	SyscallEventWait(fd FD, deadline int64) ([]Event, error)
-	// SyscallEventPending reports how many events are queued and how many were
-	// dropped, without blocking. Requires no operation, and only for this
-	// context's own subscriptions.
-	SyscallEventPending(fd FD) (pending int, dropped int, err error)
-}
+// SyscallEvent is abi.SyscallEvent. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallEvent = abi.SyscallEvent
 
 // EventSubscribe registers a subscription for a context.
 func EventSubscribe(ctx SContext, names []KernelEventName) (FD, error) {

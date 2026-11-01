@@ -95,37 +95,13 @@ func SignalKinds() []SignalKind {
 	return []SignalKind{SignalReload, SignalDrain, SignalKill, SignalAbort}
 }
 
-// SignalInfo is what a handler receives. From and FromDomain are the sender as the
-// kernel knows it, not as the sender describes itself.
-type SignalInfo struct {
-	// Kind is the signal.
-	Kind SignalKind `json:"kind"`
-	// From is the sender's pid.
-	From PID `json:"from"`
-	// FromDomain is the sender's domain.
-	FromDomain Domain `json:"from_domain"`
-	// SentAt is a mono() reading taken when the kernel accepted the signal.
-	SentAt int64 `json:"sent_at"`
-}
+// SignalInfo is abi.SignalInfo: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type SignalInfo = abi.SignalInfo
 
-// SignalHandler is a module's own response to a signal. It runs supervised: under
-// the module's context, inside the sealed call ceiling, with panics recovered and
-// with kwatchdog registered. A handler that hangs is therefore reported and the
-// module is still terminated, which is why a handler is not a way to survive a
-// kill.
-type SignalHandler func(info SignalInfo)
-
-// SignalQueueError reports a signal refused because the target's pending queue is
-// full. It is a distinct type so a caller can tell "the target is not keeping up"
-// from "you are not permitted".
-type SignalQueueError struct {
-	Target PID
-	Max    int
-}
-
-func (e *SignalQueueError) Error() string {
-	return fmt.Sprintf("kernel: signal queue for pid %d is full (%d pending)", e.Target, e.Max)
-}
+// SignalHandler is abi.SignalHandler: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type SignalHandler = abi.SignalHandler
 
 // IsSignalQueueFull reports whether err is a full-queue refusal.
 func IsSignalQueueFull(err error) bool {
@@ -797,15 +773,10 @@ func resetSignals() {
 	}
 }
 
-// SyscallSignal is the signal half of the syscall surface.
-type SyscallSignal interface {
-	// SyscallSignalSend delivers a signal to a pid. Requires signal:send, and the
-	// target must be permitted by the rules in ksignal: never pid 0, never init,
-	// and for a plugin only itself or a pid it spawned. Delivery is asynchronous
-	// through a bounded per-pid queue.
-	SyscallSignalSend(target PID, kind SignalKind) error
-	// SyscallSignalHandle installs the caller's own signal handler, replacing any
-	// previous one. Requires no operation: it can only narrow the caller's own
-	// response to a signal, never widen what the caller may do.
-	SyscallSignalHandle(h SignalHandler) error
-}
+// SyscallSignal is abi.SyscallSignal. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallSignal = abi.SyscallSignal
+
+// SignalQueueError is abi.SignalQueueError: the kernel re-exports it so this package and a module
+// name the same type.
+type SignalQueueError = abi.SignalQueueError

@@ -102,33 +102,13 @@ func (e *ShmQuotaError) Error() string {
 		e.Size, e.Owner, e.InUse, e.Limit)
 }
 
-// ShmDescriptor describes an allocated segment to its owner. It carries no slice:
-// the owner writes through ShmWrite and reads back through ShmRead.
-type ShmDescriptor struct {
-	// FD is the handle in the owner's own table. It is a capability: it resolves
-	// only in that table, so it cannot be passed to another module to use.
-	FD FD `json:"fd"`
-	// ID names the segment kernel-wide. It is what a peer passes to ShmMap, and it
-	// is not a capability on its own: the map still checks the owner's grant set.
-	ID SHMID `json:"id"`
-	// Size is the payload length the caller asked for, which may be smaller than
-	// the slab class the pool reserved.
-	Size int `json:"size"`
-}
+// ShmDescriptor is abi.ShmDescriptor: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type ShmDescriptor = abi.ShmDescriptor
 
-// ShmMapping describes a read-only mapping to the module that holds it.
-type ShmMapping struct {
-	// FD is the handle in the reader's own table.
-	FD FD `json:"fd"`
-	// ID is the segment the grant covered.
-	ID SHMID `json:"id"`
-	// Size is the payload length, so the reader can allocate a buffer before
-	// copying without a second syscall.
-	Size int `json:"size"`
-	// Owner is the pid that allocated the segment. It is a diagnostic: knowing
-	// who to blame for a payload is not a capability to read it.
-	Owner PID `json:"owner"`
-}
+// ShmMapping is abi.ShmMapping: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type ShmMapping = abi.ShmMapping
 
 // Shm resource kinds, as they appear in FDList and in the console dump. They are
 // distinct so a dump shows which side of a shared buffer a module holds, which is

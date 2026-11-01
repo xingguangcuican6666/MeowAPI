@@ -271,29 +271,13 @@ type PeerVerdict struct {
 // kernel, so the shape lives in the package the module compiles against.
 type PeerDialSpec = abi.PeerDialSpec
 
-// PeerSession is the snapshot a dial returns. It carries no private material: no
-// nonce, no signature, no key.
-type PeerSession struct {
-	FD           FD     `json:"fd"`
-	NodeID       string `json:"node_id"`
-	KeyID        string `json:"key_id"`
-	Endpoint     string `json:"endpoint"`
-	Label        string `json:"label,omitempty"`
-	Seq          int64  `json:"seq"`
-	LatencyNanos int64  `json:"latency_nanos"`
-	OpenedMono   int64  `json:"opened_mono"`
-}
+// PeerSession is abi.PeerSession: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type PeerSession = abi.PeerSession
 
-// PeerLatency is one peer's measured responsiveness. Every field is a mono()
-// reading or a count derived from one, and none of them is ever rendered as a human
-// timestamp.
-type PeerLatency struct {
-	RTTNanos  int64 `json:"rtt_nanos"`
-	EWMANanos int64 `json:"ewma_nanos"`
-	Samples   int64 `json:"samples"`
-	LastMono  int64 `json:"last_mono"`
-	Timeouts  int64 `json:"timeouts"`
-}
+// PeerLatency is abi.PeerLatency: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type PeerLatency = abi.PeerLatency
 
 // peerProbeBody is one probe frame's payload. It is package-private because nothing
 // outside this kernel needs to construct one, and it is a struct rather than a map so
@@ -350,21 +334,9 @@ type PeerEvent struct {
 	Mono   int64  `json:"mono"`
 }
 
-// PeerInfo is one row of the mesh table, for the dump and for an operator answering
-// "which nodes does this one trust right now".
-type PeerInfo struct {
-	NodeID       string `json:"node_id"`
-	KeyID        string `json:"key_id,omitempty"`
-	Endpoint     string `json:"endpoint"`
-	Label        string `json:"label,omitempty"`
-	OpenedMono   int64  `json:"opened_mono"`
-	LastRTTNanos int64  `json:"last_rtt_nanos"`
-	Samples      int64  `json:"samples"`
-	Timeouts     int64  `json:"timeouts"`
-	Forwarded    int64  `json:"forwarded"`
-	Refused      int64  `json:"refused"`
-	Closed       bool   `json:"closed"`
-}
+// PeerInfo is abi.PeerInfo: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type PeerInfo = abi.PeerInfo
 
 // PeerStats are the mesh counters. MaxPeers is reported so an operator reading the
 // dump can tell whether a refusal means the mesh is too big or the bound is too
@@ -2558,26 +2530,9 @@ func resetPeers() {
 	}
 }
 
-// SyscallPeer is the mesh half of the syscall surface. Key material does not cross it
-// in either direction, and no method here accepts a frame from a caller: inbound
-// frames arrive only through the host handle, so a module cannot inject one and have
-// the kernel treat it as a peer's claim.
-type SyscallPeer interface {
-	// SyscallPeerDial proves a peer's identity and opens a session handle. Requires
-	// peer:dial, which only the kernel domain holds.
-	SyscallPeerDial(spec PeerDialSpec) (PeerSession, error)
-	// SyscallPeerAnnounce publishes one signed discovery record. Requires
-	// peer:announce.
-	SyscallPeerAnnounce(a PeerAnnouncement) error
-	// SyscallPeerProbe measures one round trip on the monotonic clock. Requires
-	// peer:dial.
-	SyscallPeerProbe(fd FD, deadline int64) (PeerLatency, error)
-	// SyscallPeerForward sends one request to a peer node and returns its reply.
-	// Requires peer:dial.
-	SyscallPeerForward(req PeerForwardRequest) (PeerForwardResult, error)
-	// SyscallPeerPeers lists the mesh table. Requires peer:dial.
-	SyscallPeerPeers() ([]PeerInfo, error)
-}
+// SyscallPeer is abi.SyscallPeer. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallPeer = abi.SyscallPeer
 
 func (c *sContext) SyscallPeerDial(spec PeerDialSpec) (PeerSession, error) {
 	return PeerDial(c, spec)

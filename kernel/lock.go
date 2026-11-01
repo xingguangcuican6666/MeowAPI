@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sort"
 	"sync"
 )
@@ -405,15 +406,9 @@ func (r *lockRegistry) markDead(pid PID) {
 	}
 }
 
-// SyscallLock is the lock half of the syscall surface.
-type SyscallLock interface {
-	// SyscallLockTake acquires a named lock and returns the handle that owns it.
-	// Requires lock:acquire. The deadline is mandatory: an untimed lock wait is
-	// how a module turns a contended lock into an outage.
-	SyscallLockTake(name string, exclusive bool, deadline int64) (FD, error)
-	// SyscallLockRelease releases a lock handle this context holds.
-	SyscallLockRelease(fd FD) error
-}
+// SyscallLock is abi.SyscallLock. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallLock = abi.SyscallLock
 
 // LockTake acquires a managed lock for a context.
 func LockTake(ctx SContext, name string, exclusive bool, deadline int64) (FD, error) {

@@ -196,111 +196,9 @@ func knownSlashKind(k SlashKind) bool {
 	return false
 }
 
-// SlashVerdict is the state of one filed proof.
-type SlashVerdict string
-
-const (
-	// SlashPending is a proof that has been filed and not yet decided.
-	SlashPending SlashVerdict = "pending"
-	// SlashConfirmed means the kernel recomputed the claim from the receipts and it
-	// holds. This is the verdict an operator acts on.
-	SlashConfirmed SlashVerdict = "confirmed"
-	// SlashUnproven means the claim did not hold. It is NOT a statement that the
-	// accused node is honest: the receipts may have been insufficient, or the
-	// reporter may have mischaracterized them.
-	SlashUnproven SlashVerdict = "unproven"
-)
-
-// SlashProof is one accusation. The reporter supplies the receipts and the kind of
-// claim; everything else - whether the receipts verify, whether they actually
-// contradict, who is accused - is recomputed by the kernel.
-//
-// That division is the control. A reporter that could set the verdict would be writing
-// its own evidence, and a reporter that could name the accused node without supplying a
-// receipt signed by it could accuse anyone.
-type SlashProof struct {
-	// Kind is the claim. It must be one of the closed set.
-	Kind SlashKind `json:"kind"`
-	// NodeID is the node being accused. Every receipt in the proof must carry this
-	// node id, and every receipt's signature must verify, so the accusation cannot
-	// be pointed at a node that signed nothing here.
-	NodeID string `json:"node_id"`
-	// Receipts are the evidence. At least one is required, and for equivocation
-	// exactly two are compared.
-	Receipts []Receipt `json:"receipts"`
-	// Note is an optional operator-readable statement from the reporter. It is
-	// length-bounded and line-break-free because it is copied into audit fields.
-	Note string `json:"note,omitempty"`
-}
-
-// SlashFinding is what the kernel concluded. It is separate from the proof because the
-// proof is the accusation and the finding is the decision, and conflating them is how a
-// reporter's characterization ends up being read as a verdict.
-type SlashFinding struct {
-	// Kind echoes the claim that was decided.
-	Kind SlashKind `json:"kind"`
-	// Established is true when the recomputation confirmed the claim.
-	Established bool `json:"established"`
-	// Reason explains the conclusion either way. An unproven finding carries the
-	// reason it failed, which is what tells an operator whether the accusation was
-	// wrong or merely unsupported.
-	Reason string `json:"reason"`
-	// Digests names the receipts the decision rests on, so a dispute can be
-	// re-examined without the original proof object.
-	Digests []string `json:"digests,omitempty"`
-	// MissingSeqs lists the sequence numbers a gap finding proved were issued. Empty
-	// for every other kind.
-	MissingSeqs []int64 `json:"missing_seqs,omitempty"`
-}
-
-// SlashRecord is one case in the ledger.
-type SlashRecord struct {
-	ID      SlashID      `json:"id"`
-	Kind    SlashKind    `json:"kind"`
-	NodeID  string       `json:"node_id"`
-	Verdict SlashVerdict `json:"verdict"`
-	// Reporters are the pids that filed this proof, in the order they arrived. It is
-	// a list rather than a single pid because two independent reporters filing the
-	// same evidence is materially stronger than one, and collapsing them would throw
-	// that away.
-	Reporters []PID `json:"reporters"`
-	// FiledMono and DecidedMono are monotonic readings.
-	FiledMono   int64 `json:"filed_mono"`
-	DecidedMono int64 `json:"decided_mono,omitempty"`
-	// Finding is the kernel's conclusion, present once decided.
-	Finding SlashFinding `json:"finding"`
-	// Note echoes the first reporter's note, for an operator reading the ledger.
-	Note string `json:"note,omitempty"`
-}
-
-// SlashFilter selects ledger records. Zero values mean no constraint on that field.
-type SlashFilter struct {
-	Kind    SlashKind
-	NodeID  string
-	Verdict SlashVerdict
-	// Since returns only records filed at or after this Mono() reading.
-	Since int64
-	Limit int
-}
-
-// SlashStats are the ledger counters.
-//
-// Refused is a single counter for every kind of refusal, on the same reasoning
-// keyring.go gives for making an out-of-scope alias and an unknown alias
-// indistinguishable: a reporter that could tell which of its proofs were rejected for
-// shape and which for duplication could probe the ledger's contents.
-type SlashStats struct {
-	Pending   int   `json:"pending"`
-	Confirmed int64 `json:"confirmed"`
-	Unproven  int64 `json:"unproven"`
-	Filed     int64 `json:"filed"`
-	// Corroborated counts proofs a second reporter added itself to.
-	Corroborated  int64 `json:"corroborated"`
-	Refused       int64 `json:"refused"`
-	Records       int   `json:"records"`
-	RecordEvicted int64 `json:"record_evicted"`
-	MaxRecords    int   `json:"max_records"`
-}
+// SlashVerdict is abi.SlashVerdict: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type SlashVerdict = abi.SlashVerdict
 
 // SlashError reports a refused slashing operation. It is a distinct type so a caller
 // can tell "the kernel will not adjudicate this" from "the kernel could not", and so a
@@ -1078,21 +976,9 @@ func resetSlashing() {
 	pendingProofs.mu.Unlock()
 }
 
-// SyscallSlashing is the mesh-governance half of the syscall surface.
-//
-// Filing and deciding are separate operations with separate grants and no context holds
-// both, which is the property that makes the ledger trustworthy: a reporter cannot write
-// its own verdict, and the party that writes verdicts does not serve traffic and
-// therefore never sees a peer's receipts.
-type SyscallSlashing interface {
-	// SyscallSlashReport files a fraud proof. Requires slash:report.
-	SyscallSlashReport(p SlashProof) (SlashID, error)
-	// SyscallSlashAdjudicate decides one filed proof. Requires slash:adjudicate,
-	// which no live context holds.
-	SyscallSlashAdjudicate(id SlashID) (SlashRecord, error)
-	// SyscallSlashRecords lists decided and pending proofs. Requires slash:report.
-	SyscallSlashRecords(f SlashFilter) ([]SlashRecord, error)
-}
+// SyscallSlashing is abi.SyscallSlashing. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallSlashing = abi.SyscallSlashing
 
 func (c *sContext) SyscallSlashReport(p SlashProof) (SlashID, error) { return SlashReport(c, p) }
 func (c *sContext) SyscallSlashAdjudicate(id SlashID) (SlashRecord, error) {
@@ -1101,3 +987,30 @@ func (c *sContext) SyscallSlashAdjudicate(id SlashID) (SlashRecord, error) {
 func (c *sContext) SyscallSlashRecords(f SlashFilter) ([]SlashRecord, error) {
 	return SlashRecords(c, f)
 }
+
+// SlashProof is abi.SlashProof: a module reports a proof and reads a record, so the shape
+// lives in the package the module compiles against.
+type SlashProof = abi.SlashProof
+
+// SlashRecord is abi.SlashRecord: a module reports a proof and reads a record, so the shape
+// lives in the package the module compiles against.
+type SlashRecord = abi.SlashRecord
+
+// SlashFilter is abi.SlashFilter: a module reports a proof and reads a record, so the shape
+// lives in the package the module compiles against.
+type SlashFilter = abi.SlashFilter
+
+// SlashFinding is abi.SlashFinding: the kernel re-exports it so this package and a module
+// name the same type.
+type SlashFinding = abi.SlashFinding
+
+// SlashStats is abi.SlashStats: the kernel re-exports it so this package and a module
+// name the same type.
+type SlashStats = abi.SlashStats
+
+// The verdict names are re-exported so this file and a module spell them alike.
+const (
+	SlashPending   = abi.SlashPending
+	SlashUnproven  = abi.SlashUnproven
+	SlashConfirmed = abi.SlashConfirmed
+)

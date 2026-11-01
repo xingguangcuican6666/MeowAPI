@@ -124,8 +124,6 @@ func SpanKinds() []SpanKind {
 // kernel, so the shape lives in the package the module compiles against.
 type Span = abi.Span
 
-// ElapsedNanos is the span's duration on the kernel clock.
-
 // liveSpan is the kernel's mutable record behind a handle.
 type liveSpan struct {
 	closedFlag
@@ -462,22 +460,9 @@ func (r *traceRegistry) trimLocked() {
 	r.done = append([]Span(nil), r.done[over:]...)
 }
 
-// TraceFilter selects spans to query.
-type TraceFilter struct {
-	// Trace narrows to one request. Empty means any.
-	Trace TraceID
-	// Kind narrows to one span kind. Empty means any.
-	Kind SpanKind
-	// PID narrows to one module. Zero means any.
-	PID PID
-	// Abandoned, when true, returns only spans the kernel closed at teardown. This
-	// is the query that finds modules that leak work.
-	Abandoned bool
-	// MinNanos returns only spans at least this long, for finding slow stages.
-	MinNanos int64
-	// Limit caps the result, newest first.
-	Limit int
-}
+// TraceFilter is abi.TraceFilter: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type TraceFilter = abi.TraceFilter
 
 // TraceQuery returns finished spans matching a filter, newest first. It returns
 // copies, so a caller cannot edit the kernel's history.
@@ -553,20 +538,9 @@ func TraceLiveFor(pid PID) []SpanID {
 	return out
 }
 
-// SyscallTrace is the tracing half of the syscall surface.
-type SyscallTrace interface {
-	// SyscallTraceOpen starts a span and returns the handle that owns it plus the
-	// ids the kernel assigned. Requires trace:span. The ids are not forgeable: a
-	// module cannot supply its own trace id or span id.
-	SyscallTraceOpen(spec SpanSpec) (FD, TraceID, SpanID, error)
-	// SyscallTraceEnd closes a span this context owns and returns its record.
-	SyscallTraceEnd(fd FD) (Span, error)
-	// SyscallTraceMark records a bounded attribute on a live span.
-	SyscallTraceMark(fd FD, key, value string) error
-	// SyscallTraceQuery returns finished spans matching a filter, newest first.
-	// Requires trace:span, and never returns another pid's live span.
-	SyscallTraceQuery(f TraceFilter) []Span
-}
+// SyscallTrace is abi.SyscallTrace. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallTrace = abi.SyscallTrace
 
 func (c *sContext) SyscallTraceOpen(spec SpanSpec) (FD, TraceID, SpanID, error) {
 	return TraceOpen(c, spec)

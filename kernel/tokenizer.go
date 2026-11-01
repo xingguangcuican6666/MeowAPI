@@ -65,40 +65,9 @@ import (
 // the signal; erasing either half destroys it. The estimate never becomes the billable
 // number by default, and there is no code path in this file that makes it one.
 
-// TokenMeasurement is what the kernel computed about one byte slice. It holds no
-// reference to the input, so a caller that reuses or mutates its buffer afterwards
-// cannot change anything the kernel recorded.
-type TokenMeasurement struct {
-	// Bytes is the length of the measured input.
-	Bytes int `json:"bytes"`
-	// CodePoints is the number of UTF-8 code points, counting each invalid byte as
-	// one. It is not a token estimate; it is the denominator the ratios work on.
-	CodePoints int `json:"code_points"`
-	// Estimate is the kernel's deterministic approximation. See tokenEstimateModel
-	// for exactly how it is derived; it is integer arithmetic only, so it cannot
-	// differ between platforms or runs.
-	Estimate int64 `json:"estimate"`
-	// Floor is the structural lower bound. A report below it is provably wrong for a
-	// tokenizer whose pre-tokenizer does not merge across whitespace or across a
-	// letter/digit/punctuation class change - which is what the GPT-2 family regex
-	// does, and every major provider's tokenizer is in that family. SentencePiece
-	// unigram models can merge across those boundaries in principle, so the floor is
-	// conditional on the tokenizer family rather than universal, and TokenStrictFloor
-	// exists to let a deployment say which assumption it is making.
-	Floor int64 `json:"floor"`
-	// Runs is the count of pre-tokenizer runs the floor is derived from, exposed so a
-	// reader can check the arithmetic rather than take the number on faith.
-	Runs int `json:"runs"`
-	// Invalid is the number of bytes that were not valid UTF-8. A tokenizer still has
-	// to emit something for them, and an input that is mostly invalid is a different
-	// shape of input from prose, so the count is reported rather than folded in.
-	Invalid int `json:"invalid"`
-	// Whitespace is counted separately because it is not ratio'd: in this tokenizer
-	// family it attaches to a neighbouring token rather than becoming one. Reporting it
-	// is what lets a reader see why an input's estimate is lower than its byte count
-	// suggests.
-	Whitespace int `json:"whitespace"`
-}
+// TokenMeasurement is abi.TokenMeasurement: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type TokenMeasurement = abi.TokenMeasurement
 
 // tokenEstimateModel is the estimation model, as integer ratios. Every ratio is a
 // (dividend, divisor) pair so the arithmetic stays in integers; a float ratio would
@@ -169,18 +138,9 @@ const (
 	TokenImpossible = abi.TokenImpossible
 )
 
-// TokenCheck is the result of comparing one report against one measurement. It is a
-// value rather than an error because the comparison succeeding is the normal case and
-// a disagreement is a finding, not a failure.
-type TokenCheck struct {
-	Measurement TokenMeasurement `json:"measurement"`
-	Reported    int64            `json:"reported"`
-	Verdict     TokenVerdict     `json:"verdict"`
-	// Reason says which rule produced the verdict. It is populated for every verdict
-	// including TokenConsistent, because "consistent" without a reason is a number a
-	// reader has to re-derive to trust.
-	Reason string `json:"reason"`
-}
+// TokenCheck is abi.TokenCheck: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type TokenCheck = abi.TokenCheck
 
 // ErrTokenNoMeasurement is what a check returns when there was no input to measure.
 // It is not a verdict: without bytes there is nothing to compare against, and calling
@@ -727,16 +687,9 @@ func TokenMeasureFlow(pid PID, data []byte) TokenFlowRecord {
 // ---------------------------------------------------------------------------
 // Syscall surface.
 
-// SyscallTokenizer is the module-facing half of this surface. It is read-and-report
-// only: there is no way for a module to set the strictness of the check applied to its
-// own reports, and no way for it to overwrite a measurement.
-type SyscallTokenizer interface {
-	// SyscallTokenCount measures bytes the caller already holds. Requires token:count.
-	SyscallTokenCount(data []byte) (TokenMeasurement, error)
-	// SyscallTokenCheckUsage compares a reported token quantity against a measurement
-	// of the bytes that produced it. Requires token:count.
-	SyscallTokenCheckUsage(kind UsageKind, reported int64, data []byte) (TokenCheck, error)
-}
+// SyscallTokenizer is abi.SyscallTokenizer. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallTokenizer = abi.SyscallTokenizer
 
 func (c *sContext) SyscallTokenCount(data []byte) (TokenMeasurement, error) {
 	return TokenCount(c, data)

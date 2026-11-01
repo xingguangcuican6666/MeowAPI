@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sync"
 )
 
@@ -117,16 +118,9 @@ func (s *slotCounters) acquire(pid PID) error {
 	return nil
 }
 
-// SyscallLimit is the admission half of the syscall surface.
-type SyscallLimit interface {
-	// SyscallAcquireSlot reserves one concurrency slot and returns the handle that
-	// owns it. Requires slot:acquire. Close the handle, or let the module unload, to
-	// release it.
-	SyscallAcquireSlot(label string) (FD, error)
-	// SyscallSlots reports how many slots this context holds. It requires no
-	// operation and never reports another pid's count.
-	SyscallSlots() int
-}
+// SyscallLimit is abi.SyscallLimit. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallLimit = abi.SyscallLimit
 
 // AcquireSlot reserves one slot for a context. It is the function form for kernel
 // subsystems that admit work on a module's behalf.

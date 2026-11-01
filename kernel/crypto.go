@@ -199,17 +199,9 @@ func digestFor(algo HashAlgo) (hash.Hash, error) {
 	return nil, cryptoErr("unknown hash algorithm %q", algo)
 }
 
-// Signature is a detached signature plus the metadata needed to select a
-// verification key. The key id is a digest of the public key rather than the key,
-// so a signature can be routed to the right root without carrying key material.
-type Signature struct {
-	// Algo is the signing algorithm. Only ed25519 is implemented.
-	Algo string `json:"algo"`
-	// KeyID identifies the verification key as a short digest of it.
-	KeyID string `json:"key_id"`
-	// Bytes is the raw signature.
-	Bytes []byte `json:"bytes"`
-}
+// Signature is abi.Signature: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type Signature = abi.Signature
 
 // algoEd25519 is the only signing algorithm this kernel implements. One algorithm
 // means one review, one set of test vectors, and no negotiation to downgrade.

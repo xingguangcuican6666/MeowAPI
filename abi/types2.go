@@ -1,6 +1,9 @@
 package abi
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // The data types a module passes to and from the kernel: the shapes of
 // syscall arguments and results. They are here so a module can declare a
@@ -520,4 +523,497 @@ type SpanSpec struct {
 	Parent SpanID
 	Kind   SpanKind
 	Name   string
+}
+
+// PipeInfo describes an open pipe for the dump. It reports byte counts, never
+// content, because a pipe carries prompts and completions.
+type PipeInfo struct {
+	FD       FD     `json:"fd"`
+	Name     string `json:"name"`
+	Owner    PID    `json:"owner"`
+	Peer     PID    `json:"peer"`
+	Cap      int    `json:"capacity"`
+	Buffered int    `json:"buffered"`
+	Queued   int    `json:"queued"`
+	Written  int64  `json:"written"`
+	Read     int64  `json:"read"`
+	Dropped  int64  `json:"dropped"`
+	Closed   bool   `json:"closed"`
+	Aborted  bool   `json:"aborted"`
+}
+
+// QosDecision is the result of an admission attempt.
+type QosDecision struct {
+	// Admitted is whether the request may proceed.
+	Admitted bool
+	// RetryAfterMillis is how long the caller should wait before the bucket can
+	// serve this request. Zero when admitted. It is computed from the deficit and
+	// the refill rate, not guessed, so a client that honors it is not punished.
+	RetryAfterMillis int64
+	// Reason names the ceiling that refused, for logs and for the response body.
+	Reason string
+}
+
+// SchedJob is one request for supervised execution.
+type SchedJob struct {
+	// Label names the run in the console, in the audit record and in a watchdog
+	// event. It is a diagnostic string chosen by the module and is never
+	// interpreted by the kernel, so it is length-bounded rather than trusted.
+	Label string
+	// TimeoutMillis bounds this run. Zero or negative means the sealed ceiling.
+	// A value above the ceiling is clamped down: a module may ask for less time
+	// than the trust root allows and may never ask for more, because a timeout
+	// the timed-out party chooses is not a timeout.
+	TimeoutMillis int64
+	// Fn is the work. Nil is refused rather than scheduled.
+	Fn SchedFunc
+}
+
+// SecretResult is what a module receives. No field of it is, or can be turned into,
+// the credential.
+type SecretResult struct {
+	// Alias echoes the alias the request named, so a caller doing several uses in a
+	// row can match results to requests.
+	Alias string `json:"alias"`
+	// Action echoes the action performed.
+	Action SecretAction `json:"action"`
+	// FD is a handle to the sealed header value, for SecretActionHeader only. It is
+	// valid only inside this pid's table, and only the kernel can open it.
+	FD FD `json:"fd,omitempty"`
+	// Header names the header the sealed value belongs in, for SecretActionHeader
+	// only. The name is not a secret; the value is.
+	Header string `json:"header,omitempty"`
+	// MAC is the keyed digest, for SecretActionSign only. It is omitted from JSON
+	// because a rendered result belongs on the wire, not in a log line.
+	MAC []byte `json:"-"`
+	// Match is the comparison verdict, for SecretActionMatch only.
+	Match bool `json:"match,omitempty"`
+}
+
+// SecretSpec describes one credential handed to the keyring. It is the only shape in
+// which a secret enters the kernel, so every field a reviewer needs to see is named
+// rather than inferred from a string.
+type SecretSpec struct {
+	// Alias names the credential. Modules ask for it by this name and never by
+	// value. It must fall inside the prefixes the asking module declared.
+	Alias string
+	// Header is the HTTP header the credential belongs in, for example
+	// "Authorization" or "x-api-key". Empty means "Authorization". The module does
+	// not choose this: which header a credential goes into is part of the
+	// credential's own definition, and letting a caller pick it would let a module
+	// put a bearer token into a header an upstream logs.
+	Header string
+	// Scheme is prepended to the credential when rendering the header value, for
+	// example "Bearer ". Empty renders the credential bare, which is what an
+	// x-api-key style header requires.
+	Scheme string
+	// Value is the credential. The keyring copies it and then zeroes the caller's
+	// slice, so ownership transfers on return. See InstallSecret.
+	Value []byte
+}
+
+// ShmDescriptor describes an allocated segment to its owner. It carries no slice:
+// the owner writes through ShmWrite and reads back through ShmRead.
+type ShmDescriptor struct {
+	// FD is the handle in the owner's own table. It is a capability: it resolves
+	// only in that table, so it cannot be passed to another module to use.
+	FD FD `json:"fd"`
+	// ID names the segment kernel-wide. It is what a peer passes to ShmMap, and it
+	// is not a capability on its own: the map still checks the owner's grant set.
+	ID SHMID `json:"id"`
+	// Size is the payload length the caller asked for, which may be smaller than
+	// the slab class the pool reserved.
+	Size int `json:"size"`
+}
+
+// ShmMapping describes a read-only mapping to the module that holds it.
+type ShmMapping struct {
+	// FD is the handle in the reader's own table.
+	FD FD `json:"fd"`
+	// ID is the segment the grant covered.
+	ID SHMID `json:"id"`
+	// Size is the payload length, so the reader can allocate a buffer before
+	// copying without a second syscall.
+	Size int `json:"size"`
+	// Owner is the pid that allocated the segment. It is a diagnostic: knowing
+	// who to blame for a payload is not a capability to read it.
+	Owner PID `json:"owner"`
+}
+
+// Signature is a detached signature plus the metadata needed to select a
+// verification key. The key id is a digest of the public key rather than the key,
+// so a signature can be routed to the right root without carrying key material.
+type Signature struct {
+	// Algo is the signing algorithm. Only ed25519 is implemented.
+	Algo string `json:"algo"`
+	// KeyID identifies the verification key as a short digest of it.
+	KeyID string `json:"key_id"`
+	// Bytes is the raw signature.
+	Bytes []byte `json:"bytes"`
+}
+
+// TimerSpec is one request for a deferred callback.
+//
+// Timers are single-shot on purpose. A periodic timer is a way to keep creating
+// work forever from one declaration, and the reviewable artifact - the manifest -
+// would say nothing about the rate. A module that needs a period re-arms from
+// inside the callback, which puts every period through the same ceiling, the same
+// quota and the same accounting as the first one.
+type TimerSpec struct {
+	// Label names the timer in diagnostics.
+	Label string
+	// DelayMillis is how long to wait before firing. The fire time is a mono()
+	// reading, so a wall-clock step - NTP, an operator changing the date, a VM
+	// migration - cannot move a timer armed here. The runtime timer underneath is
+	// only the wakeup mechanism.
+	DelayMillis int64
+	// Fn runs under the same supervision as a spawned job: the caller's context,
+	// the ceiling timeout, panic recovery, watchdog registration.
+	Fn SchedFunc
+}
+
+// UsageFact is one usage event reported by a module.
+type UsageFact struct {
+	Kind     UsageKind `json:"kind"`
+	Quantity int64     `json:"quantity"`
+	// Label is an optional module-defined tag for the event, such as a model
+	// name or a route. It is recorded for debugging and is never interpreted by
+	// the kernel. Bounded so a module cannot use it to grow kernel memory.
+	Label string `json:"label,omitempty"`
+}
+
+// PeerInfo is one row of the mesh table, for the dump and for an operator answering
+// "which nodes does this one trust right now".
+type PeerInfo struct {
+	NodeID       string `json:"node_id"`
+	KeyID        string `json:"key_id,omitempty"`
+	Endpoint     string `json:"endpoint"`
+	Label        string `json:"label,omitempty"`
+	OpenedMono   int64  `json:"opened_mono"`
+	LastRTTNanos int64  `json:"last_rtt_nanos"`
+	Samples      int64  `json:"samples"`
+	Timeouts     int64  `json:"timeouts"`
+	Forwarded    int64  `json:"forwarded"`
+	Refused      int64  `json:"refused"`
+	Closed       bool   `json:"closed"`
+}
+
+// PeerLatency is one peer's measured responsiveness. Every field is a mono()
+// reading or a count derived from one, and none of them is ever rendered as a human
+// timestamp.
+type PeerLatency struct {
+	RTTNanos  int64 `json:"rtt_nanos"`
+	EWMANanos int64 `json:"ewma_nanos"`
+	Samples   int64 `json:"samples"`
+	LastMono  int64 `json:"last_mono"`
+	Timeouts  int64 `json:"timeouts"`
+}
+
+// PeerSession is the snapshot a dial returns. It carries no private material: no
+// nonce, no signature, no key.
+type PeerSession struct {
+	FD           FD     `json:"fd"`
+	NodeID       string `json:"node_id"`
+	KeyID        string `json:"key_id"`
+	Endpoint     string `json:"endpoint"`
+	Label        string `json:"label,omitempty"`
+	Seq          int64  `json:"seq"`
+	LatencyNanos int64  `json:"latency_nanos"`
+	OpenedMono   int64  `json:"opened_mono"`
+}
+
+// RouteHandler serves one path. It runs on the handler module's own goroutine and
+// under the handler module's own context, which is the whole point of the design.
+type RouteHandler func(ctx SContext, req RouteRequest) (RouteResponse, error)
+
+// SchedFunc is work a module asks the kernel to run.
+//
+// The context handed to it is the caller's own, so the job inherits the caller's
+// pid, uid, domain and manifest grants. Every syscall it makes is decided against
+// the same ceiling as one made from OnLoad: moving work onto a kernel goroutine
+// buys a deadline and attribution, and buys no privilege.
+//
+// done is closed when the run's deadline expires, when the module closes the
+// handle, when the module is signalled to stop, or when the kernel resets. A
+// well-behaved job selects on it and returns promptly. A job that ignores it is
+// not stopped - see the file header - but the run is then recorded as timed out,
+// kwatchdog captures its stack, and the module is put forward for termination.
+type SchedFunc func(ctx SContext, done <-chan struct{})
+
+// SchedOutcome is what the kernel recorded about one run. It is always a copy:
+// handing out the live record would let a module rewrite the evidence of its own
+// timeout.
+type SchedOutcome struct {
+	// ID is the kernel-allocated run id, unique within a boot.
+	ID int64 `json:"id"`
+	// Label is the module's own diagnostic string.
+	Label string `json:"label,omitempty"`
+	// Kind is "job" or "timer".
+	Kind string `json:"kind"`
+	// State is the terminal state, or SchedRunning / SchedPending while live.
+	State SchedState `json:"state"`
+	// Detail explains a non-completed state: the panic value, "deadline
+	// expired", "handle closed", "module terminated".
+	Detail string `json:"detail,omitempty"`
+	// StartedAt and ElapsedNanos are mono() readings taken by the kernel around
+	// the module's function, so a module cannot report a duration shorter than
+	// the one it actually occupied.
+	StartedAt    int64 `json:"started_at,omitempty"`
+	ElapsedNanos int64 `json:"elapsed_nanos,omitempty"`
+	// Deadline is the mono() value at which the run was required to stop.
+	Deadline int64 `json:"deadline,omitempty"`
+	// Stack is a snapshot of the offending goroutine when the run timed out, was
+	// abandoned or panicked. It is empty on a clean completion.
+	Stack string `json:"stack,omitempty"`
+}
+
+// SignalHandler is a module's own response to a signal. It runs supervised: under
+// the module's context, inside the sealed call ceiling, with panics recovered and
+// with kwatchdog registered. A handler that hangs is therefore reported and the
+// module is still terminated, which is why a handler is not a way to survive a
+// kill.
+type SignalHandler func(info SignalInfo)
+
+// SignalQueueError reports a signal refused because the target's pending queue is
+// full. It is a distinct type so a caller can tell "the target is not keeping up"
+// from "you are not permitted".
+type SignalQueueError struct {
+	Target PID
+	Max    int
+}
+
+// TokenMeasurement is what the kernel computed about one byte slice. It holds no
+// reference to the input, so a caller that reuses or mutates its buffer afterwards
+// cannot change anything the kernel recorded.
+type TokenMeasurement struct {
+	// Bytes is the length of the measured input.
+	Bytes int `json:"bytes"`
+	// CodePoints is the number of UTF-8 code points, counting each invalid byte as
+	// one. It is not a token estimate; it is the denominator the ratios work on.
+	CodePoints int `json:"code_points"`
+	// Estimate is the kernel's deterministic approximation. See tokenEstimateModel
+	// for exactly how it is derived; it is integer arithmetic only, so it cannot
+	// differ between platforms or runs.
+	Estimate int64 `json:"estimate"`
+	// Floor is the structural lower bound. A report below it is provably wrong for a
+	// tokenizer whose pre-tokenizer does not merge across whitespace or across a
+	// letter/digit/punctuation class change - which is what the GPT-2 family regex
+	// does, and every major provider's tokenizer is in that family. SentencePiece
+	// unigram models can merge across those boundaries in principle, so the floor is
+	// conditional on the tokenizer family rather than universal, and TokenStrictFloor
+	// exists to let a deployment say which assumption it is making.
+	Floor int64 `json:"floor"`
+	// Runs is the count of pre-tokenizer runs the floor is derived from, exposed so a
+	// reader can check the arithmetic rather than take the number on faith.
+	Runs int `json:"runs"`
+	// Invalid is the number of bytes that were not valid UTF-8. A tokenizer still has
+	// to emit something for them, and an input that is mostly invalid is a different
+	// shape of input from prose, so the count is reported rather than folded in.
+	Invalid int `json:"invalid"`
+	// Whitespace is counted separately because it is not ratio'd: in this tokenizer
+	// family it attaches to a neighbouring token rather than becoming one. Reporting it
+	// is what lets a reader see why an input's estimate is lower than its byte count
+	// suggests.
+	Whitespace int `json:"whitespace"`
+}
+
+// TraceFilter selects spans to query.
+type TraceFilter struct {
+	// Trace narrows to one request. Empty means any.
+	Trace TraceID
+	// Kind narrows to one span kind. Empty means any.
+	Kind SpanKind
+	// PID narrows to one module. Zero means any.
+	PID PID
+	// Abandoned, when true, returns only spans the kernel closed at teardown. This
+	// is the query that finds modules that leak work.
+	Abandoned bool
+	// MinNanos returns only spans at least this long, for finding slow stages.
+	MinNanos int64
+	// Limit caps the result, newest first.
+	Limit int
+}
+
+// ProcSnapshot is an immutable copy of a process table row, safe to hand out.
+// Callers get this rather than *ProcRecord so no one outside the table can
+// mutate a live audit row.
+type ProcSnapshot struct {
+	PID            PID       `json:"pid"`
+	UID            UID       `json:"uid"`
+	Domain         Domain    `json:"domain"`
+	Name           string    `json:"name"`
+	PPID           PID       `json:"ppid"`
+	Created        time.Time `json:"created"`
+	Artifact       string    `json:"artifact,omitempty"`
+	ManifestDigest string    `json:"manifest_digest,omitempty"`
+	State          ProcState `json:"state"`
+	Terminated     time.Time `json:"terminated,omitempty"`
+}
+
+// SignalInfo is what a handler receives. From and FromDomain are the sender as the
+// kernel knows it, not as the sender describes itself.
+type SignalInfo struct {
+	// Kind is the signal.
+	Kind SignalKind `json:"kind"`
+	// From is the sender's pid.
+	From PID `json:"from"`
+	// FromDomain is the sender's domain.
+	FromDomain Domain `json:"from_domain"`
+	// SentAt is a mono() reading taken when the kernel accepted the signal.
+	SentAt int64 `json:"sent_at"`
+}
+
+// SlashFilter selects ledger records. Zero values mean no constraint on that field.
+type SlashFilter struct {
+	Kind    SlashKind
+	NodeID  string
+	Verdict SlashVerdict
+	// Since returns only records filed at or after this Mono() reading.
+	Since int64
+	Limit int
+}
+
+// SlashProof is one accusation. The reporter supplies the receipts and the kind of
+// claim; everything else - whether the receipts verify, whether they actually
+// contradict, who is accused - is recomputed by the kernel.
+//
+// That division is the control. A reporter that could set the verdict would be writing
+// its own evidence, and a reporter that could name the accused node without supplying a
+// receipt signed by it could accuse anyone.
+type SlashProof struct {
+	// Kind is the claim. It must be one of the closed set.
+	Kind SlashKind `json:"kind"`
+	// NodeID is the node being accused. Every receipt in the proof must carry this
+	// node id, and every receipt's signature must verify, so the accusation cannot
+	// be pointed at a node that signed nothing here.
+	NodeID string `json:"node_id"`
+	// Receipts are the evidence. At least one is required, and for equivocation
+	// exactly two are compared.
+	Receipts []Receipt `json:"receipts"`
+	// Note is an optional operator-readable statement from the reporter. It is
+	// length-bounded and line-break-free because it is copied into audit fields.
+	Note string `json:"note,omitempty"`
+}
+
+// SlashRecord is one case in the ledger.
+type SlashRecord struct {
+	ID      SlashID      `json:"id"`
+	Kind    SlashKind    `json:"kind"`
+	NodeID  string       `json:"node_id"`
+	Verdict SlashVerdict `json:"verdict"`
+	// Reporters are the pids that filed this proof, in the order they arrived. It is
+	// a list rather than a single pid because two independent reporters filing the
+	// same evidence is materially stronger than one, and collapsing them would throw
+	// that away.
+	Reporters []PID `json:"reporters"`
+	// FiledMono and DecidedMono are monotonic readings.
+	FiledMono   int64 `json:"filed_mono"`
+	DecidedMono int64 `json:"decided_mono,omitempty"`
+	// Finding is the kernel's conclusion, present once decided.
+	Finding SlashFinding `json:"finding"`
+	// Note echoes the first reporter's note, for an operator reading the ledger.
+	Note string `json:"note,omitempty"`
+}
+
+// TokenCheck is the result of comparing one report against one measurement. It is a
+// value rather than an error because the comparison succeeding is the normal case and
+// a disagreement is a finding, not a failure.
+type TokenCheck struct {
+	Measurement TokenMeasurement `json:"measurement"`
+	Reported    int64            `json:"reported"`
+	Verdict     TokenVerdict     `json:"verdict"`
+	// Reason says which rule produced the verdict. It is populated for every verdict
+	// including TokenConsistent, because "consistent" without a reason is a number a
+	// reader has to re-derive to trust.
+	Reason string `json:"reason"`
+}
+
+// TTYWindow is one bounded read of console history.
+//
+// Base and Dropped exist because `since` cannot be a stable cursor. Console retention is
+// bounded and drops the oldest record, so an index into history shifts whenever the
+// buffer trims. A caller that treated `since` as "resume from line N" would silently skip
+// or repeat lines after a trim and never know. Base is the index the first returned
+// record occupied, and Dropped is the console's total eviction count, so a caller can
+// detect that records were lost between two reads rather than assuming continuity it does
+// not have.
+type TTYWindow struct {
+	// Base is the index into the console's history at the time of this read that the
+	// first record in Records occupied.
+	Base int `json:"base"`
+	// Records are copies of the console lines, oldest first.
+	Records []Record `json:"records"`
+	// Dropped is how many console records have been evicted in total.
+	Dropped int64 `json:"dropped"`
+}
+
+// Record is one kernel console line. It is always emitted as a single JSON
+// object so that faults stay greppable and machine-readable.
+type Record struct {
+	Time   time.Time      `json:"time"`
+	Level  Level          `json:"level"`
+	Pid    PID            `json:"pid"`
+	Domain Domain         `json:"domain,omitempty"`
+	Msg    string         `json:"msg"`
+	Fields map[string]any `json:"fields,omitempty"`
+}
+
+// SlashFinding is what the kernel concluded. It is separate from the proof because the
+// proof is the accusation and the finding is the decision, and conflating them is how a
+// reporter's characterization ends up being read as a verdict.
+type SlashFinding struct {
+	// Kind echoes the claim that was decided.
+	Kind SlashKind `json:"kind"`
+	// Established is true when the recomputation confirmed the claim.
+	Established bool `json:"established"`
+	// Reason explains the conclusion either way. An unproven finding carries the
+	// reason it failed, which is what tells an operator whether the accusation was
+	// wrong or merely unsupported.
+	Reason string `json:"reason"`
+	// Digests names the receipts the decision rests on, so a dispute can be
+	// re-examined without the original proof object.
+	Digests []string `json:"digests,omitempty"`
+	// MissingSeqs lists the sequence numbers a gap finding proved were issued. Empty
+	// for every other kind.
+	MissingSeqs []int64 `json:"missing_seqs,omitempty"`
+}
+
+// SlashVerdict is the state of one filed proof.
+type SlashVerdict string
+
+const (
+	// SlashPending is a proof that has been filed and not yet decided.
+	SlashPending SlashVerdict = "pending"
+	// SlashConfirmed means the kernel recomputed the claim from the receipts and it
+	// holds. This is the verdict an operator acts on.
+	SlashConfirmed SlashVerdict = "confirmed"
+	// SlashUnproven means the claim did not hold. It is NOT a statement that the
+	// accused node is honest: the receipts may have been insufficient, or the
+	// reporter may have mischaracterized them.
+	SlashUnproven SlashVerdict = "unproven"
+)
+
+// SlashStats are the ledger counters.
+//
+// Refused is a single counter for every kind of refusal, on the same reasoning
+// keyring.go gives for making an out-of-scope alias and an unknown alias
+// indistinguishable: a reporter that could tell which of its proofs were rejected for
+// shape and which for duplication could probe the ledger's contents.
+type SlashStats struct {
+	Pending   int   `json:"pending"`
+	Confirmed int64 `json:"confirmed"`
+	Unproven  int64 `json:"unproven"`
+	Filed     int64 `json:"filed"`
+	// Corroborated counts proofs a second reporter added itself to.
+	Corroborated  int64 `json:"corroborated"`
+	Refused       int64 `json:"refused"`
+	Records       int   `json:"records"`
+	RecordEvicted int64 `json:"record_evicted"`
+	MaxRecords    int   `json:"max_records"`
+}
+
+// Error spells the refusal the way the kernel console does, so a message a module
+// logs matches the one an operator greps for.
+func (e *SignalQueueError) Error() string {
+	return fmt.Sprintf("kernel: signal queue for pid %d is full (%d pending)", e.Target, e.Max)
 }

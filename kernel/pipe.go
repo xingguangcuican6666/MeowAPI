@@ -324,22 +324,9 @@ func (p *pipe) abortStream() {
 	postEventToPid(EventPipeReadable, owner, owner, name)
 }
 
-// PipeInfo describes an open pipe for the dump. It reports byte counts, never
-// content, because a pipe carries prompts and completions.
-type PipeInfo struct {
-	FD       FD     `json:"fd"`
-	Name     string `json:"name"`
-	Owner    PID    `json:"owner"`
-	Peer     PID    `json:"peer"`
-	Cap      int    `json:"capacity"`
-	Buffered int    `json:"buffered"`
-	Queued   int    `json:"queued"`
-	Written  int64  `json:"written"`
-	Read     int64  `json:"read"`
-	Dropped  int64  `json:"dropped"`
-	Closed   bool   `json:"closed"`
-	Aborted  bool   `json:"aborted"`
-}
+// PipeInfo is abi.PipeInfo: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type PipeInfo = abi.PipeInfo
 
 func (p *pipe) info(fd FD) PipeInfo {
 	p.mu.Lock()
@@ -497,21 +484,9 @@ func lessPipeInfo(a, b PipeInfo) bool {
 	return a.FD < b.FD
 }
 
-// SyscallPipe is the pipe half of the syscall surface.
-type SyscallPipe interface {
-	// SyscallOpenPipe creates a pipe and returns the owner's handle. Requires
-	// pipe:open. Capacity is clamped to the kernel maximum.
-	SyscallOpenPipe(name string, capacity int, mode PipeMode) (FD, error)
-	// SyscallPipeWrite enqueues one chunk, always as a copy. Requires pipe:write.
-	SyscallPipeWrite(fd FD, data []byte, deadline int64) (int, error)
-	// SyscallPipeRead dequeues one chunk, always as a copy. Requires pipe:read.
-	SyscallPipeRead(fd FD, deadline int64) ([]byte, error)
-	// SyscallPipeAbort signals the stream to stop, for a client disconnect.
-	// Requires pipe:write. Latching: once aborted, a pipe stays aborted.
-	SyscallPipeAbort(fd FD) error
-	// SyscallPipeInfo describes a pipe this context owns, without its content.
-	SyscallPipeInfo(fd FD) (PipeInfo, error)
-}
+// SyscallPipe is abi.SyscallPipe. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallPipe = abi.SyscallPipe
 
 // OpenPipe creates a pipe owned by ctx. The returned handle is valid only in ctx's
 // table, which is what makes it untransferable.

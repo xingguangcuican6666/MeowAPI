@@ -46,16 +46,9 @@ const (
 	LogFault = abi.LogFault
 )
 
-// Record is one kernel console line. It is always emitted as a single JSON
-// object so that faults stay greppable and machine-readable.
-type Record struct {
-	Time   time.Time      `json:"time"`
-	Level  Level          `json:"level"`
-	Pid    PID            `json:"pid"`
-	Domain Domain         `json:"domain,omitempty"`
-	Msg    string         `json:"msg"`
-	Fields map[string]any `json:"fields,omitempty"`
-}
+// Record is abi.Record: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type Record = abi.Record
 
 // Console is the kernel UART. It is the only output channel the kernel itself
 // owns; modules write to it through the log:write operation, never directly.
@@ -303,13 +296,9 @@ func fault(ctx *sContext, msg string, fields map[string]any) {
 	kconsole.Emit(LogFault, pid, dom, msg, fields)
 }
 
-// SyscallLog is the console half of the syscall surface.
-type SyscallLog interface {
-	// SyscallLog writes to the kernel console. Requires log:write. A context
-	// outside the kernel and init domains may not emit fault records, because
-	// the fault stream is the kernel's own audit trail.
-	SyscallLog(level Level, msg string) error
-}
+// SyscallLog is abi.SyscallLog. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallLog = abi.SyscallLog
 
 func (c *sContext) SyscallLog(level Level, msg string) error {
 	if err := c.syscall(OpLogWrite); err != nil {

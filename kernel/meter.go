@@ -79,8 +79,6 @@ type RequestID = abi.RequestID
 // kernel, so the shape lives in the package the module compiles against.
 type MeterRecord = abi.MeterRecord
 
-// ElapsedNanos is the request's duration on the kernel clock.
-
 // openRequest is the mutable kernel record behind a live request id.
 type openRequest struct {
 	closedFlag
@@ -456,26 +454,9 @@ func MeterMarkSettled(ctx SContext, id RequestID) error {
 	return fmt.Errorf("%w: %q", ErrRequestNotFound, id)
 }
 
-// SyscallMeter is the request-metering half of the syscall surface. usage.go's
-// SyscallMeter group covers the pid totals; this one covers the per-request view.
-// Both are named SyscallMeter* by prefix, and the two groups are distinct interfaces
-// so a subsystem can be wired without editing the other's file.
-type SyscallRequest interface {
-	// SyscallMeterOpen starts metering one request and returns the kernel-assigned
-	// id. Requires meter:record.
-	SyscallMeterOpen(trace TraceID, route string) (RequestID, error)
-	// SyscallMeterAdd records a validated usage fact against an open request this
-	// context owns. Requires meter:record.
-	SyscallMeterAdd(id RequestID, f UsageFact) error
-	// SyscallMeterClose finishes a request and returns its record. Requires
-	// meter:record.
-	SyscallMeterClose(id RequestID, status int) (MeterRecord, error)
-	// SyscallMeterGet reads one record by id. Requires meter:read.
-	SyscallMeterGet(id RequestID) (MeterRecord, error)
-	// SyscallMeterQuery returns retained records matching a filter, newest first.
-	// Requires meter:read.
-	SyscallMeterQuery(f MeterFilter) []MeterRecord
-}
+// SyscallRequest is abi.SyscallRequest. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallRequest = abi.SyscallRequest
 
 func (c *sContext) SyscallMeterOpen(trace TraceID, route string) (RequestID, error) {
 	return MeterOpen(c, trace, route)

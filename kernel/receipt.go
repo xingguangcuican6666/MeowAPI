@@ -557,26 +557,18 @@ func boundElapsed(elapsed int64) (int64, error) {
 	return elapsed, nil
 }
 
-// receiptPayload is the canonical encoding, and it is the only thing the signature
-// covers. Two nodes must produce byte-identical payloads for the same receipt or
-// every cross-node comparison fails, so the encoding is fixed here in one function
-// and never derived from a map.
-//
-// Each field is written as a netstring-style length prefix, name and value. The
-// lengths are what make the encoding unambiguous: with bare separators, a receipt
-// with trace "a" and route "b|c" would encode identically to one with trace "a|b"
-// and route "c", and a forger could re-split fields across a boundary without
-// breaking the signature. Length prefixing removes that class of forgery outright.
-
 // ReceiptPayload returns the canonical signed encoding of a receipt. It is exported
 // so a peer implementation in another language can be checked against this kernel's
 // own bytes, which is the only way to find an encoding disagreement before it costs
 // a settlement dispute.
+//
+// The encoding itself is abi.ReceiptPayload, because it is part of the wire contract
+// and a module holding a receipt has to be able to recompute what the signature
+// covers. The netstring-style length prefixes are what make it unambiguous: with
+// bare separators, a receipt with trace "a" and route "b|c" would encode identically
+// to one with trace "a|b" and route "c", and a forger could re-split fields across a
+// boundary without breaking the signature.
 func ReceiptPayload(r Receipt) []byte { return receiptPayload(r) }
-
-// Digest returns the sha256 hex digest of the canonical payload. It is the receipt's
-// short identifier: it goes in audit entries, in a fraud proof and in a log line,
-// and two nodes that agree on it agree on every signed field.
 
 // DecodeReceipt parses a receipt from its wire encoding. It does not verify it; a
 // caller must pass the result to ReceiptVerify. Parsing and verifying are separate

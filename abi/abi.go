@@ -45,8 +45,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 //     what a module sees, and moving them here would make this package a dumping
 //     ground instead of a contract.
 //
-// What must appear here: every type in a module's signature, every constant it
-// has to name, and every method it has to call. TestABIIsClosed walks the package
-// to check the first of those, and the kernel's build breaks if the second is
-// missing.
+// What must appear here: every type in a module's signature, every constant it has
+// to name, and every method it has to call. The kernel's build is the check on the
+// first two - a name missing here is an undefined identifier there, since the kernel
+// aliases every type it uses rather than declaring its own. tests/abi covers the
+// properties the compiler cannot see: that nothing here imports anything but the
+// standard library, that nothing here reaches into the kernel, and that a name
+// declared here is aliased in the kernel rather than re-declared beside it with a
+// body that could drift from this one.
 package abi

@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sort"
 	"sync"
 )
@@ -131,17 +132,9 @@ func QosPolicyFor(kind string) (QosPolicy, bool) {
 	return p, ok
 }
 
-// QosDecision is the result of an admission attempt.
-type QosDecision struct {
-	// Admitted is whether the request may proceed.
-	Admitted bool
-	// RetryAfterMillis is how long the caller should wait before the bucket can
-	// serve this request. Zero when admitted. It is computed from the deficit and
-	// the refill rate, not guessed, so a client that honors it is not punished.
-	RetryAfterMillis int64
-	// Reason names the ceiling that refused, for logs and for the response body.
-	Reason string
-}
+// QosDecision is abi.QosDecision: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type QosDecision = abi.QosDecision
 
 // scale is the fixed-point factor. Thousandths of a token gives sub-request
 // resolution at a rate of one request per minute without floats.
@@ -287,13 +280,9 @@ func millisForDeficit(deficit, perMinute int64) int64 {
 	return ms
 }
 
-// SyscallQos is the admission half of the syscall surface.
-type SyscallQos interface {
-	// SyscallQosAdmit asks whether a request may proceed, costing the given number
-	// of tokens. Requires qos:admit. The time is read from the kernel clock, never
-	// from the caller.
-	SyscallQosAdmit(cost int64) (QosDecision, error)
-}
+// SyscallQos is abi.SyscallQos. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallQos = abi.SyscallQos
 
 // QosAdmit checks admission for a context. The key is derived from the context's
 // uid and domain, both kernel-allocated, so a module cannot pick a key that has a

@@ -95,81 +95,21 @@ const (
 	SchedPending   = abi.SchedPending
 )
 
-// SchedFunc is work a module asks the kernel to run.
-//
-// The context handed to it is the caller's own, so the job inherits the caller's
-// pid, uid, domain and manifest grants. Every syscall it makes is decided against
-// the same ceiling as one made from OnLoad: moving work onto a kernel goroutine
-// buys a deadline and attribution, and buys no privilege.
-//
-// done is closed when the run's deadline expires, when the module closes the
-// handle, when the module is signalled to stop, or when the kernel resets. A
-// well-behaved job selects on it and returns promptly. A job that ignores it is
-// not stopped - see the file header - but the run is then recorded as timed out,
-// kwatchdog captures its stack, and the module is put forward for termination.
-type SchedFunc func(ctx SContext, done <-chan struct{})
+// SchedFunc is abi.SchedFunc: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type SchedFunc = abi.SchedFunc
 
-// SchedJob is one request for supervised execution.
-type SchedJob struct {
-	// Label names the run in the console, in the audit record and in a watchdog
-	// event. It is a diagnostic string chosen by the module and is never
-	// interpreted by the kernel, so it is length-bounded rather than trusted.
-	Label string
-	// TimeoutMillis bounds this run. Zero or negative means the sealed ceiling.
-	// A value above the ceiling is clamped down: a module may ask for less time
-	// than the trust root allows and may never ask for more, because a timeout
-	// the timed-out party chooses is not a timeout.
-	TimeoutMillis int64
-	// Fn is the work. Nil is refused rather than scheduled.
-	Fn SchedFunc
-}
+// SchedJob is abi.SchedJob: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type SchedJob = abi.SchedJob
 
-// TimerSpec is one request for a deferred callback.
-//
-// Timers are single-shot on purpose. A periodic timer is a way to keep creating
-// work forever from one declaration, and the reviewable artifact - the manifest -
-// would say nothing about the rate. A module that needs a period re-arms from
-// inside the callback, which puts every period through the same ceiling, the same
-// quota and the same accounting as the first one.
-type TimerSpec struct {
-	// Label names the timer in diagnostics.
-	Label string
-	// DelayMillis is how long to wait before firing. The fire time is a mono()
-	// reading, so a wall-clock step - NTP, an operator changing the date, a VM
-	// migration - cannot move a timer armed here. The runtime timer underneath is
-	// only the wakeup mechanism.
-	DelayMillis int64
-	// Fn runs under the same supervision as a spawned job: the caller's context,
-	// the ceiling timeout, panic recovery, watchdog registration.
-	Fn SchedFunc
-}
+// TimerSpec is abi.TimerSpec: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type TimerSpec = abi.TimerSpec
 
-// SchedOutcome is what the kernel recorded about one run. It is always a copy:
-// handing out the live record would let a module rewrite the evidence of its own
-// timeout.
-type SchedOutcome struct {
-	// ID is the kernel-allocated run id, unique within a boot.
-	ID int64 `json:"id"`
-	// Label is the module's own diagnostic string.
-	Label string `json:"label,omitempty"`
-	// Kind is "job" or "timer".
-	Kind string `json:"kind"`
-	// State is the terminal state, or SchedRunning / SchedPending while live.
-	State SchedState `json:"state"`
-	// Detail explains a non-completed state: the panic value, "deadline
-	// expired", "handle closed", "module terminated".
-	Detail string `json:"detail,omitempty"`
-	// StartedAt and ElapsedNanos are mono() readings taken by the kernel around
-	// the module's function, so a module cannot report a duration shorter than
-	// the one it actually occupied.
-	StartedAt    int64 `json:"started_at,omitempty"`
-	ElapsedNanos int64 `json:"elapsed_nanos,omitempty"`
-	// Deadline is the mono() value at which the run was required to stop.
-	Deadline int64 `json:"deadline,omitempty"`
-	// Stack is a snapshot of the offending goroutine when the run timed out, was
-	// abandoned or panicked. It is empty on a clean completion.
-	Stack string `json:"stack,omitempty"`
-}
+// SchedOutcome is abi.SchedOutcome: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type SchedOutcome = abi.SchedOutcome
 
 // SchedLimitError reports a supervised-execution request refused by a ceiling. It
 // is a distinct type so a caller can tell "you asked for too much" from "the
@@ -933,17 +873,6 @@ func resetSched() {
 	schedSeq.Store(0)
 }
 
-// SyscallSched is the supervised-execution half of the syscall surface.
-type SyscallSched interface {
-	// SyscallSchedSpawn asks the kernel to run a function under the caller's own
-	// context, a deadline clamped to the sealed ceiling, and panic recovery, and
-	// returns a handle to the run. Requires sched:spawn.
-	SyscallSchedSpawn(job SchedJob) (FD, error)
-	// SyscallSchedTimer arms a single-shot callback after a delay measured on
-	// mono(). Requires sched:timer. Closing the returned handle cancels it.
-	SyscallSchedTimer(spec TimerSpec) (FD, error)
-	// SyscallSchedWait blocks until a run reaches a terminal state and returns a
-	// copy of its outcome. Requires no operation, and the handle resolves only
-	// inside the caller's own pid.
-	SyscallSchedWait(fd FD) (SchedOutcome, error)
-}
+// SyscallSched is abi.SyscallSched. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallSched = abi.SyscallSched

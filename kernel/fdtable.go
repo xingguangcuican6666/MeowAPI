@@ -270,16 +270,9 @@ type closedFlag struct{ v atomic.Bool }
 func (c *closedFlag) mark() bool { return !c.v.Swap(true) }
 func (c *closedFlag) done() bool { return c.v.Load() }
 
-// SyscallFD is the handle half of the syscall surface.
-type SyscallFD interface {
-	// SyscallClose releases a handle this context opened. Handles are per pid,
-	// so a handle belonging to another module does not resolve here. Requires no
-	// operation: closing what you opened is not a capability.
-	SyscallClose(fd FD) error
-	// SyscallFDs lists this context's open handles, for a module diagnosing its
-	// own leaks. Requires no operation, and never exposes another pid's table.
-	SyscallFDs() []FDInfo
-}
+// SyscallFD is abi.SyscallFD. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallFD = abi.SyscallFD
 
 func (c *sContext) SyscallClose(fd FD) error {
 	if err := c.syscall(""); err != nil {

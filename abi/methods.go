@@ -26,6 +26,7 @@ func (v TokenVerdict) String() string {
 	}
 }
 
+// ElapsedNanos is the request's duration on the kernel clock.
 func (r MeterRecord) ElapsedNanos() int64 {
 	if r.Closed <= r.Opened {
 		return 0
@@ -33,6 +34,7 @@ func (r MeterRecord) ElapsedNanos() int64 {
 	return r.Closed - r.Opened
 }
 
+// ElapsedNanos is the span's duration on the kernel clock.
 func (s Span) ElapsedNanos() int64 {
 	if s.End <= s.Start {
 		return 0

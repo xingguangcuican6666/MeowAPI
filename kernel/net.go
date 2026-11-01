@@ -1524,29 +1524,9 @@ func resetNet() {
 // ---------------------------------------------------------------------------
 // Syscall surface.
 
-// SyscallNet is the module-facing half of this subsystem. Every method is a thin wrapper
-// over the corresponding package function, which does the policy check first.
-type SyscallNet interface {
-	// SyscallNetDial opens one outbound connection. Requires net:dial, a host inside the
-	// manifest's AllowedHosts, and a resolved address the deployment permits.
-	SyscallNetDial(spec NetSpec) (NetDialResult, error)
-	// SyscallNetWrite sends bytes over an open socket under a mandatory deadline.
-	SyscallNetWrite(fd FD, data []byte) (int, error)
-	// SyscallNetRead receives bytes under a mandatory deadline and a kernel ceiling.
-	SyscallNetRead(fd FD, limit int) ([]byte, error)
-	// SyscallNetRelease returns a socket to the pool instead of closing it.
-	SyscallNetRelease(fd FD) error
-	// SyscallNetClose closes a socket without pooling it.
-	SyscallNetClose(fd FD) error
-	// SyscallNetListen binds the declared listen address. Requires net:listen.
-	SyscallNetListen(address string) (FD, error)
-	// SyscallNetAccept takes one inbound connection under a mandatory deadline.
-	SyscallNetAccept(fd FD) (FD, error)
-	// SyscallNetCloseListener closes a listener.
-	SyscallNetCloseListener(fd FD) error
-	// SyscallNetSockets lists this module's open sockets.
-	SyscallNetSockets() []NetInfo
-}
+// SyscallNet is abi.SyscallNet. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallNet = abi.SyscallNet
 
 func (c *sContext) SyscallNetDial(spec NetSpec) (NetDialResult, error) { return NetDial(c, spec) }
 

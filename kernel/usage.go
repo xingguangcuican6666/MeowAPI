@@ -55,15 +55,9 @@ func UsageKinds() []UsageKind {
 	return []UsageKind{UsageTokensIn, UsageTokensOut, UsageRequests}
 }
 
-// UsageFact is one usage event reported by a module.
-type UsageFact struct {
-	Kind     UsageKind `json:"kind"`
-	Quantity int64     `json:"quantity"`
-	// Label is an optional module-defined tag for the event, such as a model
-	// name or a route. It is recorded for debugging and is never interpreted by
-	// the kernel. Bounded so a module cannot use it to grow kernel memory.
-	Label string `json:"label,omitempty"`
-}
+// UsageFact is abi.UsageFact: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type UsageFact = abi.UsageFact
 
 const maxUsageLabelLen = 128
 
@@ -192,14 +186,9 @@ func resetUsage() {
 	usageRejected = 0
 }
 
-// SyscallMeter is the accounting half of the syscall surface.
-type SyscallMeter interface {
-	// SyscallUsageEmit reports one usage fact. Requires usage:emit. The kernel
-	// validates the kind and quantity before recording anything; an unknown kind
-	// or an out-of-range quantity is refused rather than accumulated. The kernel
-	// counts quantities and never prices them.
-	SyscallUsageEmit(f UsageFact) error
-}
+// SyscallMeter is abi.SyscallMeter. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallMeter = abi.SyscallMeter
 
 func (c *sContext) SyscallUsageEmit(f UsageFact) error {
 	if err := c.syscall(OpUsageEmit); err != nil {

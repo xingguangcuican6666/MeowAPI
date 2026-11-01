@@ -439,24 +439,9 @@ func isDirRemovalError(err error) bool {
 	return strings.Contains(msg, "directory not empty") || strings.Contains(msg, "is a directory")
 }
 
-// SyscallFS is the module-facing half of this surface. Wiring it needs two lines:
-// SyscallFS in the SContext composition in context.go, and resetFS() in resetKernel()
-// next to resetFSScopes(). Until then the exported package-level functions above are
-// the surface, and they are what the tests call.
-type SyscallFS interface {
-	// SyscallFSRead reads one file. Requires fs:read, a configured data root, and a
-	// path inside the manifest's ReadPaths.
-	SyscallFSRead(rel string) ([]byte, error)
-	// SyscallFSWrite writes one file atomically. Requires fs:write and a path
-	// inside the manifest's WritePaths.
-	SyscallFSWrite(rel string, data []byte) error
-	// SyscallFSList lists a directory, sorted. Requires fs:read.
-	SyscallFSList(rel string) ([]string, error)
-	// SyscallFSStat reports size and directory flag. Requires fs:read.
-	SyscallFSStat(rel string) (FSInfo, error)
-	// SyscallFSDelete removes one file. Requires fs:write.
-	SyscallFSDelete(rel string) error
-}
+// SyscallFS is abi.SyscallFS. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallFS = abi.SyscallFS
 
 func (c *sContext) SyscallFSRead(rel string) ([]byte, error) {
 	return FSReadFile(c, rel)

@@ -136,14 +136,9 @@ func mono() int64 { return kclock.Mono() }
 // nowUTC is the package-level wall clock, for record timestamps only.
 func nowUTC() time.Time { return kclock.Now() }
 
-// SyscallClock is the time half of the syscall surface.
-type SyscallClock interface {
-	// SyscallNow returns kernel time. Mono is the only value a module may use to
-	// measure an interval or a deadline; Wall is for records a human reads.
-	// Requires no operation: a module that cannot read time cannot implement a
-	// timeout, and there is nothing to gain by granting a forged clock.
-	SyscallNow() KernelTime
-}
+// SyscallClock is abi.SyscallClock. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallClock = abi.SyscallClock
 
 func (c *sContext) SyscallNow() KernelTime {
 	return KernelTime{Mono: mono(), Wall: nowUTC()}

@@ -60,21 +60,9 @@ type ProcRecord struct {
 	Terminated     time.Time
 }
 
-// ProcSnapshot is an immutable copy of a process table row, safe to hand out.
-// Callers get this rather than *ProcRecord so no one outside the table can
-// mutate a live audit row.
-type ProcSnapshot struct {
-	PID            PID       `json:"pid"`
-	UID            UID       `json:"uid"`
-	Domain         Domain    `json:"domain"`
-	Name           string    `json:"name"`
-	PPID           PID       `json:"ppid"`
-	Created        time.Time `json:"created"`
-	Artifact       string    `json:"artifact,omitempty"`
-	ManifestDigest string    `json:"manifest_digest,omitempty"`
-	State          ProcState `json:"state"`
-	Terminated     time.Time `json:"terminated,omitempty"`
-}
+// ProcSnapshot is abi.ProcSnapshot: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type ProcSnapshot = abi.ProcSnapshot
 
 // contextManager owns pid and uid allocation and the append-only process table.
 // There is exactly one, held by the kernel singleton. It does not own the
@@ -245,12 +233,9 @@ func (m *contextManager) reset() {
 // silently no-op and leave the caller believing the kernel came up.
 var booted atomic.Bool
 
-// SyscallProc is the process half of the syscall surface.
-type SyscallProc interface {
-	// SyscallSpawn creates a child context. Requires process:fork, and the
-	// target domain must be permitted by the transition rule.
-	SyscallSpawn(dom Domain, name string) (SContext, error)
-}
+// SyscallProc is abi.SyscallProc. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallProc = abi.SyscallProc
 
 func (c *sContext) SyscallSpawn(dom Domain, name string) (SContext, error) {
 	if err := c.syscall(""); err != nil {

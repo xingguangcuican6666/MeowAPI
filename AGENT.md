@@ -39,9 +39,13 @@ this file records the substitute.
 
 ```
 main.go                      boot entry: kernel.Boot, report, Shutdown, -audit, -crash
+abi/                         the package a module compiles against. Types and constants
+                             only, standard library only, no kernel import - the kernel
+                             imports IT. See "The abi package" below.
 kernel/                      EL1 trust root. No business logic, standard library only.
   kernel.go                  package doc, the ABI version, the one reset path
-  context.go                 sealed SContext, identity, syscall groups, transition rule
+  context.go                 SContext alias, identity, the concrete *sContext that every
+                             entry point asserts to, transition rule
   policy.go                  Op set, domain rules, grant narrowing, check(), denials
   proc.go                    context manager, pid/uid allocation, process table
   metadata.go                per-owner kernel key-value store
@@ -83,6 +87,8 @@ kernel/                      EL1 trust root. No business logic, standard library
   console.go                 kernel console, retention, the canonical fault emitter
   dump.go                    read-only kernel state rendering
 tests/                       external test suites, one package per architectural layer
+  abi/                       the abi package's own two properties: standard library
+                             only, and nothing that duplicates a kernel decision
   harness/                   the shared fixtures: boot, console sink, probe modules
   identity/                  context, policy, manifest, proc, boot, bootconfig
   lifecycle/                 module load/unload, the usage ABI
@@ -135,7 +141,7 @@ something the kernel learned during the boot or something it was told before it,
 | File | Subsystem | Responsibility | prototype counterpart (not in this repo) |
 | --- | --- | --- | --- |
 | `kernel/kernel.go` | - | package doc, `KernelAPI`, `resetKernel`, the one reset path | none |
-| `kernel/context.go` | core | sealed `SContext`, identity, the syscall group composition, the spawn transition rule | `scontext.java` |
+| `kernel/context.go` | core | `SContext` alias, identity, `contextOf` and the concrete `*sContext` every entry point resolves to, the spawn transition rule | `scontext.java` |
 | `kernel/policy.go` | - | the `Op` set, domain rules, manifest grant narrowing, `check()`, `DeniedError` | `policy.java` |
 | `kernel/proc.go` | - | context manager, pid/uid allocation, the append-only process table | `scm.java`, `smap.java` |
 | `kernel/metadata.go` | - | per-owner-pid kernel key-value store | `kmetadata.java` |
@@ -176,6 +182,45 @@ something the kernel learned during the boot or something it was told before it,
 | `kernel/bootconfig.go` | kboot | the sealed trust root, cluster roots, resource ceilings | none |
 | `kernel/console.go` | - | kernel console: JSON/text, level filter, retention, fault emitter | `console.java` |
 | `kernel/dump.go` | - | read-only kernel state rendering for debugging | none |
+
+### The abi package
+
+`abi` exists because of how Go plugins fail. A plugin is compiled against the exact
+source of every package it imports, and `plugin.Open` refuses a `.so` whose
+dependency has changed with "plugin was built with a different version of package".
+Measured: adding one unexported function to an imported package is enough to
+invalidate every plugin built against the previous source.
+
+The kernel is the package every module would otherwise import, and it is the one
+package that changes constantly. So a module imports `abi` instead, and the kernel
+imports `abi` and aliases its types (`type PID = abi.PID`). Rewriting a kernel
+subsystem then invalidates nothing. `KernelAPI` in `abi/types.go` moves only when
+something in `abi` breaks compatibility, and a manifest's range is checked against
+it at load.
+
+Three rules keep this package from becoming a copy of the kernel:
+
+- Nothing the kernel enforces. The policy table, the grant sets and the domain
+  rules stay in `kernel/policy.go`. A rule in a package a module compiles against
+  is a rule a module can read and reason about.
+- Nothing with kernel state behind it. A type here is data or a declaration. If it
+  has behaviour beyond pure computation over its own fields, the behaviour stays
+  in the kernel and takes the data as an argument.
+- No unexported helpers that kernel code happens to share. They are not part of
+  what a module sees, and moving them here makes the package a dumping ground
+  rather than a contract.
+
+What must be here: every type in a module's signature, every constant it must
+name, and every method it must call. `tests/abi` globs `abi/*.go` and fails if any
+of it imports outside the standard library, or if a file here imports the kernel.
+The compiler covers the second direction - a missing name breaks the kernel's
+build, not a test.
+
+The migration left two API changes worth knowing. `Manifest.Validate` is now
+`kernel.ValidateManifest(*Manifest)`, and the receipt's canonical encoding is
+`abi.ReceiptPayload` with `kernel.ReceiptDigest` wrapping it, because Go forbids
+methods on a type declared in another package and `Receipt` has to exist in `abi`
+for a module to decode one.
 
 ### What each subsystem must guarantee
 
@@ -332,9 +377,16 @@ every policy check.
 
 In Go the context MUST stay opaque, and it is:
 
-- `SContext` is an interface with an unexported `sealed()` method, so no type
-  outside `package kernel` can implement it. A module cannot forge a context and
-  present it to a kernel entry point.
+- `SContext` is declared in `package abi`, and the kernel is the only package
+  holding the type that satisfies it. Every entry point resolves its argument
+  with a type assertion against the kernel's unexported `*sContext` (through
+  `contextOf`, which also refuses a typed nil), so a context a module builds
+  never resolves and is refused as foreign. The interface carried an unexported
+  `sealed()` method until the type moved to `abi`, where it cannot: a method on an
+  unexported type in another package cannot be promoted into `kernel`, and an
+  exported embeddable seal can be satisfied by embedding it, which is no seal at
+  all. The assertion was always the gate; the method only made that fact less
+  visible.
 - The implementing struct is unexported and its fields are unreachable, so a
   module cannot read or mutate an identity.
 - There is no exported constructor and no kernel entry point that takes a
@@ -461,9 +513,10 @@ import _ "github.com/meowapi/plugins/diag"   // registers, runs nothing
 Security does not come from address-space isolation. It comes from three things
 that hold in-process:
 
-- **`SContext` is sealed.** It is an interface with an unexported method, so no
-  type outside `package kernel` can implement it. A module cannot forge a
-  context or present someone else's to a kernel entry point.
+- **`SContext` cannot be forged into a usable one.** Every entry point asserts
+  its argument to the kernel's unexported `*sContext`. A module can implement
+  the interface - it is a public type in `abi` - and such a value is refused as
+  foreign the moment it reaches a syscall.
 - **The context is bound to the module.** A module gets its own context in
   `OnLoad` and there is no parameter anywhere that accepts a context, so there
   is no call shape in which a module can act as another.
@@ -720,6 +773,7 @@ introduces a new layer adds a package and a line in the file map.
 | `tests/tokenizer` | whether a module's reported usage is true | `tokenizer` |
 | `tests/kpanic` | what survives the way out | `panic` |
 | `tests/security` | the invariants that must never regress | `kernel` |
+| `tests/abi` | what a module is allowed to see | `abi` |
 
 Seven files stay in `kernel/` rather than moving, and the reason is a property worth
 keeping: `kernel/export_test.go` is `package kernel` and exposes package-private

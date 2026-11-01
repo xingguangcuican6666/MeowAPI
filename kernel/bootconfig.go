@@ -345,19 +345,9 @@ func (b *bootConfig) reset() {
 	b.limits = BootLimits{}
 }
 
-// SyscallBoot is the trust-root half of the syscall surface. Every method is a
-// read; there is no write, because there is nothing to write to after sealing.
-type SyscallBoot interface {
-	// SyscallBootGet reads one sealed trust root entry. It never returns key
-	// material.
-	SyscallBootGet(key string) (string, bool)
-	// SyscallBootAll returns the whole trust root, sorted by key.
-	SyscallBootAll() []BootConfigValue
-	// SyscallBootLimits returns the effective resource ceilings.
-	SyscallBootLimits() BootLimits
-	// SyscallBootDigest returns the hash of the sealed trust root.
-	SyscallBootDigest() string
-}
+// SyscallBoot is abi.SyscallBoot. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallBoot = abi.SyscallBoot
 
 func (c *sContext) SyscallBootGet(key string) (string, bool) { return BootGet(key) }
 func (c *sContext) SyscallBootAll() []BootConfigValue        { return BootAll() }

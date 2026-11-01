@@ -20,7 +20,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 package kernel
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/xingguangcuican6666/MeowAPI/abi"
+)
 
 // metadataKey scopes a metadata entry to its owner. Entries owned by pid 0 are
 // kernel-published and readable by any context holding metadata:read; entries
@@ -117,15 +121,9 @@ func (s *metadataStore) reset() {
 	s.entries = make(map[metadataKey]any)
 }
 
-// SyscallMeta is the metadata half of the syscall surface.
-type SyscallMeta interface {
-	// SyscallMetadataGet reads a key. Requires metadata:read. A module sees its
-	// own entries and kernel-published ones, never another module's.
-	SyscallMetadataGet(key string) (any, error)
-	// SyscallMetadataSet writes a key. Requires metadata:write, which no module
-	// domain holds.
-	SyscallMetadataSet(key string, value any) error
-}
+// SyscallMeta is abi.SyscallMeta. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallMeta = abi.SyscallMeta
 
 func (c *sContext) SyscallMetadataGet(key string) (any, error) {
 	if err := c.syscall(OpMetadataRead); err != nil {

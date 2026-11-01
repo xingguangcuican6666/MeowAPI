@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"path"
 	"path/filepath"
 	"sort"
@@ -992,22 +993,9 @@ func resetSeccomp() {
 // ---------------------------------------------------------------------------
 // Syscall surface.
 
-// SyscallSeccomp is the module-facing half, and it is one method.
-//
-// A module may learn that it is filtered and nothing more. The contents are withheld for
-// the same reason SeccompSnapshotFor refuses a self-read: a module that can read its filter
-// knows exactly what it is restricted from, and a module that can modify it makes the
-// subsystem a formality. Knowing that a filter exists is useful - a module can shed load or
-// report its own confinement - so the boolean is granted and the rules are not.
-//
-// There is no Op for this in policy.go and none is needed: the answer is about the caller's
-// own pid and reveals nothing about anybody else, so the liveness check c.syscall("")
-// performs is the whole of the gate.
-type SyscallSeccomp interface {
-	// SyscallSeccompFiltered reports whether an instance filter is installed on the
-	// caller's own pid.
-	SyscallSeccompFiltered() (bool, error)
-}
+// SyscallSeccomp is abi.SyscallSeccomp. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallSeccomp = abi.SyscallSeccomp
 
 func (c *sContext) SyscallSeccompFiltered() (bool, error) {
 	if err := c.syscall(""); err != nil {

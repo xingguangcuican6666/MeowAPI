@@ -26,10 +26,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // The ABI a module author programs against is three things:
 //
 //   - Module: the lifecycle contract, OnLoad and OnUnload.
-//   - SContext: the sealed handle a module receives in OnLoad, and the only way
-//     to reach a syscall. It cannot be forged or borrowed.
+//   - SContext: the handle a module receives in OnLoad, and the only way to
+//     reach a syscall. A value a module builds cannot be presented to one: every
+//     entry point resolves its argument to the kernel's own unexported type and
+//     refuses anything else.
 //   - Manifest: the declaration of what a module needs, validated before any
 //     module code runs and enforced at every call.
+//
+// SContext and Manifest, and every type in their signatures, are declared in the
+// abi package rather than here, so that a kernel-internal change does not
+// invalidate every .so built against a previous version. Kernel type names are
+// aliases of the abi ones.
 //
 // The kernel provides no business behavior. It does not route, does not talk to
 // a provider, does not price anything and does not hold a secret. It defines the
@@ -39,7 +46,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // # File map
 //
 //	kernel.go      this document, the ABI version, and the one reset path
-//	context.go     PID/UID/Domain, the sealed SContext, syscall entry points
+//	context.go     the concrete context type, the liveness gate, syscall entry points
 //	policy.go      operations, domain rules, grant narrowing, check(), denials
 //	proc.go        pid/uid allocation and the append-only process table
 //	metadata.go    the per-owner kernel key-value store

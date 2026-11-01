@@ -251,13 +251,9 @@ func CPUDenied() int64 {
 	return kcpu.denied
 }
 
-// SyscallCPU is the accounting half of the syscall surface.
-type SyscallCPU interface {
-	// SyscallCPUStat returns this context's own accounting. Requires cputime:read.
-	// A module cannot read another pid's accounting, because one module's burn rate
-	// is another module's information leak.
-	SyscallCPUStat() (CPUStat, error)
-}
+// SyscallCPU is abi.SyscallCPU. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallCPU = abi.SyscallCPU
 
 func (c *sContext) SyscallCPUStat() (CPUStat, error) {
 	if err := c.syscall(OpCPUTimeRead); err != nil {

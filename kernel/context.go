@@ -63,73 +63,18 @@ const (
 	firstPluginUID UID = 1000
 )
 
-// SContext is the only view of a security context that leaves package kernel,
-// and the only way for a module to reach a syscall.
-//
-// It is sealed: the unexported sealed method means no type outside this package
-// can implement it, so a module cannot forge a context and present it to a
-// kernel entry point. The implementing struct is unexported and its fields are
-// unreachable, so a module cannot read or mutate an identity. No kernel entry
-// point takes a context as a parameter besides these methods, so there is no
-// call shape in which a module acts as another.
-//
-// This is the Go substitute for the prototype's StackWalker caller check. Java
-// needed runtime stack inspection because every class shares one classloader
-// namespace; here package visibility gives a stronger guarantee at compile time.
-// Do not port the stack walk as the primary control.
-//
-// The syscall surface is composed of per-subsystem groups, each declared in the
-// file that implements it. A new subsystem adds its own group interface and its
-// own methods on *sContext, and lists the group here; it does not rewrite this
-// file. Keeping the groups separate is what lets two subsystems be written at
-// once without either touching the other's code, and it makes the syscall surface
-// of any one subsystem readable in one place.
-type SContext interface {
-	// Identity is what a module may learn about itself.
-	Identity
-
-	// Every group below is declared in the file of the subsystem it serves, so a
-	// new subsystem adds its own group and its own methods without rewriting this
-	// file. Keeping them separate is what lets two subsystems be written at once.
-	SyscallClock
-	SyscallMeta
-	SyscallLog
-	SyscallAudit
-	SyscallProc
-	SyscallMeter
-	SyscallFD
-	SyscallBoot
-
-	SyscallLimit
-	SyscallQos
-	SyscallCPU
-	SyscallPipe
-	SyscallShm
-	SyscallKV
-	SyscallCrypto
-	SyscallKeyring
-	SyscallReceipt
-	SyscallSched
-	SyscallSignal
-	SyscallLock
-	SyscallEvent
-	SyscallTrace
-	SyscallRoute
-	SyscallFS
-	SyscallNet
-	SyscallPeer
-	SyscallRequest
-	SyscallTokenizer
-	SyscallSeccomp
-	SyscallSlashing
-	SyscallTTY
-
-	sealed()
-}
+// SContext is abi.SContext. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SContext = abi.SContext
 
 // Identity is abi.Identity: a module passes it to or receives it from the
 // kernel, so the shape lives in the package the module compiles against.
 type Identity = abi.Identity
+
+// sContext is the kernel-private implementation of SContext. The assertion is
+// compile-time on purpose: a group added to abi.SContext without its methods here
+// then breaks the kernel's own build, rather than a module author's.
+var _ SContext = (*sContext)(nil)
 
 // sContext is the kernel-private implementation of SContext.
 type sContext struct {
@@ -148,9 +93,11 @@ type sContext struct {
 var errRetired = errors.New("kernel: context retired")
 
 // errForeignContext is returned when something that is not a kernel-issued context
-// reaches an internal entry point. Because SContext is sealed, no module can
-// produce one; this guards the host process and future internal callers, and it
-// fails closed rather than assuming the caller is legitimate.
+// reaches an internal entry point. abi.SContext is an interface any type can be
+// declared to satisfy, so a module CAN hand the kernel a value that passes the
+// static check; what it cannot do is make that value the kernel's own *sContext.
+// The assertion below is the gate, it fails closed, and it is why moving the
+// interface out of this package was not a weakening.
 var errForeignContext = errors.New("kernel: context was not issued by this kernel")
 
 // contextOf resolves an SContext to the kernel's own implementation, refusing a foreign type
@@ -184,7 +131,6 @@ func (c *sContext) PID() PID       { return c.pid }
 func (c *sContext) UID() UID       { return c.uid }
 func (c *sContext) Domain() Domain { return c.dom }
 func (c *sContext) Name() string   { return c.name }
-func (c *sContext) sealed()        {}
 
 // retire withdraws the context. Idempotent.
 func (c *sContext) retire() { c.retired.Store(true) }
@@ -264,30 +210,9 @@ func canSpawnInto(parent, child Domain) bool {
 	return false
 }
 
-// SyscallCrypto is the primitives half of the syscall surface. Key material does
-// not cross this boundary in either direction: a module asks for a signature and
-// receives the signature, never the key.
-type SyscallCrypto interface {
-	// SyscallCryptoRandom returns n cryptographically secure random bytes from
-	// crypto/rand. Requires crypto:random.
-	SyscallCryptoRandom(n int) ([]byte, error)
-	// SyscallCryptoRandomHex returns n random bytes as 2n lowercase hex
-	// characters, for tokens and nonces. Requires crypto:random.
-	SyscallCryptoRandomHex(n int) (string, error)
-	// SyscallCryptoHash digests data with a kernel-approved algorithm and returns
-	// the hex digest. Requires crypto:hash.
-	SyscallCryptoHash(algo HashAlgo, data []byte) (string, error)
-	// SyscallCryptoSign signs msg with this node's key and returns only the
-	// signature. Requires crypto:sign, which no module domain holds.
-	SyscallCryptoSign(msg []byte) (Signature, error)
-	// SyscallCryptoVerify checks a signature against one named verification key
-	// and reports only the verdict. Requires crypto:verify.
-	SyscallCryptoVerify(key string, msg, sig []byte) (bool, error)
-	// SyscallCryptoVerifyCluster checks a signature against the sealed cluster
-	// roots and reports the verdict with the matching key id. Requires
-	// crypto:verify.
-	SyscallCryptoVerifyCluster(msg, sig []byte) (bool, string, error)
-}
+// SyscallCrypto is abi.SyscallCrypto. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallCrypto = abi.SyscallCrypto
 
 func (c *sContext) SyscallCryptoRandom(n int) ([]byte, error) { return CryptoRandom(c, n) }
 func (c *sContext) SyscallCryptoRandomHex(n int) (string, error) {
@@ -304,24 +229,9 @@ func (c *sContext) SyscallCryptoVerifyCluster(msg, sig []byte) (bool, string, er
 	return CryptoVerifyCluster(c, msg, sig)
 }
 
-// SyscallKeyring is the secret-custody half of the syscall surface. No method here
-// hands a plaintext credential to a module: the module names an alias and an action,
-// the kernel applies the secret and returns the result.
-type SyscallKeyring interface {
-	// SyscallSecretAliases lists the aliases visible to this context, narrowed to
-	// the secret prefixes the manifest declared. Requires secret:use.
-	SyscallSecretAliases() ([]string, error)
-	// SyscallSecretUse applies a custodied secret on this context's behalf and
-	// returns only the result. Requires secret:use, scoped by prefix.
-	SyscallSecretUse(alias string, action SecretAction, data []byte) (SecretResult, error)
-	// SyscallSecretRead returns a plaintext credential. Requires secret:read,
-	// which no module domain holds.
-	SyscallSecretRead(alias string) ([]byte, error)
-	// SyscallSecretRegister takes custody of a credential. Requires secret:read.
-	SyscallSecretRegister(spec SecretSpec) error
-	// SyscallSecretRevoke destroys a custodied credential. Requires secret:read.
-	SyscallSecretRevoke(alias string) error
-}
+// SyscallKeyring is abi.SyscallKeyring. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallKeyring = abi.SyscallKeyring
 
 func (c *sContext) SyscallSecretAliases() ([]string, error) { return SecretAliases(c) }
 func (c *sContext) SyscallSecretUse(alias string, action SecretAction, data []byte) (SecretResult, error) {
@@ -333,20 +243,9 @@ func (c *sContext) SyscallSecretRegister(spec SecretSpec) error {
 }
 func (c *sContext) SyscallSecretRevoke(alias string) error { return SecretRevoke(c, alias) }
 
-// SyscallReceipt is the settlement half of the syscall surface. A module may verify
-// any receipt and take custody of one; only a context holding receipt:issue may mint
-// one, and no module domain does.
-type SyscallReceipt interface {
-	// SyscallReceiptIssue mints and signs one settlement receipt. Requires
-	// receipt:issue, which is held by the kernel domain alone.
-	SyscallReceiptIssue(spec ReceiptSpec) (Receipt, error)
-	// SyscallReceiptVerify recomputes a receipt's canonical encoding and checks
-	// its signature against the sealed cluster roots. Requires receipt:verify.
-	SyscallReceiptVerify(r Receipt) (ReceiptVerdict, error)
-	// SyscallReceiptOpen verifies a receipt and returns a per-pid handle to the
-	// verdict. Requires receipt:verify.
-	SyscallReceiptOpen(r Receipt) (FD, ReceiptVerdict, error)
-}
+// SyscallReceipt is abi.SyscallReceipt. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallReceipt = abi.SyscallReceipt
 
 func (c *sContext) SyscallReceiptIssue(spec ReceiptSpec) (Receipt, error) {
 	return ReceiptIssue(c, spec)
@@ -358,21 +257,9 @@ func (c *sContext) SyscallReceiptOpen(r Receipt) (FD, ReceiptVerdict, error) {
 	return ReceiptOpen(c, r)
 }
 
-// SyscallKV is the namespaced-state half of the syscall surface. Keys are scoped by
-// owner pid, so one module cannot read or write another's state.
-type SyscallKV interface {
-	// SyscallKVGet reads one value from this module's namespace. Requires
-	// kv:read. The returned slice is a copy the caller owns.
-	SyscallKVGet(key string) ([]byte, error)
-	// SyscallKVPut stores one value in this module's namespace. Requires
-	// kv:write. The value is copied in, and a write over the per-module ceiling
-	// is refused with a *KVQuotaError.
-	SyscallKVPut(key string, value []byte) error
-	// SyscallKVDelete removes one key. Requires kv:write.
-	SyscallKVDelete(key string) error
-	// SyscallKVKeys lists this module's own keys, sorted. Requires kv:read.
-	SyscallKVKeys() ([]string, error)
-}
+// SyscallKV is abi.SyscallKV. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallKV = abi.SyscallKV
 
 func (c *sContext) SyscallKVGet(key string) ([]byte, error) { return KVGet(c, key) }
 func (c *sContext) SyscallKVPut(key string, value []byte) error {
@@ -381,35 +268,9 @@ func (c *sContext) SyscallKVPut(key string, value []byte) error {
 func (c *sContext) SyscallKVDelete(key string) error { return KVDelete(c, key) }
 func (c *sContext) SyscallKVKeys() ([]string, error) { return KVKeys(c) }
 
-// SyscallShm is the shared-buffer half of the syscall surface. The kernel owns the
-// bytes and never hands out the underlying slice on either side, so there is no call
-// shape in which a reader obtains a writable alias into a prompt in flight.
-type SyscallShm interface {
-	// SyscallShmAlloc allocates a shared buffer and returns a descriptor for it.
-	// Requires shm:alloc. The payload is written through SyscallShmWrite and
-	// never handed back as a slice.
-	SyscallShmAlloc(size int, label string) (ShmDescriptor, error)
-	// SyscallShmWrite copies bytes into a segment this context owns. Requires
-	// shm:alloc, and refuses a sealed segment.
-	SyscallShmWrite(fd FD, offset int, p []byte) (int, error)
-	// SyscallShmRead copies bytes out of a segment this context owns or was
-	// granted. Requires shm:map.
-	SyscallShmRead(fd FD, offset int, dst []byte) (int, error)
-	// SyscallShmBytes returns a fresh copy of a segment's whole payload. Requires
-	// shm:map.
-	SyscallShmBytes(fd FD) ([]byte, error)
-	// SyscallShmSize reports a segment's payload size. Requires shm:map.
-	SyscallShmSize(fd FD) (int, error)
-	// SyscallShmGrant authorises one peer to map a segment, and seals it. Requires
-	// shm:alloc.
-	SyscallShmGrant(fd FD, peer PID) error
-	// SyscallShmMap maps a granted segment read-only. Requires shm:map and a grant
-	// from the owner.
-	SyscallShmMap(id SHMID, label string) (ShmMapping, error)
-	// SyscallShmSeal makes this context's own segment immutable without granting
-	// it. Requires shm:alloc.
-	SyscallShmSeal(fd FD) error
-}
+// SyscallShm is abi.SyscallShm. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallShm = abi.SyscallShm
 
 func (c *sContext) SyscallShmAlloc(size int, label string) (ShmDescriptor, error) {
 	return ShmAlloc(c, size, label)

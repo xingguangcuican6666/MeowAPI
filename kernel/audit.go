@@ -365,15 +365,9 @@ func validAuditKind(k AuditKind) bool {
 	return false
 }
 
-// SyscallAudit is the audit half of the syscall surface.
-type SyscallAudit interface {
-	// SyscallAuditRead queries the audit chain. Requires audit:read.
-	SyscallAuditRead(f AuditFilter) ([]AuditEntry, error)
-	// SyscallAuditAppend attaches a note to a request trace. Requires
-	// audit:append, which the plugin domain does not hold by default, and
-	// kernel-only kinds are refused even to a holder.
-	SyscallAuditAppend(kind AuditKind, trace, msg string, fields map[string]any) (AuditEntry, error)
-}
+// SyscallAudit is abi.SyscallAudit. The kernel keeps the alias
+// so it can still write the concrete methods on its own context type.
+type SyscallAudit = abi.SyscallAudit
 
 func (c *sContext) SyscallAuditRead(f AuditFilter) ([]AuditEntry, error) {
 	if err := c.syscall(OpAuditRead); err != nil {
