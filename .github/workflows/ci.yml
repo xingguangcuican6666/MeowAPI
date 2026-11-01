@@ -162,9 +162,13 @@ jobs:
           set +e
           # The package list is explicit rather than ./... because the gate has to
           # name what it counts: a new top-level package that is not listed here has
-          # its tests silently excluded from the floor. That is exactly what happened
-          # when abi/ was added - its two tests were green under `go test ./...` and
-          # invisible to this step, so the floor and the census disagreed by two.
+          # its tests silently excluded from the floor. That is what happened when
+          # abi/ was added - its tests were green under `go test ./...` and invisible
+          # to this step, so the floor and the census disagreed by two.
+          #
+          # ./abi/ stays in the list although its tests moved to tests/abi/ with the
+          # rest of the suite: a package with no test files still reports here, and if
+          # a test is ever added beside the source it is counted rather than missed.
           go test -json -count=1 ./abi/ ./kernel/ ./tests/... ./internal/... ./tools/... \
             > /tmp/suite.json 2> /tmp/suite.err
           gotest_status=$?

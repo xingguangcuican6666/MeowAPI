@@ -18,7 +18,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-package abi_test
+package abi
 
 import (
 	"go/parser"
@@ -37,7 +37,7 @@ import (
 // a third-party dependency either: the moment it does, every plugin inherits that
 // version constraint and a dependency bump invalidates every .so.
 func TestABIImportsNothingButTheStandardLibrary(t *testing.T) {
-	files, err := filepath.Glob("*.go")
+	files, err := filepath.Glob("../../abi/*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestABIImportsNothingButTheStandardLibrary(t *testing.T) {
 // error, but the interesting failure is silent: someone adds a field to an abi type
 // whose value only the kernel can produce, and the type stops being data.
 func TestABIIsTheKernelsUpstream(t *testing.T) {
-	files, _ := filepath.Glob("*.go")
+	files, _ := filepath.Glob("../../abi/*.go")
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
 			continue

@@ -164,6 +164,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"net"
 	"path"
 	"slices"
@@ -179,30 +180,15 @@ import (
 // encoding it did not read.
 const VerifierBindingVersion = 1
 
-// VerifierPolicy is the load-time appraisal posture for module manifests.
-//
-// The set is closed. There is deliberately no auto mode as a selectable
-// value: a posture that silently followed the key list at call time would let
-// a change to that list move enforcement without anyone deciding to. The
-// derivation from the trust root happens only when the host has chosen
-// nothing, and VerifierPolicyExplicit reports which case is in force.
-type VerifierPolicy string
+// VerifierPolicy is abi.VerifierPolicy: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type VerifierPolicy = abi.VerifierPolicy
 
 const (
-	// VerifierOff performs no appraisal. Every manifest is admitted, the
-	// ledger is not written and nothing is audited, because off means the
-	// operator asked for silence and a record of not checking is noise on the
-	// chain.
-	VerifierOff VerifierPolicy = "off"
-	// VerifierAudit admits every manifest and records the outcome of every
-	// appraisal on the audit chain and in the ledger, with a fault for each
-	// signature that is absent or invalid. It is how an operator gathers the
-	// evidence that enforce will not refuse a legitimate module before turning
-	// enforce on.
-	VerifierAudit VerifierPolicy = "audit"
-	// VerifierEnforce refuses a module whose manifest has no valid signature
-	// from a trusted cluster root key, before any module code runs.
-	VerifierEnforce VerifierPolicy = "enforce"
+	VerifierOff     = abi.VerifierOff
+	VerifierAudit   = abi.VerifierAudit
+	VerifierEnforce = abi.VerifierEnforce
 )
 
 // verifierPolicies is the closed set, in increasing strictness. The order is
@@ -979,54 +965,21 @@ func verifierTrustedKeyID(keyID string) bool {
 // vouching for these too, and they deserve to see them listed rather than
 // discover them in production.
 
-// VerifierFindingCode names one class of advisory finding. The set is closed so a
-// reviewer can enumerate it and so tooling matches on the class rather than on
-// message text.
-type VerifierFindingCode string
+// VerifierFindingCode is abi.VerifierFindingCode: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type VerifierFindingCode = abi.VerifierFindingCode
 
 const (
-	// VerifierFindingUnreachableOp: the manifest requests a scoped operation that
-	// Validate passes through but no module domain holds, so every call would
-	// be denied. Validate refuses this for unscoped operations and skips the
-	// ceiling check for scoped ones, which is the gap this finding covers.
-	VerifierFindingUnreachableOp VerifierFindingCode = "unreachable-op"
-	// VerifierFindingDeadScope: a scope field is populated but the manifest does not
-	// request the operation it bounds. The declaration never takes effect,
-	// which means the manifest was edited without review or a request was
-	// removed without removing its boundary.
-	VerifierFindingDeadScope VerifierFindingCode = "dead-scope"
-	// VerifierFindingMissingScope: a scoped operation is requested with no boundary
-	// declared where Validate does not require one. The module loads and every
-	// scoped call is then refused, which reads as a kernel bug rather than as
-	// an incomplete declaration.
-	VerifierFindingMissingScope VerifierFindingCode = "missing-scope"
-	// VerifierFindingWeakScope: one declared scope subsumes another, so the broader entry
-	// governs and the narrower one is decoration. None of these are invalid;
-	// all of them are where a widened declaration hides.
-	VerifierFindingWeakScope VerifierFindingCode = "weak-scope"
-	// VerifierFindingPrivateHost: an allowed host is a numeric address in
-	// loopback, private, link-local, multicast, unspecified or documentation
-	// space. validateHost refuses loopback by name only, so a numeric 127.0.0.1
-	// clears validation; this layer parses addresses, which validation does not.
-	VerifierFindingPrivateHost VerifierFindingCode = "private-host"
-	// VerifierFindingPathForm: a declared path does not survive cleaning unchanged, or
-	// two spellings clean onto one grant. Both are legal; both are how a grant
-	// reads narrower in review than it behaves.
-	VerifierFindingPathForm VerifierFindingCode = "path-form"
-	// VerifierFindingRouteForm: one declared serve route nests with another, so a
-	// prefix-dispatching caller resolves one through the other. Routes are the
-	// surface other modules call, and a shadow-prone declaration is a review
-	// item even when it is valid.
-	VerifierFindingRouteForm VerifierFindingCode = "route-form"
-	// VerifierFindingListenForm: a listen address that does not parse as host:port, leaves
-	// the port to the stack, or binds every interface. Validate requires only
-	// that it be non-empty.
-	VerifierFindingListenForm VerifierFindingCode = "listen-form"
-	// VerifierFindingIdentityForm: an identity string carrying characters with special
-	// meaning in the console, the audit log or the digest pipeline. Validate
-	// bounds the name's separators and never reads the version, and a version
-	// containing a newline writes a second log line when it is printed.
-	VerifierFindingIdentityForm VerifierFindingCode = "identity-form"
+	VerifierFindingUnreachableOp = abi.VerifierFindingUnreachableOp
+	VerifierFindingDeadScope     = abi.VerifierFindingDeadScope
+	VerifierFindingMissingScope  = abi.VerifierFindingMissingScope
+	VerifierFindingWeakScope     = abi.VerifierFindingWeakScope
+	VerifierFindingPrivateHost   = abi.VerifierFindingPrivateHost
+	VerifierFindingPathForm      = abi.VerifierFindingPathForm
+	VerifierFindingRouteForm     = abi.VerifierFindingRouteForm
+	VerifierFindingListenForm    = abi.VerifierFindingListenForm
+	VerifierFindingIdentityForm  = abi.VerifierFindingIdentityForm
 )
 
 // VerifierFindingCodes lists the finding classes, for a reviewer building a

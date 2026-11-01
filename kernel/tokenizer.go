@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sort"
 	"sync"
 	"unicode"
@@ -157,34 +158,16 @@ const (
 // an operator to ignore the classification.
 const tokenSuspiciousMultiple = 2
 
-// TokenVerdict is the kernel's opinion about one reported quantity.
-type TokenVerdict int
+// TokenVerdict is abi.TokenVerdict: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type TokenVerdict = abi.TokenVerdict
 
 const (
-	// TokenConsistent means the report is within tolerance of the measurement.
-	TokenConsistent TokenVerdict = iota
-	// TokenSuspicious means the report differs from the measurement by more than the
-	// tolerance allows but is still arithmetically possible. It is a signal to look
-	// at, not proof of anything.
-	TokenSuspicious
-	// TokenImpossible means the report cannot be produced by an honest tokenizer:
-	// below the structural floor, above the absurd ceiling, or not positive.
-	TokenImpossible
+	TokenConsistent = abi.TokenConsistent
+	TokenSuspicious = abi.TokenSuspicious
+	TokenImpossible = abi.TokenImpossible
 )
-
-// String renders a verdict for the console and the audit chain.
-func (v TokenVerdict) String() string {
-	switch v {
-	case TokenConsistent:
-		return "consistent"
-	case TokenSuspicious:
-		return "suspicious"
-	case TokenImpossible:
-		return "impossible"
-	default:
-		return fmt.Sprintf("verdict(%d)", int(v))
-	}
-}
 
 // TokenCheck is the result of comparing one report against one measurement. It is a
 // value rather than an error because the comparison succeeding is the normal case and

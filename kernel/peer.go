@@ -103,6 +103,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sort"
 	"strconv"
 	"strings"
@@ -150,20 +151,20 @@ import (
 // layout would be signing off on a record it did not read.
 const PeerVersion = 1
 
-// PeerFrameKind names what a frame carries. The set is closed and an unknown kind is
-// refused rather than defaulted, because a default branch is where an unspecified
-// frame becomes an accepted one - the specific hole usage.go exists to close.
-type PeerFrameKind string
+// PeerFrameKind is abi.PeerFrameKind: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type PeerFrameKind = abi.PeerFrameKind
 
 const (
-	PeerFrameHandshake      PeerFrameKind = "handshake"
-	PeerFrameHandshakeReply PeerFrameKind = "handshake-reply"
-	PeerFrameProbe          PeerFrameKind = "probe"
-	PeerFrameProbeReply     PeerFrameKind = "probe-reply"
-	PeerFrameAnnounce       PeerFrameKind = "announce"
-	PeerFrameForward        PeerFrameKind = "forward"
-	PeerFrameForwardReply   PeerFrameKind = "forward-reply"
-	PeerFrameGoodbye        PeerFrameKind = "goodbye"
+	PeerFrameHandshake      = abi.PeerFrameHandshake
+	PeerFrameHandshakeReply = abi.PeerFrameHandshakeReply
+	PeerFrameProbe          = abi.PeerFrameProbe
+	PeerFrameProbeReply     = abi.PeerFrameProbeReply
+	PeerFrameAnnounce       = abi.PeerFrameAnnounce
+	PeerFrameForward        = abi.PeerFrameForward
+	PeerFrameForwardReply   = abi.PeerFrameForwardReply
+	PeerFrameGoodbye        = abi.PeerFrameGoodbye
 )
 
 // PeerFrameKinds lists the frame kinds the kernel accepts, sorted.

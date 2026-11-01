@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sort"
 	"sync"
 )
@@ -69,8 +70,10 @@ const (
 	maxMeterLabelLen = 256
 )
 
-// RequestID identifies one billable request. The kernel assigns it.
-type RequestID string
+// RequestID is abi.RequestID: a module has to be able to name it, so
+// it lives in the package the module compiles against (see abi/abi.go). The
+// alias means this file and a module hold the same type, not two.
+type RequestID = abi.RequestID
 
 // MeterRecord is one request's facts. Every field is an observation.
 type MeterRecord struct {

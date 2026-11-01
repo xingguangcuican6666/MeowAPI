@@ -103,6 +103,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sort"
 	"strconv"
 	"sync"
@@ -163,31 +164,20 @@ import (
 // node is honest. And it is not an address-space control, for the same reason every
 // other subsystem here is not one.
 
-// SlashID identifies one filed proof. It is the digest of the proof's canonical
-// encoding, so two reporters filing identical evidence converge on one case rather than
-// opening two.
-type SlashID string
+// SlashID is abi.SlashID: a module has to be able to name it, so
+// it lives in the package the module compiles against (see abi/abi.go). The
+// alias means this file and a module hold the same type, not two.
+type SlashID = abi.SlashID
 
-// SlashKind names what a proof claims. The set is closed and an unknown kind is
-// refused rather than defaulted, because a default branch is where an unspecified
-// accusation becomes an accepted one.
-type SlashKind string
+// SlashKind is abi.SlashKind: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type SlashKind = abi.SlashKind
 
 const (
-	// SlashEquivocation claims two receipts from one node under one sequence number
-	// that disagree. This is the strongest finding: both signatures are valid, so
-	// nothing but comparing them reveals the contradiction.
-	SlashEquivocation SlashKind = "equivocation"
-	// SlashSequenceGap claims a node's sequence has a hole. The honest limit is part
-	// of the definition: a gap proves the missing receipt was ISSUED, because
-	// issuance is gap-free under one lock. It does not prove dishonest withholding
-	// rather than loss in transit, so this kind is recorded as weaker evidence than
-	// equivocation and an operator should weight it accordingly.
-	SlashSequenceGap SlashKind = "sequence-gap"
-	// SlashEmptyContent claims a receipt settles prompt tokens against a prompt whose
-	// hash is the digest of empty input. The contradiction is internal to one signed
-	// receipt, which is what makes it checkable without any cross-node state.
-	SlashEmptyContent SlashKind = "empty-content"
+	SlashEquivocation = abi.SlashEquivocation
+	SlashSequenceGap  = abi.SlashSequenceGap
+	SlashEmptyContent = abi.SlashEmptyContent
 )
 
 // SlashKinds lists the claim kinds the kernel will adjudicate, sorted.

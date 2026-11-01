@@ -72,33 +72,22 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// SignalKind is one of the four things the kernel can say to a module. The set is
-// closed: an unnamed kind is refused rather than delivered as a generic event,
-// because a handler cannot act on a meaning it cannot read.
-type SignalKind string
+// SignalKind is abi.SignalKind: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type SignalKind = abi.SignalKind
 
 const (
-	// SignalReload asks a module to re-read its configuration. The analogue is
-	// SIGHUP. Default action: none, recorded.
-	SignalReload SignalKind = "reload"
-	// SignalDrain asks a module to stop accepting new work and finish what is in
-	// flight. The analogue is SIGTERM. Default action: terminate, because a
-	// module that ignores drain and never exits makes unload unsafe.
-	SignalDrain SignalKind = "drain"
-	// SignalKill asks a module to stop now. The analogue is SIGKILL. Default
-	// action: terminate. There is no way to ignore it: the kernel performs the
-	// teardown itself.
-	SignalKill SignalKind = "kill"
-	// SignalAbort reports that the client behind some in-flight work went away.
-	// It cancels the module's supervised runs so a stream stops being produced
-	// for a reader that is gone. Default action: cancel in-flight work, do not
-	// terminate.
-	SignalAbort SignalKind = "abort"
+	SignalReload = abi.SignalReload
+	SignalDrain  = abi.SignalDrain
+	SignalKill   = abi.SignalKill
+	SignalAbort  = abi.SignalAbort
 )
 
 // SignalKinds lists the kinds the kernel delivers, for diagnostics and tests.

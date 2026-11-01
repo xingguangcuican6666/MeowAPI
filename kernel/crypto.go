@@ -97,6 +97,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"hash"
 	"strings"
 	"sync"
@@ -171,18 +172,15 @@ func cryptoLimit(format string, a ...any) error {
 	return &CryptoError{Msg: fmt.Sprintf(format, a...), Err: ErrCryptoLimit}
 }
 
-// HashAlgo names a digest algorithm the kernel will apply. The set is closed and an
-// unknown algorithm is refused rather than defaulted, because a default branch is
-// where a downgrade to a weaker digest would hide.
-type HashAlgo string
+// HashAlgo is abi.HashAlgo: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type HashAlgo = abi.HashAlgo
 
 const (
-	// HashSHA256 is the digest for hashes that cross a node boundary.
-	HashSHA256 HashAlgo = "sha256"
-	// HashSHA384 exists for callers whose protocol fixes it.
-	HashSHA384 HashAlgo = "sha384"
-	// HashSHA512 exists for callers whose protocol fixes it.
-	HashSHA512 HashAlgo = "sha512"
+	HashSHA256 = abi.HashSHA256
+	HashSHA384 = abi.HashSHA384
+	HashSHA512 = abi.HashSHA512
 )
 
 // HashAlgos lists the digest algorithms the kernel accepts.

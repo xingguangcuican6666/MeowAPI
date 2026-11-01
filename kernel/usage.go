@@ -22,27 +22,19 @@ package kernel
 
 import (
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sync"
 )
 
-// UsageKind names a quantity the kernel counts. The kernel counts quantities;
-// it never prices them. Pricing, rating, tiering and settlement belong to
-// modules, which is why no kind here carries a unit price, a ratio or a
-// discount, and why UsageFact has no such field. The absence is the control.
-//
-// The set is closed on purpose. An unknown kind is rejected rather than
-// accumulated under a default branch: the upstream project this one forked from
-// let a plugin-supplied usage fact fall through an unbounded default case into
-// settlement, which turned a declaration into a billing multiplier.
-type UsageKind string
+// UsageKind is abi.UsageKind: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type UsageKind = abi.UsageKind
 
 const (
-	// UsageTokensIn counts prompt tokens consumed.
-	UsageTokensIn UsageKind = "tokens:in"
-	// UsageTokensOut counts completion tokens produced.
-	UsageTokensOut UsageKind = "tokens:out"
-	// UsageRequests counts completed requests.
-	UsageRequests UsageKind = "requests:count"
+	UsageTokensIn  = abi.UsageTokensIn
+	UsageTokensOut = abi.UsageTokensOut
+	UsageRequests  = abi.UsageRequests
 )
 
 // usageSpec bounds one kind. Ceiling is per event, not per module: a single

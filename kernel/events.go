@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -68,27 +69,20 @@ const (
 	maxEventNameLen = 128
 )
 
-// KernelEventName identifies a kind of thing that can happen. The set is closed and
-// declared here so a module cannot mint one.
-type KernelEventName string
+// KernelEventName is abi.KernelEventName: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type KernelEventName = abi.KernelEventName
 
 const (
-	// EventPipeReadable fires when a pipe this module reads from has data or ended.
-	EventPipeReadable KernelEventName = "pipe.readable"
-	// EventPeerDisconnected fires when a peer module was unloaded or terminated.
-	EventPeerDisconnected KernelEventName = "peer.disconnected"
-	// EventDeadlinePassed fires when a registered deadline expired unmet.
-	EventDeadlinePassed KernelEventName = "deadline.passed"
-	// EventJobFinished fires when a supervised run reached a terminal state.
-	EventJobFinished KernelEventName = "job.finished"
-	// EventStreamAborted fires when a stream this module serves was cancelled.
-	EventStreamAborted KernelEventName = "stream.aborted"
-	// EventSignalDelivered fires when a signal arrived for this pid.
-	EventSignalDelivered KernelEventName = "signal.delivered"
-	// EventDraining fires when this pid entered drain.
-	EventDraining KernelEventName = "draining"
-	// EventConfigReloaded fires when the kernel published new configuration.
-	EventConfigReloaded KernelEventName = "config.reloaded"
+	EventPipeReadable     = abi.EventPipeReadable
+	EventPeerDisconnected = abi.EventPeerDisconnected
+	EventDeadlinePassed   = abi.EventDeadlinePassed
+	EventJobFinished      = abi.EventJobFinished
+	EventStreamAborted    = abi.EventStreamAborted
+	EventSignalDelivered  = abi.EventSignalDelivered
+	EventDraining         = abi.EventDraining
+	EventConfigReloaded   = abi.EventConfigReloaded
 )
 
 // kernelEventNames is the closed set, used for validation.

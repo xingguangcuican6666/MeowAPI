@@ -113,6 +113,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sort"
 	"strings"
 	"sync"
@@ -145,23 +146,15 @@ import (
 // own environment or its own config file is outside this subsystem entirely. That is
 // a review and signing concern, not something a policy table can stop.
 
-// SecretAction names what the kernel should do with a custodied secret. The set is
-// closed; an unknown action is refused rather than defaulted, because a default
-// branch here would be a way to ask for "whatever returns the value".
-type SecretAction string
+// SecretAction is abi.SecretAction: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type SecretAction = abi.SecretAction
 
 const (
-	// SecretActionSign returns an HMAC-SHA256 over the supplied data, keyed with
-	// the secret. data must be non-empty.
-	SecretActionSign SecretAction = "sign"
-	// SecretActionMatch compares the supplied data against the secret in constant
-	// time and returns only the verdict. data must be non-empty.
-	SecretActionMatch SecretAction = "match"
-	// SecretActionHeader seals the rendered header value into a handle owned by the
-	// calling pid. data, when non-empty, is the destination host the value is bound
-	// to; the binding is recorded so the network layer can refuse to send a
-	// credential to a host it was not requested for.
-	SecretActionHeader SecretAction = "header"
+	SecretActionSign   = abi.SecretActionSign
+	SecretActionMatch  = abi.SecretActionMatch
+	SecretActionHeader = abi.SecretActionHeader
 )
 
 // SecretActions lists the actions the kernel will perform.

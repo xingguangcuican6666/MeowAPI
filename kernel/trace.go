@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sort"
 	"sync"
 )
@@ -75,32 +76,28 @@ const (
 	maxRetainedSpans = 8192
 )
 
-// TraceID identifies one request across every module that touched it.
-type TraceID string
+// TraceID is abi.TraceID: a module has to be able to name it, so
+// it lives in the package the module compiles against (see abi/abi.go). The
+// alias means this file and a module hold the same type, not two.
+type TraceID = abi.TraceID
 
-// SpanID identifies one stage inside a trace.
-type SpanID string
+// SpanID is abi.SpanID: a module has to be able to name it, so
+// it lives in the package the module compiles against (see abi/abi.go). The
+// alias means this file and a module hold the same type, not two.
+type SpanID = abi.SpanID
 
-// SpanKind names what a span measures. The set is closed so an operator's dashboard
-// can group by it without discovering new values in production.
-type SpanKind string
+// SpanKind is abi.SpanKind: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type SpanKind = abi.SpanKind
 
 const (
-	// SpanRequest is the whole request, opened by the entry module.
-	SpanRequest SpanKind = "request"
-	// SpanRoute is a dispatch through the kernel route table.
-	SpanRoute SpanKind = "route"
-	// SpanModule is time inside one module's own work.
-	SpanModule SpanKind = "module"
-	// SpanUpstream is time waiting on a provider or another node. This is the span
-	// that separates "our code is slow" from "the network is slow".
-	SpanUpstream SpanKind = "upstream"
-	// SpanTimeToFirstToken is the interval from request start to the first token
-	// of a streamed completion. It is its own kind rather than a generic span
-	// because it is the number a streaming gateway is judged on.
-	SpanTimeToFirstToken SpanKind = "ttft"
-	// SpanSettle is billing settlement.
-	SpanSettle SpanKind = "settle"
+	SpanRequest          = abi.SpanRequest
+	SpanRoute            = abi.SpanRoute
+	SpanModule           = abi.SpanModule
+	SpanUpstream         = abi.SpanUpstream
+	SpanTimeToFirstToken = abi.SpanTimeToFirstToken
+	SpanSettle           = abi.SpanSettle
 )
 
 // spanKinds is the closed set.

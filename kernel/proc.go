@@ -23,24 +23,21 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// ProcState is the lifecycle state of a process table record.
-type ProcState string
+// ProcState is abi.ProcState: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type ProcState = abi.ProcState
 
 const (
-	// ProcRunning is a live context.
-	ProcRunning ProcState = "running"
-	// ProcTerminated is a context that ran and stopped.
-	ProcTerminated ProcState = "terminated"
-	// ProcRejected is a context the kernel refused to run, for example a module
-	// whose manifest failed validation. It never becomes terminated: "the kernel
-	// refused this" and "this ran and stopped" are different facts, and an audit
-	// needs both.
-	ProcRejected ProcState = "rejected"
+	ProcRunning    = abi.ProcRunning
+	ProcTerminated = abi.ProcTerminated
+	ProcRejected   = abi.ProcRejected
 )
 
 // ProcRecord is one row of the process table. Records are appended and never

@@ -75,32 +75,24 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// SchedState is the state of a supervised run. The set is closed, because a state
-// the kernel cannot name is one an operator cannot later query.
-type SchedState string
+// SchedState is abi.SchedState: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type SchedState = abi.SchedState
 
 const (
-	// SchedRunning is a run the kernel has started and not finished.
-	SchedRunning SchedState = "running"
-	// SchedCompleted is a run whose function returned before any deadline.
-	SchedCompleted SchedState = "completed"
-	// SchedTimedOut is a run whose deadline expired and whose function did not
-	// return within the grace period. The kernel stopped waiting for it; the
-	// goroutine may still be running, which is the limit documented above.
-	SchedTimedOut SchedState = "timed_out"
-	// SchedPanicked is a run whose function panicked. The panic was recovered by
-	// the kernel, so it never reached the host process.
-	SchedPanicked SchedState = "panicked"
-	// SchedCancelled is a run the kernel asked to stop - handle closed, module
-	// signalled, kernel reset - that did not return in time.
-	SchedCancelled SchedState = "cancelled"
-	// SchedPending is an armed timer that has not fired.
-	SchedPending SchedState = "pending"
+	SchedRunning   = abi.SchedRunning
+	SchedCompleted = abi.SchedCompleted
+	SchedTimedOut  = abi.SchedTimedOut
+	SchedPanicked  = abi.SchedPanicked
+	SchedCancelled = abi.SchedCancelled
+	SchedPending   = abi.SchedPending
 )
 
 // SchedFunc is work a module asks the kernel to run.

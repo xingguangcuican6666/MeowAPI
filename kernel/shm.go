@@ -59,17 +59,15 @@ package kernel
 
 import (
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"strings"
 	"sync"
 )
 
-// SHMID names a shared segment kernel-wide. It is a name, not a capability: a
-// module that learns an id it was not granted gets nothing from it, because
-// ShmMap checks the owner's grant table rather than the caller's knowledge. That
-// is the difference from an FD, which is a capability inside its own pid's table.
-// Ids increase monotonically from 1 and are never reused within a boot, so a stale
-// id cannot address a live segment.
-type SHMID int64
+// SHMID is abi.SHMID: a module has to be able to name it, so
+// it lives in the package the module compiles against (see abi/abi.go). The
+// alias means this file and a module hold the same type, not two.
+type SHMID = abi.SHMID
 
 // ShmError reports a malformed shared-buffer request. Distinct type, same reason
 // as KVError: a caller must be able to tell a defect in its own call from a kernel

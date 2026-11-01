@@ -26,47 +26,33 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sync"
 )
 
-// AuditKind classifies an audit event. The set is closed: an unknown kind is
-// rejected rather than recorded as a generic event, because a classification the
-// kernel cannot name is one it cannot later query.
-type AuditKind string
+// AuditKind is abi.AuditKind: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type AuditKind = abi.AuditKind
 
 const (
-	// AuditBoot and AuditShutdown bracket one kernel lifetime.
-	AuditBoot     AuditKind = "boot"
-	AuditShutdown AuditKind = "shutdown"
-	// AuditSpawn and AuditExit are process birth and death.
-	AuditSpawn AuditKind = "spawn"
-	AuditExit  AuditKind = "exit"
-	// AuditDenial is an avc denial. Every denial in the kernel lands here.
-	AuditDenial AuditKind = "denial"
-	// AuditEscalation is any attempt to widen privilege: spawning into a more
-	// privileged domain, emitting a fault record, requesting a non-grantable
-	// operation.
-	AuditEscalation AuditKind = "escalation"
-	// AuditLoad, AuditUnload and AuditReject are module lifecycle events.
-	AuditLoad   AuditKind = "load"
-	AuditUnload AuditKind = "unload"
-	AuditReject AuditKind = "reject"
-	// AuditRequest brackets one client request, linking every event that carries
-	// its trace id.
-	AuditRequest AuditKind = "request"
-	// AuditUsage and AuditSettle are accounting events.
-	AuditUsage  AuditKind = "usage"
-	AuditSettle AuditKind = "settle"
-	// AuditSecret records the use of a credential. Never its value.
-	AuditSecret AuditKind = "secret"
-	// AuditPanic records an unrecovered fault in kernel or module code.
-	AuditPanic AuditKind = "panic"
-	// AuditPolicy records a policy-relevant kernel action such as publishing
-	// configuration or sealing the trust root.
-	AuditPolicy AuditKind = "policy"
-	// AuditPeer and AuditSlash record mesh events.
-	AuditPeer  AuditKind = "peer"
-	AuditSlash AuditKind = "slash"
+	AuditBoot       = abi.AuditBoot
+	AuditShutdown   = abi.AuditShutdown
+	AuditSpawn      = abi.AuditSpawn
+	AuditExit       = abi.AuditExit
+	AuditDenial     = abi.AuditDenial
+	AuditEscalation = abi.AuditEscalation
+	AuditLoad       = abi.AuditLoad
+	AuditUnload     = abi.AuditUnload
+	AuditReject     = abi.AuditReject
+	AuditRequest    = abi.AuditRequest
+	AuditUsage      = abi.AuditUsage
+	AuditSettle     = abi.AuditSettle
+	AuditSecret     = abi.AuditSecret
+	AuditPanic      = abi.AuditPanic
+	AuditPolicy     = abi.AuditPolicy
+	AuditPeer       = abi.AuditPeer
+	AuditSlash      = abi.AuditSlash
 )
 
 // AuditEntry is one link in the audit chain.

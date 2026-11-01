@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sync"
 	"time"
 )
@@ -50,18 +51,14 @@ var ErrPipeClosed = errors.New("kernel: pipe closed")
 // waits instead, up to the caller's deadline.
 var ErrPipeFull = errors.New("kernel: pipe buffer full")
 
-// PipeMode selects what a full buffer does.
-type PipeMode int
+// PipeMode is abi.PipeMode: a module has to be able to name these, so
+// they live in the package it compiles against (see abi/abi.go). The kernel
+// re-exports them so this file and a module spell them identically.
+type PipeMode = abi.PipeMode
 
 const (
-	// PipeBlocking makes a full write wait until space appears, the deadline
-	// arrives, or the pipe closes. This is the mode a streaming response wants:
-	// backpressure propagates to the producer instead of dropping its output.
-	PipeBlocking PipeMode = iota
-	// PipeNonBlocking makes a full write fail immediately with ErrPipeFull. This
-	// is the mode a telemetry producer wants: losing a metric is better than
-	// stalling a request.
-	PipeNonBlocking
+	PipeBlocking    = abi.PipeBlocking
+	PipeNonBlocking = abi.PipeNonBlocking
 )
 
 // defaultPipeBuffer is the byte ceiling per pipe when the opener does not set one.
