@@ -189,7 +189,10 @@ const symlinkReason = "symlinks are not available here: operation not permitted"
 // and a missing variable would make its arithmetic expand to nothing.
 func TestCountersArePrintedEvenWhenEverythingIsZero(t *testing.T) {
 	got := runClassify(t)
-	for _, key := range []string{"PASSED", "FAILED", "PKG_FAIL", "BUILD_FAIL", "SKIP_TOP", "SKIP_SUB", "UNEXPECTED", "EXCESS"} {
+	for _, key := range []string{
+		"PASSED", "FAILED", "PKG_FAIL", "BUILD_FAIL", "SKIP_TOP", "SKIP_SUB",
+		"UNEXPECTED", "EXCESS", "PKG_STARTED", "PKG_FINISHED",
+	} {
 		assert.Equal(t, 0, num(t, got, key), "%s must be printed as zero rather than omitted", key)
 	}
 }
@@ -205,6 +208,70 @@ func TestPackageLevelPassIsNotCountedAsATest(t *testing.T) {
 	)
 	assert.Equal(t, 2, num(t, got, "PASSED"), "two tests, not two tests plus their package")
 	assert.Equal(t, 0, num(t, got, "FAILED"))
+}
+
+// TestSubtestPassIsNotCountedAsATest is the case the fixture set was missing, and the
+// omission had a cost: the filter at the only place PASSED is incremented could be
+// deleted, and every test here still passed. Measured on the real stream, that mutant
+// moves PASSED from 641 to 1037 - 396 subtest passes joining the count - so 396 vanished
+// top-level tests would still satisfy a floor derived from the filtered number. The whole
+// point of counting top-level passes is that the floor means "this many tests ran"; a
+// case whose expected PASSED differs between filtered and unfiltered is what pins it.
+func TestSubtestPassIsNotCountedAsATest(t *testing.T) {
+	got := runClassify(t,
+		pass("tests/state", "TestParent"),
+		pass("tests/state", "TestParent/sub_one"),
+		pass("tests/state", "TestParent/sub_two"),
+		pkgVerdict("pass", "tests/state"),
+	)
+	assert.Equal(t, 1, num(t, got, "PASSED"),
+		"only the top-level test counts; a subtest pass does not remove a top-level pass "+
+			"and must not add to the floor either")
+}
+
+// TestATruncatedStreamIsDetectable covers the counter that makes truncation visible.
+// Every other number here can be satisfied by a stream cut short: the missing lines are
+// trailing passes, not a missing verdict, so measured by cutting the real stream at
+// exactly the floor's worth of top-level passes - 4596 of 4599 lines - PASSED holds at
+// 641 and every other counter reads zero. What changes is that a package started and
+// never reported.
+func TestATruncatedStreamIsDetectable(t *testing.T) {
+	complete := runClassify(t,
+		map[string]any{"Action": "start", "Package": modPath + "tests/state"},
+		pass("tests/state", "TestOne"),
+		pkgVerdict("pass", "tests/state"),
+		map[string]any{"Action": "start", "Package": modPath + "tests/fs"},
+		pass("tests/fs", "TestTwo"),
+		pkgVerdict("pass", "tests/fs"),
+	)
+	assert.Equal(t, 2, num(t, complete, "PKG_STARTED"))
+	assert.Equal(t, 2, num(t, complete, "PKG_FINISHED"))
+
+	truncated := runClassify(t,
+		map[string]any{"Action": "start", "Package": modPath + "tests/state"},
+		pass("tests/state", "TestOne"),
+		pkgVerdict("pass", "tests/state"),
+		map[string]any{"Action": "start", "Package": modPath + "tests/fs"},
+		pass("tests/fs", "TestTwo"),
+	)
+	assert.Equal(t, 2, num(t, truncated, "PKG_STARTED"))
+	assert.Equal(t, 1, num(t, truncated, "PKG_FINISHED"),
+		"the second package started and never reported, which is what a cut stream looks like")
+}
+
+// TestAPackageWhoseTestsAllSkippedIsStillFinished pins the verdict value that is easy to
+// miss: a package whose every test skipped reports its own Action=skip rather than pass.
+// Counting only pass and fail left the real stream at 22 starts against 21 finishes, so a
+// completeness check built on that pair would have failed every good run - the kind of
+// false alarm that gets a check deleted rather than fixed.
+func TestAPackageWhoseTestsAllSkippedIsStillFinished(t *testing.T) {
+	got := runClassify(t,
+		map[string]any{"Action": "start", "Package": modPath + "tests/egress"},
+		pkgVerdict("skip", "tests/egress"),
+	)
+	assert.Equal(t, 1, num(t, got, "PKG_STARTED"))
+	assert.Equal(t, 1, num(t, got, "PKG_FINISHED"))
+	assert.Equal(t, 0, num(t, got, "PASSED"))
 }
 
 // TestPackageLevelFailIsAFailure covers the hole the first version of this classifier
@@ -351,12 +418,15 @@ func TestOnlyTheLastReasonLineBeforeTheSkipIsUsed(t *testing.T) {
 }
 
 // TestAReasonWithAQuoteStillMatches pins the accidental-truncation case the jsonend fix
-// addresses. A skip reason is built from an error whose text is not ours to choose, so it
-// can contain a quote - and a quote BEFORE the allowlisted substring used to truncate it
-// away, refusing a legitimate environment skip as unexpected. A quote after the substring
-// never mattered, which is why all five current entries were safe: each reason reads
-// "symlinks are not available here: %v" with the variable trailing. This case puts the
-// quote first, which is the shape that actually broke.
+// addresses. A skip reason can contain a quote - a subtest name does today, and a reason
+// built from an error's text is not ours to choose - and a quote BEFORE the allowlisted
+// substring truncates it away under a scan that stops at the first quote.
+//
+// No site the gate runs today can produce that order: the four egress reasons are
+// constants with no format variable, and the state entry's only variable trails the fixed
+// text. So this is a case for the shape rather than for a live defect, and the comment
+// here says so because the earlier version of it claimed all five entries were shaped
+// alike when only one has a variable at all.
 func TestAReasonWithAQuoteStillMatches(t *testing.T) {
 	got := runClassify(t,
 		skipReason("tests/state", "TestFSResolveRefusesEveryEscape", "kv_test.go:742",
@@ -455,8 +525,8 @@ func TestHostileTestNamesCannotInjectShell(t *testing.T) {
 	script := `set -uo pipefail
 report="$1"
 eval "$report"
-printf 'PASSED=%s\nFAILED=%s\nPKG_FAIL=%s\nBUILD_FAIL=%s\nSKIP_TOP=%s\nSKIP_SUB=%s\nUNEXPECTED=%s\nEXCESS=%s\n' \
-  "$PASSED" "$FAILED" "$PKG_FAIL" "$BUILD_FAIL" "$SKIP_TOP" "$SKIP_SUB" "$UNEXPECTED" "$EXCESS"
+printf 'PASSED=%s\nFAILED=%s\nPKG_FAIL=%s\nBUILD_FAIL=%s\nSKIP_TOP=%s\nSKIP_SUB=%s\nUNEXPECTED=%s\nEXCESS=%s\nPKG_STARTED=%s\nPKG_FINISHED=%s\n' \
+  "$PASSED" "$FAILED" "$PKG_FAIL" "$BUILD_FAIL" "$SKIP_TOP" "$SKIP_SUB" "$UNEXPECTED" "$EXCESS" "$PKG_STARTED" "$PKG_FINISHED"
 case "$PASSED$FAILED$SKIP_TOP$SKIP_SUB$UNEXPECTED$EXCESS" in
   *[!0-9]*) echo "NONINTEGER" ;;
 esac`

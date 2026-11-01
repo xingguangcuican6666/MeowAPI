@@ -67,13 +67,18 @@ function jsonstr(line, key,    needle, start, rest, stop) {
 # from an error whose text is not ours to choose.
 #
 # What the truncation breaks depends on WHERE the quote falls, and the distinction
-# matters because it decides how much this fix buys. The allowlist matches a substring,
-# so a quote after the substring leaves the match intact - which is the shape all five
-# current entries have, since each reason reads "symlinks are not available here: %v"
-# with the variable after the fixed text. A quote BEFORE the substring truncates it away
-# and the skip is refused as unexpected. Measured both orders: with "cannot create
-# \"escape\" link: symlinks are not available here" the old scan loses the match, and
-# with the error trailing the text it does not.
+# matters because it decides how much this fix buys. The allowlist matches a SUBSTRING, so
+# a quote after the substring leaves the match intact and a quote before it truncates the
+# substring away. Measured both orders: with "cannot create \"escape\" link: symlinks are
+# not available here" the old scan loses the match, with the error trailing the text it
+# does not.
+#
+# No site the gate runs today can produce the breaking order. The four egress entries have
+# constant reasons with no format variable at all, and the state entry's only variable
+# trails the fixed text; the reason line's "file_test.go:NN:" prefix is stripped before
+# matching, so nothing in any of them can precede the substring. What the fix buys is the
+# future and the Test field - a subtest name containing a quote is legal today - not a
+# current site.
 function jsonend(s,    i, c) {
     for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
@@ -185,6 +190,25 @@ function namedByAnyEntry(pkg, test,    k, parts) {
         next
     }
 
+    # Package lifecycle, tracked so a truncated stream can be detected. go test -json
+    # emits Action=start before a package's first test and a package-level pass or fail
+    # after its last. A stream cut short - by a killed runner, a full disk, a timeout
+    # SIGNAL - has starts with no matching verdict, and the counters alone cannot tell:
+    # cutting the real stream at exactly 641 top-level passes leaves nothing below the
+    # floor, because the missing lines are trailing passes, not a missing verdict.
+    if (action == "start") {
+        started++
+        next
+    }
+    # A package's terminal event may be pass, AND it may be "skip": a package whose
+    # every test skipped reports its own skip. Counting only pass and fail left the real
+    # stream at 22 starts against 21 finishes, which would have failed a completeness
+    # check on a perfectly good run - the kind of false alarm that gets a check deleted.
+    if (action == "pass" || action == "fail" || action == "skip") {
+        if (jsonstr($0, "Test") == "") { finished++ }
+        # fall through: the branches below also handle these actions
+    }
+
     # Output events carry the reason a test gave for skipping. Only the last one before
     # the skip event matters, so it is stored per package|test and overwritten; that
     # also bounds memory instead of accumulating every line the suite printed.
@@ -250,6 +274,8 @@ function namedByAnyEntry(pkg, test,    k, parts) {
 
 END {
     printf "PASSED=%d\n", passed + 0
+    printf "PKG_STARTED=%d\n", started + 0
+    printf "PKG_FINISHED=%d\n", finished + 0
     printf "FAILED=%d\n", failed + 0
     printf "PKG_FAIL=%d\n", pkgfail + 0
     printf "BUILD_FAIL=%d\n", buildfail + 0

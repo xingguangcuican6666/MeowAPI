@@ -152,8 +152,23 @@ jobs:
           # what happened, and a failing run that prints nothing but "exit code 1" is
           # worse than one that lists the failures. The -race step above fails first in
           # practice, but this one still reports.
+          # The exit status is captured rather than discarded. `|| true` is what lets the
+          # report print on a failing run, but dropping the status entirely means a go
+          # test that was KILLED (137), or that failed to run at all (2), reaches the gate
+          # as a merely short stream - and a stream cut at exactly the floor still clears
+          # it, because the missing lines are trailing passes rather than a missing
+          # verdict. 0 and 1 are the two statuses that mean "go test ran"; anything else
+          # is named before the report is even read.
+          set +e
           go test -json -count=1 ./kernel/ ./tests/... ./internal/... ./tools/... \
-            > /tmp/suite.json 2> /tmp/suite.err || true
+            > /tmp/suite.json 2> /tmp/suite.err
+          gotest_status=$?
+          set -e
+          if [ "$gotest_status" -ne 0 ] && [ "$gotest_status" -ne 1 ]; then
+            echo "::error::go test exited $gotest_status, so the suite did not run to completion"
+            [ -s /tmp/suite.err ] && cat /tmp/suite.err
+            exit 1
+          fi
           report="$(awk -f tools/ci/suite-report.awk /tmp/suite.json)"
           printf '%s\n' "$report"
           # go routes its own diagnostics into the -json stream, so stderr is empty in
@@ -168,6 +183,16 @@ jobs:
             cat /tmp/suite.err
           fi
           eval "$report"
+          if [ "${PKG_STARTED:-0}" -ne "${PKG_FINISHED:-0}" ]; then
+            # A stream cut short. go test emits a package-level verdict after each
+            # package's last test; a start with no verdict means the run was interrupted,
+            # and the counters below cannot see it because the missing lines are trailing
+            # passes rather than a missing verdict. Measured on the real stream: cutting
+            # it at exactly the floor's worth of top-level passes drops one verdict and
+            # every other counter still clears.
+            echo "::error::$PKG_STARTED package(s) started but $PKG_FINISHED reported a verdict, so the stream is truncated"
+            exit 1
+          fi
           if [ "${BUILD_FAIL:-0}" -ne 0 ]; then
             # Reported separately from a test failure, because a build failure means no
             # test ran at all. The floor below would also fire and say "got 0", which is
@@ -230,8 +255,8 @@ jobs:
           # project supports. Adding margin here would reopen the hole the allowlist
           # closes: slack is what lets a test quietly stop asserting. If this number
           # has to move, it moves up with the suite.
-          if [ $((PASSED + SKIP_TOP)) -lt 641 ]; then
-            echo "::error::expected at least 641 tests to run, got $((PASSED + SKIP_TOP))"
+          if [ $((PASSED + SKIP_TOP)) -lt 644 ]; then
+            echo "::error::expected at least 644 tests to run, got $((PASSED + SKIP_TOP))"
             echo "a guard against the suite silently not running"
             exit 1
           fi
