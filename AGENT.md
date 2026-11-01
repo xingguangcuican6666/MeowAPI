@@ -722,7 +722,7 @@ introduces a new layer adds a package and a line in the file map.
 | `tests/kpanic` | what survives the way out | `panic` |
 | `tests/security` | the invariants that must never regress | `kernel` |
 
-Six files stay in `kernel/` rather than moving, and the reason is a property worth
+Seven files stay in `kernel/` rather than moving, and the reason is a property worth
 keeping: `kernel/export_test.go` is `package kernel` and exposes package-private
 internals as `Probe*` functions, compiled into the kernel's own test binary and
 unreachable from any module. `kernel/fdtable_test.go` and
@@ -739,11 +739,15 @@ unpinnable from `tests/`. `kernel/receiptlock_test.go` forces the node key cache
 the state a cached parse failure used to leave, because with the cache fixed no input
 reaches `ed25519.Sign` with a wrong-length key and the deferred unlock in
 `issueReceipt` would otherwise be untested by construction.
+`kernel/schedslot_test.go` reserves a run's slot directly against `schedLive` and
+contends on `schedMu` to widen a window one lock acquisition wide, which is how a
+scheduling-order defect that failed once on a loaded CI runner and passed 200 times
+locally became reproducible.
 
-The rule for adding a seventh is that it must need something a module cannot
+The rule for adding an eighth is that it must need something a module cannot
 construct or observe. "It is easier to write in-package" is not that reason, and an
 in-package test cannot prove anything about the surface a module gets - which is why
-the security suite is external by construction. These six are the only test files in
+the security suite is external by construction. These seven are the only test files in
 `kernel/`, which is why the file map above does not list them: that table is the
 implementation surface, one row per file a module's behavior can depend on.
 
