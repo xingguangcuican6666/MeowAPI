@@ -21,6 +21,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 package kernel
 
 import (
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"sync"
 	"time"
 )
@@ -96,16 +97,9 @@ func (c *kernelClock) Deadline(after time.Duration) int64 {
 // Expired reports whether a Mono() deadline has passed.
 func (c *kernelClock) Expired(deadline int64) bool { return c.Mono() >= deadline }
 
-// KernelTime is what a module gets from SyscallNow. Mono is the value to compute
-// with; Wall is the value to print.
-type KernelTime struct {
-	// Mono is nanoseconds on the kernel's monotonic clock. Non-negative,
-	// non-decreasing, and not forgeable.
-	Mono int64 `json:"mono"`
-	// Wall is UTC wall-clock time, for records a human reads. Never use it to
-	// measure an interval: it can step backwards.
-	Wall time.Time `json:"wall"`
-}
+// KernelTime is abi.KernelTime: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type KernelTime = abi.KernelTime
 
 // Clock is a handle on the kernel time authority. It is read-only: there is no
 // setter anywhere, which is the entire point of the subsystem. A module that

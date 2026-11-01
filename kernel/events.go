@@ -110,23 +110,9 @@ func KernelEvents() []KernelEventName {
 	return out
 }
 
-// Event is one delivered notification.
-type Event struct {
-	// Name is from the closed kernel set.
-	Name KernelEventName `json:"name"`
-	// Seq is monotonic within one subscription, so a consumer can detect a gap and
-	// know it missed something rather than assuming nothing happened.
-	Seq int64 `json:"seq"`
-	// At is the Mono() reading when the event was posted.
-	At int64 `json:"at"`
-	// Subject is the pid the event is about: the peer that disconnected, the job
-	// that finished. Zero when the event is about the subscriber itself.
-	Subject PID `json:"subject,omitempty"`
-	// Detail carries a small kernel-chosen string, for example a pipe name. It is
-	// never module-supplied content, so it cannot be used to smuggle a payload
-	// through the event path.
-	Detail string `json:"detail,omitempty"`
-}
+// Event is abi.Event: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type Event = abi.Event
 
 // subscription is one module's interest in a set of event names.
 type subscription struct {

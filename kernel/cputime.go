@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"runtime"
 	"sync"
 	"time"
@@ -127,18 +128,9 @@ func SetCPUBudget(ctx SContext, pid PID, budget time.Duration) error {
 	return nil
 }
 
-// CPUStat is one pid's accounting, as an operator or a module sees it.
-type CPUStat struct {
-	PID       PID   `json:"pid"`
-	WallNanos int64 `json:"wall_nanos"`
-	// CPUNanos is an estimate derived from wall time and observed concurrency, not
-	// a hardware counter. It is labeled as an estimate in every surface that shows
-	// it, because a number presented as precise will be trusted as precise.
-	CPUNanos  int64 `json:"cpu_nanos_estimate"`
-	Calls     int64 `json:"calls"`
-	Budget    int64 `json:"budget_nanos"`
-	Exhausted bool  `json:"exhausted"`
-}
+// CPUStat is abi.CPUStat: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type CPUStat = abi.CPUStat
 
 // charge records one completed unit of supervised work.
 //

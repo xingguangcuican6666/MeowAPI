@@ -224,7 +224,7 @@ func TestSlashEquivocationIsConfirmed(t *testing.T) {
 	// in and the other 900. Both signatures are valid.
 	one := signReceipt(accused, 7, "shared prompt", "answer A", 100, 40)
 	two := signReceipt(accused, 7, "shared prompt", "answer B", 900, 40)
-	require.NotEqual(t, one.Digest(), two.Digest())
+	require.NotEqual(t, kernel.ReceiptDigest(one), kernel.ReceiptDigest(two))
 
 	id, err := kernel.SlashReport(mod.ctx, kernel.SlashProof{
 		Kind: kernel.SlashEquivocation, NodeID: accused.nodeID,
@@ -244,7 +244,7 @@ func TestSlashEquivocationIsConfirmed(t *testing.T) {
 	assert.True(t, rec.Finding.Established)
 	assert.Equal(t, kernel.SlashEquivocation, rec.Finding.Kind)
 	assert.Contains(t, rec.Finding.Reason, "two different receipts")
-	assert.ElementsMatch(t, []string{one.Digest(), two.Digest()}, rec.Finding.Digests,
+	assert.ElementsMatch(t, []string{kernel.ReceiptDigest(one), kernel.ReceiptDigest(two)}, rec.Finding.Digests,
 		"the finding must name the evidence it rests on")
 
 	// A confirmed finding reaches the console as a fault, because the chain is what an

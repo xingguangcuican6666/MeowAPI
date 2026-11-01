@@ -412,7 +412,7 @@ var kslashing = &slashLedger{
 func slashProofID(kind SlashKind, nodeID string, receipts []Receipt) SlashID {
 	digests := make([]string, 0, len(receipts))
 	for _, r := range receipts {
-		digests = append(digests, r.Digest())
+		digests = append(digests, ReceiptDigest(r))
 	}
 	sort.Strings(digests)
 
@@ -632,7 +632,7 @@ func slashReport(ctx *sContext, p SlashProof) (SlashID, error) {
 func receiptDigests(rs []Receipt) []string {
 	out := make([]string, 0, len(rs))
 	for _, r := range rs {
-		out = append(out, r.Digest())
+		out = append(out, ReceiptDigest(r))
 	}
 	return out
 }
@@ -865,7 +865,7 @@ func decideEquivocation(p SlashProof, digests []string) SlashFinding {
 	// fields matter.
 	base := p.Receipts[0]
 	for _, r := range p.Receipts[1:] {
-		if r.Digest() != base.Digest() {
+		if ReceiptDigest(r) != ReceiptDigest(base) {
 			return SlashFinding{
 				Kind: SlashEquivocation, Established: true, Digests: digests,
 				Reason: fmt.Sprintf("node %q signed two different receipts under sequence %d", p.NodeID, seq),
@@ -915,13 +915,13 @@ func decideEmptyContent(p SlashProof, digests []string) SlashFinding {
 			return SlashFinding{
 				Kind: SlashEmptyContent, Established: true, Digests: digests,
 				Reason: fmt.Sprintf("receipt %s settles %d prompt tokens against an empty prompt",
-					r.Digest(), r.TokensIn),
+					ReceiptDigest(r), r.TokensIn),
 			}
 		case r.TokensOut > 0 && r.CompletionHash == empty:
 			return SlashFinding{
 				Kind: SlashEmptyContent, Established: true, Digests: digests,
 				Reason: fmt.Sprintf("receipt %s settles %d completion tokens against an empty completion",
-					r.Digest(), r.TokensOut),
+					ReceiptDigest(r), r.TokensOut),
 			}
 		}
 	}

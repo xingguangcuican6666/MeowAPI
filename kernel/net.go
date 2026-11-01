@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"net"
 	"sort"
 	"strconv"
@@ -218,34 +219,13 @@ func (n *netListener) Close() error {
 	return nil
 }
 
-// NetSpec is one dial request. Host and Port are what the module names; Address is what
-// the kernel fills in after resolution and validation, and it is the address that gets
-// dialed.
-type NetSpec struct {
-	// Host is the hostname to dial. It must appear in the module's AllowedHosts.
-	Host string `json:"host"`
-	// Port is the TCP port. Zero means the scheme's default, which is a decision the
-	// kernel makes rather than the caller, so a module cannot dial an arbitrary port by
-	// omitting one.
-	Port int `json:"port"`
-	// Scheme is "tcp" or "tcp4"/"tcp6". Anything else is refused: this subsystem does
-	// not dial UDP or unix sockets, and a scheme the caller chooses freely is a scheme
-	// the allowlist was never reviewed against.
-	Scheme string `json:"scheme"`
-	// Label is an operator-visible description. Bounded, and never interpreted.
-	Label string `json:"label,omitempty"`
-}
+// NetSpec is abi.NetSpec: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type NetSpec = abi.NetSpec
 
-// NetDialResult is what a successful dial reports. The Address field is the point: it is
-// the address that was validated and dialed, so an operator reading the audit record can
-// see that the name resolved somewhere permitted rather than take the name's word for it.
-type NetDialResult struct {
-	FD      FD     `json:"fd"`
-	Host    string `json:"host"`
-	Address string `json:"address"`
-	RTT     int64  `json:"rtt_nanos"`
-	Pooled  bool   `json:"pooled"`
-}
+// NetDialResult is abi.NetDialResult: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type NetDialResult = abi.NetDialResult
 
 // netLedgerEntry is one egress record. Its fields mirror NetRecord exactly, so the
 // snapshot is a conversion rather than a field-by-field copy that could drift.
@@ -1200,18 +1180,9 @@ func NetClose(ctx SContext, fd FD) error {
 	return closeFD(c.pid, fd)
 }
 
-// NetInfo describes one open socket, for a snapshot.
-type NetInfo struct {
-	FD       FD     `json:"fd"`
-	PID      PID    `json:"pid"`
-	Remote   string `json:"remote"`
-	Label    string `json:"label,omitempty"`
-	Pooled   bool   `json:"pooled"`
-	OpenedAt int64  `json:"opened_at"`
-	RTT      int64  `json:"rtt_nanos"`
-	BytesIn  int64  `json:"bytes_in"`
-	BytesOut int64  `json:"bytes_out"`
-}
+// NetInfo is abi.NetInfo: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type NetInfo = abi.NetInfo
 
 // NetSockets lists the sockets a pid holds, sorted by fd. It is a copy.
 func NetSockets(pid PID) []NetInfo {

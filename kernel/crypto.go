@@ -289,10 +289,6 @@ func ed25519KeyID(pub ed25519.PublicKey) string {
 // key material: receipt payloads, module manifests, prompt and completion bodies.
 // Having a single function means a single place to review when the choice of digest
 // is ever revisited.
-func sha256Sum(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
 
 // parseEd25519Private accepts the encodings an operator plausibly holds: a PEM
 // PKCS8 block, a 32-byte seed, or a full 64-byte ed25519 private key, each carried
@@ -605,4 +601,9 @@ func resetCrypto() {
 	kcryptoKeys.material = ""
 	kcryptoKeys.priv = nil
 	kcryptoKeys.keyID = ""
+}
+
+func sha256Sum(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

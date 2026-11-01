@@ -55,25 +55,9 @@ const (
 	AuditSlash      = abi.AuditSlash
 )
 
-// AuditEntry is one link in the audit chain.
-//
-// The chain is the tamper-evidence mechanism. Each entry carries Prev, the hash
-// of the entry before it, and Hash, the hash of itself including Prev. Rewriting
-// or deleting any entry invalidates every hash after it, so an edit is detectable
-// rather than invisible. This is what makes the record evidence instead of a log:
-// a log can be edited, a chain cannot be edited without being noticed.
-type AuditEntry struct {
-	Seq    int64          `json:"seq"`
-	Time   int64          `json:"time"`
-	Kind   AuditKind      `json:"kind"`
-	PID    PID            `json:"pid"`
-	Domain Domain         `json:"domain,omitempty"`
-	Msg    string         `json:"msg"`
-	Trace  string         `json:"trace,omitempty"`
-	Fields map[string]any `json:"fields,omitempty"`
-	Prev   string         `json:"prev"`
-	Hash   string         `json:"hash"`
-}
+// AuditEntry is abi.AuditEntry: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type AuditEntry = abi.AuditEntry
 
 // auditLog is the kernel black box.
 //
@@ -310,14 +294,9 @@ func AuditQuery(f AuditFilter) []AuditEntry {
 	return out
 }
 
-// AuditFilter selects entries. Zero values mean "no constraint on this field".
-type AuditFilter struct {
-	Kind  AuditKind
-	PID   PID
-	Trace string
-	Since int64
-	Limit int
-}
+// AuditFilter is abi.AuditFilter: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type AuditFilter = abi.AuditFilter
 
 func copyFields(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))

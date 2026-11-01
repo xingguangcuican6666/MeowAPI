@@ -23,6 +23,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"os"
 	"path/filepath"
 	"sort"
@@ -373,13 +374,9 @@ func FSStat(ctx SContext, rel string) (FSInfo, error) {
 	return FSInfo{Size: st.Size(), IsDir: st.IsDir()}, nil
 }
 
-// FSInfo is what FSStat reports: the two facts a module needs and no more. It
-// deliberately omits timestamps and permissions, which a module has no use for and
-// which would render host-side details the boundary was meant to keep out.
-type FSInfo struct {
-	Size  int64 `json:"size"`
-	IsDir bool  `json:"is_dir"`
-}
+// FSInfo is abi.FSInfo: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type FSInfo = abi.FSInfo
 
 // FSDelete removes one file. Requires fs:write, because removal is a mutation of
 // the module's data area. A missing file is a typed, checkable "already gone"

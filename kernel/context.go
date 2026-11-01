@@ -127,20 +127,9 @@ type SContext interface {
 	sealed()
 }
 
-// Identity is what a context can report about itself. Every field is set by the
-// kernel at spawn time; none of it is chosen by the module.
-type Identity interface {
-	// PID returns the context's process id.
-	PID() PID
-	// UID returns the context's kernel-allocated owner id.
-	UID() UID
-	// Domain returns the context's security domain.
-	Domain() Domain
-	// Name returns the module name this context was spawned for, or "init" and
-	// "kernel" for the two kernel-owned contexts. It is a diagnostic label
-	// chosen by the kernel, never by the module.
-	Name() string
-}
+// Identity is abi.Identity: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type Identity = abi.Identity
 
 // sContext is the kernel-private implementation of SContext.
 type sContext struct {

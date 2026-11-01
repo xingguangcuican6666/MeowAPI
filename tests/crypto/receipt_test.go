@@ -178,7 +178,7 @@ func TestReceiptIssueSignsAndVerifies(t *testing.T) {
 	assert.NotEmpty(t, verdict.KeyID)
 	assert.Empty(t, verdict.Reason)
 	assert.False(t, verdict.Structural)
-	assert.Equal(t, r.Digest(), verdict.Digest)
+	assert.Equal(t, kernel.ReceiptDigest(r), verdict.Digest)
 }
 
 // TestReceiptIssueDeniedToModules is the load-bearing denial: no module can mint a
@@ -293,7 +293,7 @@ func TestReceiptTamperingIsDetected(t *testing.T) {
 			assert.NotEmpty(t, verdict.Reason)
 			// The digest names the receipt as presented, so a dispute can cite
 			// exactly what the peer sent rather than what it meant to send.
-			assert.Equal(t, forged.Digest(), verdict.Digest)
+			assert.Equal(t, kernel.ReceiptDigest(forged), verdict.Digest)
 		})
 	}
 }
@@ -565,7 +565,7 @@ func TestReceiptHandleCeilingIsTyped(t *testing.T) {
 
 	held, verdict, err := kernel.ReceiptHandle(reporter.ctx, fd)
 	require.NoError(t, err)
-	assert.Equal(t, r2.Digest(), held.Digest())
+	assert.Equal(t, kernel.ReceiptDigest(r2), kernel.ReceiptDigest(held))
 	assert.True(t, verdict.Valid)
 
 	// An invalid receipt is not opened at all: tracking a forgery is how a node
@@ -787,17 +787,17 @@ func TestReceiptCanonicalEncodingIsFixed(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotEqual(t, kernel.ReceiptPayload(first), kernel.ReceiptPayload(second))
-	assert.NotEqual(t, first.Digest(), second.Digest())
+	assert.NotEqual(t, kernel.ReceiptDigest(first), kernel.ReceiptDigest(second))
 
 	// The payload is stable across recomputation, which is what a peer relies on.
 	assert.Equal(t, kernel.ReceiptPayload(first), kernel.ReceiptPayload(first))
-	assert.Len(t, first.Digest(), 64)
+	assert.Len(t, kernel.ReceiptDigest(first), 64)
 
 	// The sequence number is inside the encoding, so two otherwise identical
 	// receipts from one node never share a digest.
 	third, err := k.IssueReceipt(rcptSpec(pid, 1, 1))
 	require.NoError(t, err)
-	assert.NotEqual(t, first.Digest(), third.Digest())
+	assert.NotEqual(t, kernel.ReceiptDigest(first), kernel.ReceiptDigest(third))
 
 	// Every signed field appears in the payload, so a reviewer can see the encoding
 	// covers what the receipt claims.
@@ -830,7 +830,7 @@ func TestReceiptWireEncodingRoundTrips(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, r, decoded)
-	assert.Equal(t, r.Digest(), decoded.Digest(), "the digest must survive the wire")
+	assert.Equal(t, kernel.ReceiptDigest(r), kernel.ReceiptDigest(decoded), "the digest must survive the wire")
 
 	verdict, err := reporter.ctx.SyscallReceiptVerify(decoded)
 	require.NoError(t, err)
@@ -969,7 +969,7 @@ func TestReceiptAuditRecordsSettlementWithoutContent(t *testing.T) {
 	entries := kernel.AuditQuery(kernel.AuditFilter{Kind: kernel.AuditSettle})
 	require.NotEmpty(t, entries)
 	last := entries[len(entries)-1]
-	assert.Equal(t, r.Digest(), last.Fields["digest"])
+	assert.Equal(t, kernel.ReceiptDigest(r), last.Fields["digest"])
 	assert.Equal(t, int64(1), last.Fields["seq"])
 	assert.Equal(t, "trace-audit-1", last.Fields["trace"])
 	assert.Equal(t, int64(11), last.Fields["tokens_in"])

@@ -267,19 +267,9 @@ type PeerVerdict struct {
 	Structural bool `json:"structural,omitempty"`
 }
 
-// PeerDialSpec is what a dial asks for.
-type PeerDialSpec struct {
-	// Endpoint is the address the host transport understands. It is compared
-	// against the endpoint inside the peer's signed handshake.
-	Endpoint string `json:"endpoint"`
-	// TimeoutMillis is clamped by sched.go's callCeiling, so a dial cannot outlast
-	// the sealed call timeout. A timeout the timed-out party chooses is not a
-	// timeout.
-	TimeoutMillis int64 `json:"timeout_millis,omitempty"`
-	// Label is an operator-chosen diagnostic name, length-bounded because it is
-	// stored in the table and copied into audit lines.
-	Label string `json:"label,omitempty"`
-}
+// PeerDialSpec is abi.PeerDialSpec: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type PeerDialSpec = abi.PeerDialSpec
 
 // PeerSession is the snapshot a dial returns. It carries no private material: no
 // nonce, no signature, no key.
@@ -314,27 +304,9 @@ type peerProbeBody struct {
 	Seq     int64  `json:"seq"`
 }
 
-// PeerAnnouncement is one signed discovery record. Announcements must be signed by a
-// cluster root: an unsigned announcement is a route hijack, and whoever can reach
-// the transport could then poison the peer table.
-type PeerAnnouncement struct {
-	Version  int    `json:"version"`
-	NodeID   string `json:"node_id"`
-	Endpoint string `json:"endpoint"`
-	KeyID    string `json:"key_id"`
-	// Seq is per-announcer and gap-free, so a suppressed announcement is visible
-	// as a gap rather than as silence.
-	Seq int64 `json:"seq"`
-	// Epoch is the announcer's boot identity. Without it a peer that restarts and
-	// begins numbering from 1 again is indistinguishable from one replaying a
-	// captured announcement, and the honest peer is refused forever. See
-	// peerAcceptSeq for the rule and its stated limit.
-	Epoch int64 `json:"epoch,omitempty"`
-	// TTLNanos is converted to mono()+ttl at ingest and never compared against a
-	// wall clock.
-	TTLNanos  int64  `json:"ttl_nanos"`
-	Signature []byte `json:"signature"`
-}
+// PeerAnnouncement is abi.PeerAnnouncement: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type PeerAnnouncement = abi.PeerAnnouncement
 
 // PeerEnvelope is the cross-node envelope.
 //
@@ -359,26 +331,13 @@ type PeerEnvelope struct {
 	Signature   []byte `json:"signature"`
 }
 
-// PeerForwardRequest is one outbound cross-node call.
-type PeerForwardRequest struct {
-	NodeID        string  `json:"node_id"`
-	Route         string  `json:"route"`
-	Method        string  `json:"method,omitempty"`
-	Trace         TraceID `json:"trace,omitempty"`
-	Payload       []byte  `json:"payload,omitempty"`
-	Hops          int64   `json:"hops,omitempty"`
-	TimeoutMillis int64   `json:"timeout_millis,omitempty"`
-}
+// PeerForwardRequest is abi.PeerForwardRequest: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type PeerForwardRequest = abi.PeerForwardRequest
 
-// PeerForwardResult is the peer's reply. The payload was bounded at ingress, so a
-// reply too large to accept is refused rather than truncated.
-type PeerForwardResult struct {
-	Status   int               `json:"status"`
-	Payload  []byte            `json:"payload,omitempty"`
-	Header   map[string]string `json:"header,omitempty"`
-	RTTNanos int64             `json:"rtt_nanos"`
-	Trace    TraceID           `json:"trace,omitempty"`
-}
+// PeerForwardResult is abi.PeerForwardResult: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type PeerForwardResult = abi.PeerForwardResult
 
 // PeerEvent is one entry in the mesh event ledger. The ledger exists because
 // successful probes deliberately write no audit record - at one probe per second

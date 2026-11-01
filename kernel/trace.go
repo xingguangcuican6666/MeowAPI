@@ -120,34 +120,11 @@ func SpanKinds() []SpanKind {
 	return out
 }
 
-// Span is one finished or live interval. It is a value type: a module gets a copy
-// and cannot reach the kernel's record through it.
-type Span struct {
-	Trace  TraceID  `json:"trace"`
-	Span   SpanID   `json:"span"`
-	Parent SpanID   `json:"parent,omitempty"`
-	Kind   SpanKind `json:"kind"`
-	Name   string   `json:"name"`
-	PID    PID      `json:"pid"`
-	Module string   `json:"module,omitempty"`
-	Start  int64    `json:"start"`
-	End    int64    `json:"end,omitempty"`
-	// Abandoned is set when the kernel closed the span during unload because the
-	// module never ended it. An abandoned span's duration is a lower bound on the
-	// real one, and marking it is what keeps that number honest.
-	Abandoned bool `json:"abandoned,omitempty"`
-	// Attrs are kernel-recorded facts about the span, never module-supplied
-	// content, so a module cannot smuggle a payload through the trace.
-	Attrs map[string]string `json:"attrs,omitempty"`
-}
+// Span is abi.Span: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type Span = abi.Span
 
 // ElapsedNanos is the span's duration on the kernel clock.
-func (s Span) ElapsedNanos() int64 {
-	if s.End <= s.Start {
-		return 0
-	}
-	return s.End - s.Start
-}
 
 // liveSpan is the kernel's mutable record behind a handle.
 type liveSpan struct {
@@ -232,24 +209,9 @@ func newSpanID() (SpanID, error) {
 	return SpanID(hex.EncodeToString(b)), nil
 }
 
-// SpanSpec describes a span to open.
-//
-// There is deliberately no Trace field. A module cannot name the trace it belongs
-// to, because a module-chosen id is a module-chosen identity for a request: it could
-// collide with another request's timeline, corrupting both, or be chosen to attach
-// this module's work to a request it never served. The id comes from one of two
-// places and both are the kernel: a fresh span from crypto/rand, a child span
-// inherited from the parent the kernel already resolved. Propagation across a module
-// boundary is therefore through Parent, which is checked against the process table,
-// rather than through a string the caller controls.
-type SpanSpec struct {
-	// Parent is the enclosing span, empty for a root span. It must be a span this
-	// pid can see, so a module cannot attach its work to another module's timeline
-	// and inherit that module's attribution.
-	Parent SpanID
-	Kind   SpanKind
-	Name   string
-}
+// SpanSpec is abi.SpanSpec: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type SpanSpec = abi.SpanSpec
 
 // TraceOpen opens a span and returns the handle that owns it plus the ids the kernel
 // assigned. The caller cannot choose either id.

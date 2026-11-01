@@ -181,13 +181,9 @@ func closeFD(pid PID, fd FD) error {
 	return nil
 }
 
-// FDInfo describes an open handle, for the console dump and diagnostics.
-type FDInfo struct {
-	FD       FD     `json:"fd"`
-	Kind     string `json:"kind"`
-	Label    string `json:"label,omitempty"`
-	OpenedAt int64  `json:"opened_at"`
-}
+// FDInfo is abi.FDInfo: a module passes it to or receives it from the
+// kernel, so the shape lives in the package the module compiles against.
+type FDInfo = abi.FDInfo
 
 // FDList returns a pid's open handles, sorted by fd.
 func FDList(pid PID) []FDInfo {
