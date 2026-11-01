@@ -805,11 +805,23 @@ func (r *schedRun) finish(state SchedState, detail, stack string) {
 	r.state = state
 	r.detail = detail
 	r.stack = watchdogTruncate(stack)
+	// The slot is released BEFORE the completion signal, inside this lock, and the
+	// ordering is the property. close(r.finished) is what wakes SchedWait, and a waiter
+	// woken by it is entitled to read the run's accounting as already settled - it asks
+	// for the outcome and then, in the same breath, how many runs are still in flight.
+	// Releasing after the close left a window where the outcome said "panicked" and the
+	// counter still said 1, which is what made TestSchedPanicIsRecoveredAndLeavesNothingBehind
+	// fail intermittently on a loaded CI runner while passing 200 times locally: the
+	// waiter had to be scheduled in the gap between the unlock and releaseSlot.
+	//
+	// This takes schedMu while holding r.mu, which is a new lock edge, and it is safe
+	// because the inverse does not exist: every schedMu region in this file touches only
+	// the two counter maps, and the one that walks runs - resetSched - unlocks before
+	// calling cancelSchedWork. Nothing holds schedMu and reaches an r.mu.
+	r.releaseSlot()
 	close(r.finished)
 	kind, pid, label, id := r.kind, r.pid, r.label, r.id
 	r.mu.Unlock()
-
-	r.releaseSlot()
 
 	// A run the module closed itself is not something an operator needs to see:
 	// cancelling your own handle is the documented way to stop work you started.
