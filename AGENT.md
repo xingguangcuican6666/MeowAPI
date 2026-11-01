@@ -41,7 +41,7 @@ this file records the substitute.
 main.go                      boot entry: kernel.Boot, report, Shutdown, -audit, -crash
 abi/                         the package a module compiles against. Types and constants
                              only, standard library only, no kernel import - the kernel
-                             imports IT. See "The abi package" below.
+                             imports IT. One file per subsystem. See "The abi package".
 kernel/                      EL1 trust root. No business logic, standard library only.
   kernel.go                  package doc, the ABI version, the one reset path
   context.go                 SContext alias, identity, the concrete *sContext that every
@@ -213,8 +213,20 @@ Three rules keep this package from becoming a copy of the kernel:
 What must be here: every type in a module's signature, every constant it must
 name, and every method it must call. `tests/abi` globs `abi/*.go` and fails if any
 of it imports outside the standard library, or if a file here imports the kernel.
-The compiler covers the second direction - a missing name breaks the kernel's
-build, not a test.
+Its third test is the one the compiler cannot run: `TestKernelAliasesEveryABIType`
+walks both packages and fails on a name declared in `abi` and re-declared with a
+body in `kernel`, which compiles cleanly and silently leaves two same-named types
+free to drift. The compiler covers the second direction - a missing name breaks the
+kernel's build, not a test.
+
+Files are named after the kernel subsystem that owns the type, and a new type goes
+in the file of the subsystem it serves rather than in a grab-bag: `abi/abi.go` is
+the package doc, `context.go` holds `SContext` and its groups, `ops.go` the
+operations, `enums.go` the closed enumerations and the ids, `types.go` the scalars
+and `Manifest`, and one file each for audit, clock, console, crypto, events, fs,
+keyring, meter, net, peer, pipe, proc, qos, receipt, route, sched, shm, signal,
+slashing, tokenizer, trace, tty, usage and cputime. `types2.go` was the
+pre-split grab-bag; it is gone and should not come back.
 
 The migration left two API changes worth knowing. `Manifest.Validate` is now
 `kernel.ValidateManifest(*Manifest)`, and the receipt's canonical encoding is

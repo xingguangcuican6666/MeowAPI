@@ -1,3 +1,23 @@
+/*
+Copyright (C) 2026 xingguangcuican6666
+
+This file is part of MeowAPI, which is licensed under the GNU Affero General
+Public License v3.0.
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 package abi
 
 // The context a module receives in OnLoad, and the syscall groups it is composed of.
@@ -14,6 +34,21 @@ package abi
 // struct, so a value a module builds never resolves and is refused. That check was always
 // the real gate, and moving the interface here does not touch it: a module can name
 // abi.SContext in its own signatures, and still cannot produce one the kernel accepts.
+
+// Identity is what a context can report about itself. Every field is set by the
+// kernel at spawn time; none of it is chosen by the module.
+type Identity interface {
+	// PID returns the context's process id.
+	PID() PID
+	// UID returns the context's kernel-allocated owner id.
+	UID() UID
+	// Domain returns the context's security domain.
+	Domain() Domain
+	// Name returns the module name this context was spawned for, or "init" and
+	// "kernel" for the two kernel-owned contexts. It is a diagnostic label
+	// chosen by the kernel, never by the module.
+	Name() string
+}
 
 // SContext is the only view of a security context a module ever sees, and the
 // only way it reaches a syscall.
