@@ -20,6 +20,13 @@
 /data/
 *.audit.log
 
+# The console daemon's state directory: the socket, the shadow record and the
+# daemon log. It is created on first run in the working directory, and committing a
+# password hash - even a hashed one - or a socket path is exactly the kind of thing
+# an operator would not expect a build to do. root/bin is ignored with it: a .so
+# built from plugins/ is a build artifact, and the operator builds it themselves.
+/root/
+
 # Local environment overrides
 .env
 .env.local

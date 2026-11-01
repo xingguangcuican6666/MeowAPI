@@ -264,8 +264,8 @@ jobs:
           # project supports. Adding margin here would reopen the hole the allowlist
           # closes: slack is what lets a test quietly stop asserting. If this number
           # has to move, it moves up with the suite.
-          if [ $((PASSED + SKIP_TOP)) -lt 651 ]; then
-            echo "::error::expected at least 651 tests to run, got $((PASSED + SKIP_TOP))"
+          if [ $((PASSED + SKIP_TOP)) -lt 672 ]; then
+            echo "::error::expected at least 672 tests to run, got $((PASSED + SKIP_TOP))"
             echo "a guard against the suite silently not running"
             exit 1
           fi
@@ -287,8 +287,12 @@ jobs:
       - name: boot the kernel and write a trail
         run: |
           set -euo pipefail
-          go run . -text -audit /tmp/meow-audit.log >/dev/null
-          go run . -text -audit /tmp/meow-audit.log >/dev/null
+          # -once, because without it the binary starts or attaches to a daemon and
+          # the audit trail this job verifies would be written by a process that is
+          # still running when the verifier reads it. The flag exists for exactly this
+          # caller: a single kernel lifetime, a report, and exit.
+          go run . -once -text -audit /tmp/meow-audit.log >/dev/null
+          go run . -once -text -audit /tmp/meow-audit.log >/dev/null
           echo "wrote two boots to one trail"
 
       - name: verify the clean trail

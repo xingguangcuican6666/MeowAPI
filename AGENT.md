@@ -38,10 +38,15 @@ this file records the substitute.
 ## Architecture
 
 ```
-main.go                      boot entry: kernel.Boot, report, Shutdown, -audit, -crash
+main.go                      the three modes: attach or start a daemon, run one detached
+                             daemon, or -once boot-and-report. See "The console daemon".
 abi/                         the package a module compiles against. Types and constants
                              only, standard library only, no kernel import - the kernel
                              imports IT. One file per subsystem. See "The abi package".
+internal/console/            the operator console: daemon, session protocol, password
+                             gate, command table and the root/bin component loader.
+                             Host code, not kernel code - it decides who is at the
+                             keyboard, never what a pid may do.
 kernel/                      EL1 trust root. No business logic, standard library only.
   kernel.go                  package doc, the ABI version, the one reset path
   context.go                 SContext alias, identity, the concrete *sContext that every
@@ -89,6 +94,8 @@ kernel/                      EL1 trust root. No business logic, standard library
 tests/                       external test suites, one package per architectural layer
   abi/                       the abi package's own two properties: standard library
                              only, and nothing that duplicates a kernel decision
+  console/                   the daemon, its protocol, the password record, the command
+                             table and the component loader
   harness/                   the shared fixtures: boot, console sink, probe modules
   identity/                  context, policy, manifest, proc, boot, bootconfig
   lifecycle/                 module load/unload, the usage ABI
@@ -182,6 +189,68 @@ something the kernel learned during the boot or something it was told before it,
 | `kernel/bootconfig.go` | kboot | the sealed trust root, cluster roots, resource ceilings | none |
 | `kernel/console.go` | - | kernel console: JSON/text, level filter, retention, fault emitter | `console.java` |
 | `kernel/dump.go` | - | read-only kernel state rendering for debugging | none |
+
+### The console daemon
+
+`internal/console` turns the kernel into something an operator can sit in front of.
+It is host code and the distinction is the design: the kernel decides what a pid may
+do, and this package decides who is at the keyboard. Neither substitutes for the
+other, and a privileged command goes through both.
+
+Three modes, all the same binary. No flags: attach to the daemon if its socket is
+live, otherwise re-exec with `-daemon` under `Setsid` and then attach. `-daemon`:
+run the kernel in the foreground and serve the socket. `-once`: boot, print one
+report, shut down - what CI runs.
+
+**Why a socket and not a pid file.** A unix-domain listen on a path another process
+is bound to fails with `EADDRINUSE`, measured, so two daemons racing produce one
+winner and one refusal with no window in which both own a kernel. A pid file has
+such a window and needs staleness guessing to recover from it. The one case the
+socket cannot answer alone is a path left behind by a killed daemon: that is probed
+with a real connect, and only a refused connect causes the stale path to be removed
+and the bind retried. The socket is created 0600 in a 0700 directory, and its mode is
+what the kernel enforces on connect.
+
+**Why closing the terminal is safe.** `Setsid` puts the daemon in its own session and
+process group, so a hangup or a Ctrl-C at the shell reaches the client process and
+nothing else. Verified: `ps -o pid,ppid,sid,tty` on the daemon shows its own session,
+`PPID 1` and no controlling terminal, and killing an attached client outright leaves
+the daemon serving. The daemon stops for exactly two reasons - a signal, or `poweroff`
+typed into an authenticated session - and both reach the same `Stop`, so the kernel is
+shut down once, by one function.
+
+**The password gate.** A shadow-style record under the state directory: name, scheme,
+cost, salt and a PBKDF2-SHA256 hash, never the password. 0600 in a 0700 directory, so
+the record and the socket share one trust boundary - the owning user - which is what
+makes first-boot provisioning safe with no record to check against. Constants are
+600,000 iterations for a new record, a 100,000 floor a stored record is refused below,
+and a 12-byte minimum length. Verification is constant time. Five failures close the
+session, with a 400 ms backoff between them. The kernel gets a separate value derived
+from the stored hash, not the password, so the daemon never needs a plaintext to
+satisfy `InstallConsoleCredential`. A Go string cannot be wiped, so the plaintext
+stays in memory for the life of the request; what this code does control is that it
+never reaches disk or a log line.
+
+**The command table.** `help`, `auth`, `whoami`, `status`, `ps`, `ls`, `log`, `audit`,
+`dump`, `bin`, `load`, `unload`, `reload`, `passwd`, `quit`, `poweroff`. A command
+marked privileged needs an authenticated session; a command that then performs a
+kernel act is re-checked inside ktty against its own credential, which is why the two
+layers are not redundant. The table is dynamic: a component in `root/bin` contributes
+commands at load time and they appear in `help` with no rebuild.
+
+**The component loader, and what it does not claim.** `root/bin/*.so` is discovered,
+each file's manifest and command table are read by symbol lookup (`MeowAPIManifest`,
+`MeowAPICommands`, both declared in `abi`), and the kernel loads it through a shim
+whose `OnLoad` registers the commands under the component's own context. Three facts
+measured here and worth not rediscovering: `plugin.Open` on a 0644 `.so` works, so the
+execute bit is not a loadability check; a component whose `init()` panics unwinds
+through `plugin.Open` and takes the process with it unless the call is shielded; and a
+SECOND `Open` on a path whose first `Open` failed hangs forever, while a second `Open`
+on a path that succeeded returns the same handle without re-running `init`. Hence:
+shield the panic, record `failed` on every failure path, never retry a failed path,
+and let an unloaded component be loaded again. Loading a `.so` is not isolation - the
+component runs in-process with the daemon's privileges - and only what it does THROUGH
+the kernel is bounded.
 
 ### The abi package
 
@@ -786,6 +855,7 @@ introduces a new layer adds a package and a line in the file map.
 | `tests/kpanic` | what survives the way out | `panic` |
 | `tests/security` | the invariants that must never regress | `kernel` |
 | `tests/abi` | what a module is allowed to see | `abi` |
+| `tests/console` | what an operator may do at the keyboard | `auth`, `commands`, `socket`, `protocol`, `components` |
 
 Seven files stay in `kernel/` rather than moving, and the reason is a property worth
 keeping: `kernel/export_test.go` is `package kernel` and exposes package-private
