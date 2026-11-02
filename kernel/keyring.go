@@ -577,13 +577,36 @@ func visibleAliases(scope secretScope) []string {
 // honored. manifest.go already rejects an empty prefix for secret:read; this defends
 // the same hole on the secret:use path, where validation does not currently require
 // prefixes at all.
+// Matching is by SEGMENT BOUNDARY, not by bare string prefix. A declared prefix "a"
+// covers the alias "a" and "a.b", and does NOT cover "api-token" - which bare
+// strings.HasPrefix accepted, so a single letter of prefix was a grant over every
+// alias in the keyring that began with that letter. Measured through the sanctioned
+// syscalls: `SecretPrefixes: ["a"]` listed "api-token" and "admin-key", and
+// secret:use on them succeeded.
+//
+// The boundary rule has to accept BOTH separators, and that is not laxity: aliases in
+// this tree are dotted ("provider.api.key") and slashed ("openai/prod"), the static
+// module contract documents "." in its examples, and a rule that accepted only one of
+// them would silently narrow every deployment using the other. So a prefix matches
+// when the alias is exactly the prefix, or continues it after "." or "/".
+//
+// A trailing separator on the prefix is stripped first, so "provider." and "provider"
+// mean the same thing - the form an operator writes should not change the grant.
 func aliasInScope(alias string, prefixes []string) bool {
 	for _, p := range prefixes {
+		p = strings.TrimRight(p, "./")
 		if p == "" {
+			// An empty prefix would match every alias. It is refused at validation,
+			// and skipped here so a scope that reached this point anyway fails closed.
 			continue
 		}
-		if strings.HasPrefix(alias, p) {
+		if alias == p {
 			return true
+		}
+		if rest, ok := strings.CutPrefix(alias, p); ok && len(rest) > 0 {
+			if rest[0] == '.' || rest[0] == '/' {
+				return true
+			}
 		}
 	}
 	return false

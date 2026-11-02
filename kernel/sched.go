@@ -339,8 +339,20 @@ func SchedTimer(ctx SContext, spec TimerSpec) (FD, error) {
 	if spec.Fn == nil {
 		return noFD, errors.New("kernel: SchedTimer requires a function")
 	}
+	// The delay is bounded above as well as below, and the upper bound is not a
+	// policy nicety - it is a correctness one. time.Duration is a signed int64 of
+	// nanoseconds, so DelayMillis * time.Millisecond overflows above about 9.2e12 ms
+	// and the product wraps NEGATIVE, which arms the timer in the past so it fires
+	// immediately. Measured through the module's own syscall with DelayMillis:
+	// math.MaxInt64: accepted, an fd assigned, the callback run at once. The timeout
+	// beside it was already clamped through callCeiling; the delay was not, which is
+	// how a saturated bound on one field left the other unbounded.
 	if spec.DelayMillis < 0 {
 		return noFD, errors.New("kernel: SchedTimer requires a non-negative delay")
+	}
+	if spec.DelayMillis > maxTimerDelayMillis {
+		return noFD, schedLimitErr("delay of %d ms exceeds the ceiling %d ms",
+			spec.DelayMillis, maxTimerDelayMillis)
 	}
 	if len(spec.Label) > maxSchedLabelLen {
 		return noFD, schedLimitErr("label longer than %d bytes", maxSchedLabelLen)
@@ -487,6 +499,16 @@ func callCeiling(requestedMillis int64) time.Duration {
 
 // defaultCallCeiling is the fallback when the trust root carries no ceiling.
 const defaultCallCeiling = 30 * time.Second
+
+// maxTimerDelayMillis bounds one timer's delay, in milliseconds.
+//
+// It is 2^40 ms, about 34 years - large enough that no legitimate deployment is
+// anywhere near it, and small enough that the conversion to nanoseconds cannot
+// overflow an int64 (2^40 * 1e6 is about 1.1e18, and the maximum is about 9.2e18).
+// The exact number matters less than that there IS one: without it the multiplication
+// wraps negative and the timer fires immediately, which is the opposite of what a
+// caller asking for a very long delay meant.
+const maxTimerDelayMillis int64 = 1 << 40
 
 // reserveLive takes one slot in the per-pid bound on supervised runs.
 //

@@ -195,6 +195,52 @@ func render(r Record, format Format) string {
 	return string(line)
 }
 
+// escapeText renders a message safe to print as ONE line of text.
+//
+// Control characters become their Go escape so the newline, the carriage return and
+// the ESC that would move a terminal's cursor all stop being those things. Only
+// characters below 0x20 and DEL are touched: a UTF-8 message is left alone, because
+// the escape is about the LINE structure and a non-ASCII character does not break it.
+//
+// It is deliberately not applied to the JSON format, which already escapes by
+// construction - doing it twice would turn a newline into the six characters \u000a
+// inside a JSON string and change what a machine-readable record says.
+func escapeText(s string) string {
+	// Fast path: the overwhelming majority of messages contain nothing to escape, and
+	// this runs for every record on every sink.
+	clean := true
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c == 0x7f {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch c {
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if c < 0x20 || c == 0x7f {
+				fmt.Fprintf(&b, `\x%02x`, c)
+				continue
+			}
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
 // levelTag is a fixed-width severity label so text columns line up. Fault is
 // marked distinctly because it is the line a human scrolls back for.
 func levelTag(l Level) string {
@@ -234,7 +280,15 @@ func renderText(r Record) string {
 		b.WriteByte(' ')
 	}
 
-	b.WriteString(r.Msg)
+	// The message is escaped, and this is the one field a module controls most freely.
+	// JSON rendering escapes it by construction, so the text format was the only place
+	// a message containing a newline could forge a whole record: a module logging
+	// "ok\n12:00:00.000 FAULT [u:r:kernel:s0 pid=0] disabled" would appear, in a
+	// terminal or in any log a human reads, as a kernel fault that never happened.
+	// keyring.go refuses control characters in an alias for exactly this reason; the
+	// reasoning was applied in eight places and missed the field with the most
+	// attacker control.
+	b.WriteString(escapeText(r.Msg))
 
 	if len(r.Fields) > 0 {
 		// Marshal the fields rather than formatting the map directly, so nested

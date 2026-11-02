@@ -852,3 +852,64 @@ func TestSecretRegisterAndReadAreContextGated(t *testing.T) {
 
 	assert.Contains(t, buf.String(), "avc: denied { secret:read }")
 }
+
+// TestSecretPrefixIsNotAStringPrefix is the regression for a real escalation.
+//
+// aliasInScope used strings.HasPrefix. A module declaring SecretPrefixes: ["a"]
+// therefore listed "api-token" and "admin-key" through SyscallSecretAliases and
+// secret:USE on them succeeded - one letter of prefix was a grant over every alias in
+// the keyring that began with that letter. secret:read was correctly denied the whole
+// time, which is what made it look safe.
+//
+// The rule is now a segment boundary: the alias equals the prefix or continues it
+// after "." or "/". Both separators are accepted because aliases in this tree are
+// dotted ("provider.api.key") and slashed ("openai/prod"), and a rule that took only
+// one shape would silently narrow every deployment using the other.
+func TestSecretPrefixIsNotAStringPrefix(t *testing.T) {
+	krQuiet(t)
+	k := krBoot(t)
+
+	for _, alias := range []string{"api-token", "admin-key", "a", "a.b", "a/b", "ab.c"} {
+		krInstall(t, k, alias, "", "", krSecretValue)
+	}
+
+	m := &krModule{}
+	krLoad(t, k, m, krManifest("krexact", []string{"a"}, kernel.OpSecretUse))
+
+	aliases, err := m.ctx.SyscallSecretAliases()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "a.b", "a/b"}, aliases,
+		"the visible set is the prefix itself and what continues it after a separator")
+
+	for _, alias := range []string{"api-token", "admin-key", "ab.c"} {
+		_, err := m.ctx.SyscallSecretUse(alias, kernel.SecretActionSign, []byte("x"))
+		require.Error(t, err, "%q shares a STRING prefix with the declaration and must not be usable", alias)
+	}
+
+	// The near-miss that names the bug: "a" is a prefix of "ab.c" as a string and not
+	// as a segment, and using it must be refused even though the alias exists.
+	_, err = m.ctx.SyscallSecretUse("ab.c", kernel.SecretActionSign, []byte("x"))
+	require.Error(t, err)
+}
+
+// TestSecretPrefixTrailingSeparatorIsTheSameGrant pins that "provider." and "provider"
+// mean one thing: the form an operator writes should not change the authority.
+func TestSecretPrefixTrailingSeparatorIsTheSameGrant(t *testing.T) {
+	for _, prefix := range []string{"provider", "provider.", "provider/"} {
+		t.Run(prefix, func(t *testing.T) {
+			krQuiet(t)
+			k := krBoot(t)
+			krInstall(t, k, "provider.api.key", "", "", krSecretValue)
+			krInstall(t, k, "providerX.api.key", "", "", krSecretValue)
+
+			m := &krModule{}
+			krLoad(t, k, m, krManifest("krsep", []string{prefix}, kernel.OpSecretUse))
+
+			_, err := m.ctx.SyscallSecretUse("provider.api.key", kernel.SecretActionSign, []byte("x"))
+			require.NoError(t, err)
+
+			_, err = m.ctx.SyscallSecretUse("providerX.api.key", kernel.SecretActionSign, []byte("x"))
+			require.Error(t, err, "a different alias sharing the string prefix must be out of scope")
+		})
+	}
+}

@@ -155,3 +155,59 @@ func TestConsoleRejectsUnknownFormat(t *testing.T) {
 	c.SetLevel("shout")
 	assert.Equal(t, kernel.LogDebug, c.Level())
 }
+
+// TestTextConsoleCannotForgeARecord pins that a module's message cannot manufacture a
+// second console record.
+//
+// The text format wrote the message verbatim, so a newline in it started a line that
+// looked like a kernel record. JSON mode escaped by construction, which is what made
+// the text format the one place nobody looked. The message is the field a module
+// controls most freely - SyscallLog gates the LEVEL and nothing else - so this was the
+// cheapest header in the whole trail to forge.
+func TestTextConsoleCannotForgeARecord(t *testing.T) {
+	var buf bytes.Buffer
+	sink := harness.Locked(&buf)
+	k, err := kernel.Boot(kernel.BootConfig{
+		Console:   sink,
+		LogFormat: kernel.FormatText,
+		LogLevel:  kernel.LogDebug,
+	})
+	require.NoError(t, err)
+	// The FORMAT is process-global console state, so it is restored: this boot set it
+	// to text and every later test in the package that parses the console as JSON
+	// would then be reading text. Measured - three tests in this package failed in the
+	// full run and passed alone, and this was why.
+	t.Cleanup(func() {
+		_ = k.Shutdown()
+		kernel.KernelConsole().SetFormat(kernel.FormatJSON)
+	})
+
+	harness.RegisterProbe(t, "forger", &harness.Probe{Load: func(ctx kernel.SContext) error {
+		return ctx.SyscallLog(kernel.LogInfo,
+			"benign\n00:00:00.000 FAULT [u:r:kernel:s0 pid=0] all clear")
+	}})
+	_, err = k.Load(kernel.Manifest{
+		Name: "forger", Version: "1", MinKernelAPI: 1, MaxKernelAPI: 1,
+		Require: []kernel.Op{kernel.OpLogWrite},
+	})
+	require.NoError(t, err)
+
+	out := buf.String()
+	// The assertion is on WHERE the forged text sits, not that it is absent: escaped,
+	// it is still visible on one line, which is the point - an operator can still read
+	// what the module said. What must not happen is a line that STARTS like a kernel
+	// record and carries the forged payload. The first version of this test failed on
+	// its own escaped output because it searched the whole line for both markers.
+	if strings.Contains(out, "\n00:00:00.000 FAULT") {
+		t.Fatalf("the message broke the line structure:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if strings.Contains(trimmed, "FAULT") && !strings.Contains(trimmed, "benign") {
+			t.Fatalf("a line begins as a kernel fault and is not a module record:\n%s", out)
+		}
+	}
+	if !strings.Contains(out, `\n`) {
+		t.Fatalf("the newline was not escaped, so the message stayed multi-line:\n%s", out)
+	}
+}

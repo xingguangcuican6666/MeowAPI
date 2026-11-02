@@ -33,6 +33,7 @@ package supervision
 // state, so a slow machine makes the test slower and never makes it wrong.
 
 import (
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -972,4 +973,53 @@ func TestSchedOutcomeIsACopy(t *testing.T) {
 	assert.NotEmpty(t, again.Stack, "the kernel keeps its own copy of the evidence")
 	require.NoError(t, p.captured().SyscallClose(fd))
 	require.NoError(t, k.Unload(pid))
+}
+
+// TestSchedTimerRefusesADelayThatWouldOverflow pins the upper bound on the delay.
+//
+// Without it, DelayMillis * time.Millisecond wraps NEGATIVE for a large enough value,
+// and the timer is armed in the past so it fires immediately - the exact opposite of
+// what a caller asking for a very long delay meant. Measured through the module's own
+// syscall before the fix: math.MaxInt64 was accepted, an fd was assigned, and the
+// callback ran at once.
+//
+// The bound is asserted on both sides, because a test that only checked the refusal
+// would pass on a bound of 1.
+func TestSchedTimerRefusesADelayThatWouldOverflow(t *testing.T) {
+	k, _ := schedQuiet(t, kernel.BootLimits{})
+	_, p := schedLoad(t, k, kernel.OpSchedTimer)
+	ctx := p.captured()
+
+	ran := make(chan struct{}, 1)
+	_, err := ctx.SyscallSchedTimer(kernel.TimerSpec{
+		Label:       "huge",
+		DelayMillis: math.MaxInt64,
+		Fn: func(kernel.SContext, <-chan struct{}) {
+			select {
+			case ran <- struct{}{}:
+			default:
+			}
+		},
+	})
+	require.Error(t, err, "a delay of MaxInt64 milliseconds was accepted")
+	select {
+	case <-ran:
+		t.Fatal("the callback ran, so the timer was armed in the past")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// A delay just over the ceiling is refused, and a modest one is not - so the
+	// bound is a bound rather than a blanket refusal.
+	_, err = ctx.SyscallSchedTimer(kernel.TimerSpec{
+		Label: "over", DelayMillis: 1 << 41,
+		Fn: func(kernel.SContext, <-chan struct{}) {},
+	})
+	require.Error(t, err)
+
+	fd, err := ctx.SyscallSchedTimer(kernel.TimerSpec{
+		Label: "ok", DelayMillis: 1000,
+		Fn: func(kernel.SContext, <-chan struct{}) {},
+	})
+	require.NoError(t, err, "a one-second timer was refused")
+	require.NoError(t, ctx.SyscallClose(fd))
 }
