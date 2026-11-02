@@ -167,19 +167,27 @@ func TestConsoleRejectsUnknownFormat(t *testing.T) {
 func TestTextConsoleCannotForgeARecord(t *testing.T) {
 	var buf bytes.Buffer
 	sink := harness.Locked(&buf)
+
+	// The FORMAT is process-global console state, so the value that was there before
+	// this test is captured and put back rather than asserting the documented default.
+	// The difference is not pedantry: restoring FormatJSON is correct only while every
+	// other test in this package leaves the console in JSON, which makes the cleanup a
+	// dependency on the rest of the file rather than a guarantee of its own - the same
+	// shape as a gitignore premise that is true until someone adds a fixture. Capturing
+	// prev costs one line and cannot be broken by a neighbour.
+	prev := kernel.KernelConsole().Format()
+
 	k, err := kernel.Boot(kernel.BootConfig{
 		Console:   sink,
 		LogFormat: kernel.FormatText,
 		LogLevel:  kernel.LogDebug,
 	})
 	require.NoError(t, err)
-	// The FORMAT is process-global console state, so it is restored: this boot set it
-	// to text and every later test in the package that parses the console as JSON
-	// would then be reading text. Measured - three tests in this package failed in the
-	// full run and passed alone, and this was why.
+	// Measured before this existed: leaving the format at text made three tests in this
+	// package fail in the full run and pass alone.
 	t.Cleanup(func() {
 		_ = k.Shutdown()
-		kernel.KernelConsole().SetFormat(kernel.FormatJSON)
+		kernel.KernelConsole().SetFormat(prev)
 	})
 
 	harness.RegisterProbe(t, "forger", &harness.Probe{Load: func(ctx kernel.SContext) error {

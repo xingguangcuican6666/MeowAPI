@@ -28,11 +28,22 @@ import (
 	"strings"
 )
 
-// Dump renders a snapshot of kernel state as text, for a debugging console. It
-// is read-only and takes no context: it exposes nothing that is not already
-// readable through ProcTable, LoadedModules, UsageSnapshot and the console
-// history, so it grants no privilege. It exists so an operator can answer "what
-// is loaded, under which grants, and what has been denied" in one screen.
+// Dump renders a snapshot of kernel state as text, for a debugging console.
+//
+// It is read-only and takes no context, and the first version of this comment claimed
+// that meant it "grants no privilege" - which is true of privilege and false of
+// disclosure. Dump concatenates what every subsystem exposes: the process table, the
+// module registry and their GRANTS, the audit window, the trust root's non-secret keys,
+// the keyring's alias inventory, the peer table, the seccomp filters and the console
+// history. Those are already readable one at a time by the console's ps, ls, audit and
+// log, which is why the disclosure is acceptable - but "no privilege" undersold it, and
+// an audit read 3928 bytes of it from a probe with no context at all.
+//
+// So it is classified hostOnly in tests/security's function walk, together with every
+// other function that answers about pids other than the caller's, and the boundary that
+// keeps it out of a module is the import rule plus the signing review. That is a weaker
+// gate than a context check and this comment says so rather than implying otherwise.
+//
 // oomBytes renders a byte count for the dump, in binary units. The capacities here are ones
 // the operator set in binary units, so rendering 64MiB as 67.1MB would show a ceiling that
 // looks like something nobody configured.

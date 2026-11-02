@@ -277,6 +277,32 @@ and let an unloaded component be loaded again. Loading a `.so` is not isolation 
 component runs in-process with the daemon's privileges - and only what it does THROUGH
 the kernel is bounded.
 
+### The import boundary, and the walk that enforces it
+
+A module imports `abi` and not `kernel`: that is both the contract and the reason a
+plugin stays valid across kernel changes. What the suite did not do until now was
+enforce it. `package kernel` exports 262 functions; ninety take an `SContext` and are
+gated by the check inside them, and the rest were unreachable by any test because the
+suite only walked `*Kernel`'s METHOD set. An audit reproduced reading the chain,
+dumping kernel state and revoking another pid's grants from a probe with no context.
+
+`tests/security/functionwalk_test.go` is the walk, the same shape as the method one:
+every exported package-level function is either context-taking, host-only with a
+reason, pid-keyed with a reason, or module-reachable with a reason. Four outcomes and
+no silence. It parses the source rather than calling the functions, so a new export
+fails the build with a message saying what to decide, and the decision is on the
+record. A second test refuses a name in either list that no longer exists, because a
+classification list that survives a rename silently starts covering a different
+function - which is how a list becomes the hole it was meant to close.
+
+The interesting group is the one that is neither gated nor obviously safe: reads of
+OTHER pids' activity - the process table, the audit window, the route table, the
+network and trace history. Those are acceptable only because every one is already
+shown to an authenticated operator by the console's `ps`, `ls`, `audit` and `log`.
+They are grouped separately in the file so that reason is not buried inside a larger
+one, and so that if the import boundary is ever relaxed, that group is the one that
+needs a pid check added first.
+
 ### Runtime policy change
 
 The compiled rules table in `policy.go` is the ceiling and stays that way. What may
