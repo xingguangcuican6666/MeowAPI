@@ -85,6 +85,45 @@ var hostOnlyFunctions = map[string]string{
 	"PanicSetCrashWriter":   "redirects the crash dump; a module that redirected it could erase the evidence of a crash",
 	"PanicFlush":            "runs the exit flush; called from a crash path where no *Kernel exists, which is why the panic group cannot be handle methods",
 	"PanicLastFlush":        "reports the last flush; the record of what survived",
+
+	// The seven below are reads of other pids' activity with NO operator-facing reader
+	// anywhere: they appear in neither kernel.Dump nor internal/console, and their only
+	// non-test references are their own definitions. They were classified module-reachable
+	// on the reasoning that the console already shows them to an authenticated operator,
+	// which is false for these seven - the peer who checked every member found it, and
+	// checking is the only reason it surfaced. There is no disclosure argument left to
+	// make for them, so they are host-only.
+	"NetHistory":        "egress history with no operator-facing reader; it is in neither Dump nor the console, so nothing shows it to anyone and a module reaching it would be the only reader",
+	"TraceQuery":        "span history with no operator-facing reader; the one in-package caller is TraceStatsSnapshot, which is a count and not a query",
+	"SeccompHistory":    "instance-filter history with no operator-facing reader",
+	"VerifierLedger":    "the appraisal ledger, which is evidence; VerifierRecord is already host-only for writing to it, and a reader that can enumerate every admission is the same exposure from the other side",
+	"VerifierLedgerFor": "one module's appraisal ledger; same reason as VerifierLedger, and it is keyed by a module NAME a caller chooses",
+	"VerifierLedgerLen": "the ledger's length; the smallest of the three and still host-only for consistency with the ledger itself",
+	"TokenLedger":       "per-module usage accounting with no operator-facing reader",
+
+	// TokenMeasureFlow is the one member of the former pid-keyed group that MUTATES
+	// rather than reads: it increments ktokenizer.byPid[pid].FlowBytes and FlowTokens
+	// under the lock and creates the entry when absent. A module calling it with a
+	// neighbour's pid would charge that neighbour's flow budget rather than observe it,
+	// which is a write into another module's accounting and belongs here, not in a
+	// group whose stated reason is about what a caller learns.
+	"TokenMeasureFlow": "writes into the pid's flow accounting under the lock and creates the entry if absent, so a caller with a neighbour's pid charges that neighbour's budget rather than reading it",
+}
+
+// identityKeyedFunctions are exported functions keyed by an identity the CALLER supplies
+// rather than by the caller's own pid - a mesh node id, a module name, a string key -
+// with no context to check it against.
+//
+// They are listed apart from pidKeyedFunctions because the reason is genuinely different
+// and the first version of this file had them wrong: it said "takes an arbitrary pid"
+// about PeerLatencyOf(nodeID string) and ReceiptCursor(nodeID string), which take no pid
+// at all. A reason that does not describe the function it is attached to is worse than
+// no reason, because a reader who trusts it stops checking - and the signature assertion
+// below is what makes that specific mistake impossible to repeat.
+var identityKeyedFunctions = map[string]string{
+	"PeerLatencyOf": "takes a mesh node identity the caller supplies and no context, so it answers for any peer in the table; a module that could reach it would learn the mesh's latency view of nodes it has no business knowing about",
+	"ReceiptCursor": "takes a mesh node identity the caller supplies and no context, so it answers for any peer's replay cursor; the cursor is what stops a receipt being replayed, and enumerating cursors is reconnaissance for that",
+	"QosPolicyFor":  "takes a policy key the caller supplies and no context, so it answers for any class's admission policy including one it does not run under",
 }
 
 // pidKeyedFunctions are exported functions that take a pid and no SContext, so they
@@ -105,15 +144,12 @@ var pidKeyedFunctions = map[string]string{
 	"NetHostAllowed":   "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
 	"NetSockets":       "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
 	"OomTallyFor":      "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
-	"PeerLatencyOf":    "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
-	"ReceiptCursor":    "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
 	"SchedCount":       "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
 	"SeccompFiltered":  "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
 	"SignalPending":    "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
 	"SignalState":      "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
 	"SignalTerminated": "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
 	"TTYList":          "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
-	"TokenMeasureFlow": "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
 	"TraceLiveFor":     "takes an arbitrary pid and no context, so it answers for a pid whose owner it cannot verify; a module calling it with a neighbour's pid learns that neighbour's state",
 }
 
@@ -156,25 +192,26 @@ var reachableGroups = []struct {
 			"to an unauthenticated session on purpose.",
 		[]string{
 			"UsageTotal", "UsageRejected", "UsageSnapshot", "CPUStats", "CPUDenied",
-			"MetadataSnapshot", "Narrowed", "PolicyNarrowing", "TokenStrictFloor",
-			"QosPolicyFor", "QosKeys",
+			"MetadataSnapshot", "Narrowed", "PolicyNarrowing", "TokenStrictFloor", "QosKeys",
 		},
 	},
 	{
 		"A read of OTHER pids' activity: the process table, the route table, the module " +
-			"registry, the audit window, the network and trace history. This is the group whose " +
-			"safety rests entirely on the import boundary rather than on anything the function " +
-			"checks, and it is separated out so the reason is not hidden inside a larger one. " +
-			"It is acceptable because every one of these is already shown to an authenticated " +
-			"operator by the console's ps, ls, audit and log commands, so a module that could " +
-			"import package kernel would be disclosing what an operator can already read - not " +
-			"what the kernel keeps secret. If that boundary is ever relaxed, THIS group is the " +
-			"one that needs a pid check added first.",
+			"registry, the audit window, the memory tallies, the lock table. This is the group " +
+			"whose safety rests entirely on the import boundary rather than on anything the " +
+			"function checks, and it is separated out so the reason is not hidden inside a " +
+			"larger one. It is acceptable because every member is already shown to an " +
+			"AUTHENTICATED operator - by the console's ps, ls and audit commands, or by " +
+			"kernel.Dump, which is gated on the same credential. If that boundary is ever " +
+			"relaxed, THIS group is the one that needs a pid check added first. " +
+			"The reason used to claim this for seven more functions - NetHistory, TraceQuery, " +
+			"SeccompHistory, the three VerifierLedger readers and TokenLedger - and it was " +
+			"false: those appear in neither Dump nor the console, so there was no operator " +
+			"already reading them and no disclosure argument to make. They are in " +
+			"hostOnlyFunctions now, which is where a read with no reader belongs.",
 		[]string{
 			"ProcTable", "RouteTable", "LoadedModules", "Registered", "AuditQuery",
-			"AuditHead", "AuditLen", "NetHistory", "PeerTableSnapshot", "OomTallies",
-			"TraceQuery", "SeccompHistory", "SecretInventory", "SlashLedger",
-			"VerifierLedger", "VerifierLedgerFor", "VerifierLedgerLen", "TokenLedger",
+			"AuditHead", "AuditLen", "PeerTableSnapshot", "OomTallies", "SecretInventory", "SlashLedger",
 			"TokenTotalsByModule", "WatchdogSnapshot", "LockSnapshot",
 		},
 	},
@@ -191,10 +228,11 @@ var reachableGroups = []struct {
 		},
 	},
 	{
-		"A bounded snapshot of a ledger whose contents are already on the audit chain, the " +
-			"console or an operator's dump. Reading one is not a capability the kernel withholds, " +
-			"and an operator's console prints several of these to an unauthenticated session on " +
-			"purpose. Each is capped by its own ceiling.",
+		"A bounded counter or aggregate about the kernel as a whole rather than about one " +
+			"pid: how many sockets are pooled, how many segments exist, how many spans were " +
+			"abandoned. Each is capped by its own ceiling and each answers a question a module " +
+			"could already answer about itself by counting its own calls. Nothing in this group " +
+			"is keyed by an identity the caller supplies - those are in identityKeyedFunctions.",
 		[]string{
 			"NetAddressAllowed",
 			"NetPrivateRanges", "NetStatsSnapshot", "PipeStatsSnapshot",
@@ -263,6 +301,9 @@ func TestEveryPackageLevelFunctionIsClassified(t *testing.T) {
 		syscalls int
 	)
 	var unclassified []string
+	// sigs records every exported function's declaration so the shape assertions at
+	// the bottom can check a classification against the signature it claims to describe.
+	sigs := map[string]*ast.FuncDecl{}
 
 	for _, path := range files {
 		if strings.HasSuffix(path, "_test.go") {
@@ -280,6 +321,7 @@ func TestEveryPackageLevelFunctionIsClassified(t *testing.T) {
 				continue
 			}
 			name := fn.Name.Name
+			sigs[name] = fn
 
 			// A function whose first parameter is an SContext resolves that context
 			// against the kernel's own type before doing anything, which is the gate.
@@ -295,6 +337,9 @@ func TestEveryPackageLevelFunctionIsClassified(t *testing.T) {
 			if _, ok := pidKeyedFunctions[name]; ok {
 				continue
 			}
+			if _, ok := identityKeyedFunctions[name]; ok {
+				continue
+			}
 			if _, ok := moduleReachableFunctions[name]; ok {
 				continue
 			}
@@ -304,10 +349,72 @@ func TestEveryPackageLevelFunctionIsClassified(t *testing.T) {
 
 	sort.Strings(unclassified)
 	for _, name := range unclassified {
-		t.Errorf("kernel.%s is exported, takes no SContext, and is in neither list.\n"+
+		t.Errorf("kernel.%s is exported, takes no SContext, and is in no list.\n"+
 			"  If a module must never reach it, add it to hostOnlyFunctions with the reason;\n"+
 			"  if calling it teaches a module nothing it cannot already reach, add it to the\n"+
 			"  matching reachableGroups entry. Silence is not an exemption.", name)
+	}
+
+	// A classification must match the signature it claims to describe.
+	//
+	// Without this, a name can sit in a group whose stated reason is simply false about
+	// it, and both tests pass. That is not hypothetical: moving DefaultAuditWindow, which
+	// takes no parameters at all, into pidKeyedFunctions left the suite green, and the
+	// first draft of this file said "takes an arbitrary pid" about PeerLatencyOf and
+	// ReceiptCursor, which take a node id. A reason nobody checks is a decoration.
+	//
+	// The checks are the ones the reasons actually assert, and nothing more: a pid-keyed
+	// function must have a PID parameter, an identity-keyed one a string parameter, and no
+	// member of any of the three host-side lists may take an SContext, because taking one
+	// is what makes the other three categories unnecessary.
+	for name := range pidKeyedFunctions {
+		fn, ok := sigs[name]
+		if !ok {
+			continue // the staleness test reports a name that is not a function
+		}
+		if takesContext(fn) {
+			t.Errorf("%s is in pidKeyedFunctions but takes an SContext, so it is gated by "+
+				"its own check and belongs in neither host list", name)
+		}
+		if !hasParamOfType(fn, "PID") {
+			t.Errorf("%s is in pidKeyedFunctions but takes no PID parameter, so the reason "+
+				"attached to it does not describe it; check the signature and move it to the "+
+				"list whose reason does", name)
+		}
+	}
+	for name := range identityKeyedFunctions {
+		fn, ok := sigs[name]
+		if !ok {
+			continue
+		}
+		if takesContext(fn) {
+			t.Errorf("%s is in identityKeyedFunctions but takes an SContext", name)
+		}
+		if !hasParamOfType(fn, "string") {
+			t.Errorf("%s is in identityKeyedFunctions but takes no string parameter, so the "+
+				"reason attached to it does not describe it", name)
+		}
+	}
+	for name := range hostOnlyFunctions {
+		fn, ok := sigs[name]
+		if !ok {
+			continue
+		}
+		if takesContext(fn) {
+			t.Errorf("%s is in hostOnlyFunctions but takes an SContext; a context-taking "+
+				"function is already gated by its own check, so listing it here hides which "+
+				"gate actually applies", name)
+		}
+	}
+	for name := range moduleReachableFunctions {
+		fn, ok := sigs[name]
+		if !ok {
+			continue
+		}
+		if takesContext(fn) {
+			t.Errorf("%s is in reachableGroups but takes an SContext; it is a syscall and is "+
+				"counted as one, so it should not be classified here as well", name)
+		}
 	}
 
 	// The walk found what it expected. Without these the test passes on an empty parse
@@ -333,6 +440,33 @@ func TestEveryPackageLevelFunctionIsClassified(t *testing.T) {
 			"functions and around 130 of them touch state, so this walk is undercounting",
 			len(moduleReachableFunctions))
 	}
+}
+
+// hasParamOfType reports whether any parameter has the named type, spelled either bare
+// (PID) or qualified (abi.PID). It answers the shape question a group's reason asserts,
+// so a classification cannot claim a parameter the function does not have.
+func hasParamOfType(fn *ast.FuncDecl, want string) bool {
+	if fn.Type.Params == nil {
+		return false
+	}
+	for _, field := range fn.Type.Params.List {
+		switch typ := field.Type.(type) {
+		case *ast.Ident:
+			if typ.Name == want {
+				return true
+			}
+		case *ast.SelectorExpr:
+			if typ.Sel != nil && typ.Sel.Name == want {
+				return true
+			}
+		case *ast.Ellipsis:
+			// A variadic parameter's element type is what a caller passes.
+			if id, ok := typ.Elt.(*ast.Ident); ok && id.Name == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // takesContext reports whether a function's first parameter is an SContext, which is the
@@ -389,6 +523,11 @@ func TestTheClassificationListsAreNotStale(t *testing.T) {
 			t.Errorf("pidKeyedFunctions names %q, which is not an exported function in package kernel", name)
 		}
 	}
+	for name := range identityKeyedFunctions {
+		if !real[name] {
+			t.Errorf("identityKeyedFunctions names %q, which is not an exported function in package kernel", name)
+		}
+	}
 	for name := range moduleReachableFunctions {
 		if !real[name] {
 			t.Errorf("reachableGroups names %q, which is not an exported function in package kernel", name)
@@ -408,6 +547,17 @@ func TestTheClassificationListsAreNotStale(t *testing.T) {
 	for name := range pidKeyedFunctions {
 		if _, ok := moduleReachableFunctions[name]; ok {
 			t.Errorf("%q is in both lists; pick one", name)
+		}
+		if _, ok := identityKeyedFunctions[name]; ok {
+			t.Errorf("%q is in both host lists; pick one", name)
+		}
+	}
+	for name := range identityKeyedFunctions {
+		if _, ok := moduleReachableFunctions[name]; ok {
+			t.Errorf("%q is in both lists; pick one", name)
+		}
+		if _, ok := hostOnlyFunctions[name]; ok {
+			t.Errorf("%q is in both host lists; pick one", name)
 		}
 	}
 }

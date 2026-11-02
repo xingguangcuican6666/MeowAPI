@@ -466,3 +466,74 @@ func TestPipelineStageCeiling(t *testing.T) {
 		t.Fatalf("%d stages were accepted, ceiling is %d", maxPipelineStages+1, maxPipelineStages)
 	}
 }
+
+// TestNoUnauthenticatedCommandPrintsAnotherPidsFacts pins the property the peer's
+// audit found one instance of, as a property rather than as three fixes.
+//
+// The defect: `dump` was not gated and printed the process table, the policy grants,
+// the trust root and the secret alias inventory - a strict superset of `ps`, which WAS
+// gated. Asked which other commands print the same facts, `ls -v` (every module's
+// grant set) and `audit` (which module was refused what) were both open too. Three
+// separate flags would have been three fixes and no property; a command that prints
+// another pid's identity, grants or refusals is the property, and this walks the whole
+// table for it.
+//
+// A new command is not automatically covered - the list below has to name it - so the
+// second half of the test fails on a command that is neither privileged nor explicitly
+// exempt, which is the shape that turns "we fixed three" into "we cannot add a fourth
+// by accident".
+func TestNoUnauthenticatedCommandPrintsAnotherPidsFacts(t *testing.T) {
+	d, err := bootForTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { d.Stop(nil); <-d.Stopped() }()
+
+	// Commands whose entire purpose is to print facts about pids other than the
+	// caller's. Each must be Privileged.
+	//
+	// `status` is deliberately NOT here, and the line is worth stating because it is a
+	// decision rather than an oversight. status prints module names, versions and counts;
+	// it prints no uid, no domain, no manifest digest, no grant set and no refusal - each
+	// of which ps, ls and audit do print. It is the greeting that tells an operator whether
+	// the daemon came up and whether their components loaded, before they have any way to
+	// authenticate, and gating it would break the one question the console must answer
+	// first. The socket is 0600 inside a 0700 directory, so "unauthenticated" already means
+	// a process running as the daemon's own user, which can read root/bin anyway.
+	mustBePrivileged := []string{
+		"ps",                                             // the process table
+		"ls",                                             // every module's authority
+		"audit",                                          // what was refused, to whom
+		"dump",                                           // all of it at once
+		"dmesg",                                          // the kernel's own records
+		"load", "unload", "reload", "harden", "poweroff", // state-changing
+	}
+	for _, name := range mustBePrivileged {
+		e, ok := d.table.Lookup(name)
+		if !ok {
+			t.Errorf("%q is not registered; the list is stale", name)
+			continue
+		}
+		if !e.privileged {
+			t.Errorf("%q prints or changes state about pids other than the caller's and is "+
+				"not gated; a session that has not authenticated can run it", name)
+		}
+	}
+
+	// And the reverse: every privileged command is on that list, so a command cannot
+	// be gated for a reason nobody wrote down.
+	known := map[string]bool{}
+	for _, n := range mustBePrivileged {
+		known[n] = true
+	}
+	for _, name := range d.table.Names() {
+		e, _ := d.table.Lookup(name)
+		if e == nil || !e.privileged {
+			continue
+		}
+		if !known[name] {
+			t.Errorf("%q is Privileged and not on the list above; add it with the reason, "+
+				"or the list stops describing what is gated", name)
+		}
+	}
+}

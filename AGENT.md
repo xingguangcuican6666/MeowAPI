@@ -249,6 +249,16 @@ satisfy `InstallConsoleCredential`. A Go string cannot be wiped, so the plaintex
 stays in memory for the life of the request; what this code does control is that it
 never reaches disk or a log line.
 
+**What a session that has not authenticated may see.** `help`, `auth`, `whoami`,
+`status`, `log`, `policy`, `bin` and the text filters. Everything that prints a fact
+about another pid - `ps`, `ls`, `audit`, `dump`, `dmesg` - is Privileged, and
+`TestNoUnauthenticatedCommandPrintsAnotherPidsFacts` walks the whole table for that
+property rather than trusting three flags. `status` is open on purpose: it prints names,
+versions and counts and no uid, domain, digest, grant or refusal, and it is the greeting
+that answers "did the daemon come up" before anyone has a way to authenticate. The
+socket is 0600 in a 0700 directory, so unauthenticated already means a process running
+as the daemon's own user.
+
 **The command table.** `help`, `auth`, `whoami`, `status`, `ps`, `ls`, `log`, `dmesg`,
 `grep`, `head`, `tail`, `wc`, `cut`, `sort`, `uniq`, `audit`, `dump`, `bin`, `load`,
 `unload`, `reload`, `policy`, `harden`, `passwd`, `quit`, `poweroff`. A line may be a

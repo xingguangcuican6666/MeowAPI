@@ -36,8 +36,11 @@ import (
 // module registry and their GRANTS, the audit window, the trust root's non-secret keys,
 // the keyring's alias inventory, the peer table, the seccomp filters and the console
 // history. Those are already readable one at a time by the console's ps, ls, audit and
-// log, which is why the disclosure is acceptable - but "no privilege" undersold it, and
-// an audit read 3928 bytes of it from a probe with no context at all.
+// log - all of which are gated on the operator's password, and all of which this render
+// duplicates in one screen. That is why the disclosure is acceptable to an authenticated
+// operator and not to an unauthenticated session: the console's `dump` command was open
+// while its narrower parts were closed, and a session that had not authenticated received
+// 4063 bytes including the process table and the grants. It is Privileged now.
 //
 // So it is classified hostOnly in tests/security's function walk, together with every
 // other function that answers about pids other than the caller's, and the boundary that

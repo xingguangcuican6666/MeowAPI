@@ -423,6 +423,13 @@ func Builtins(d *Daemon) []Builtin {
 		{
 			Name: "ls",
 			Help: "loaded modules and their effective grants",
+			// Privileged, for the reason `dump` is and by the same argument: this is
+			// the section of it that lists every module pid, version and grant set,
+			// and `dump` prints exactly these lines. A command cannot be gated less
+			// than the render it duplicates - `ls -v` was returning the full grant
+			// tables of every loaded module to a session that had not authenticated,
+			// while `ps`, which shows less, refused it.
+			Privileged: true,
 			Run: func(s *Session, args []string, stdin string) (string, error) {
 				modules := kernel.LoadedModules()
 				if len(modules) == 0 {
@@ -527,6 +534,13 @@ func Builtins(d *Daemon) []Builtin {
 		{
 			Name: "audit",
 			Help: "recent audit entries; `audit -n N` sets the count",
+			// Privileged. The chain records which module was refused what, which
+			// context was denied an operation and which manifest digest was rejected -
+			// it is the same class of fact as `ps`, and ktty requires the console
+			// credential for `TTYProcessTable` on exactly that reasoning. It was the
+			// one remaining unauthenticated reader of other pids' activity in the
+			// console, found by asking which commands print what `dump` prints.
+			Privileged: true,
 			Run: func(s *Session, args []string, stdin string) (string, error) {
 				return d.auditCommand(args)
 			},
@@ -534,6 +548,18 @@ func Builtins(d *Daemon) []Builtin {
 		{
 			Name: "dump",
 			Help: "a read-only rendering of kernel state",
+			// Privileged, and the reason is arithmetic rather than judgement: dump
+			// renders the process table, the policy grants, the trust root, the secret
+			// alias inventory and the console history - strictly more than ps, ls,
+			// audit, dmesg and status put together, every one of which is gated. A
+			// command that prints a superset cannot be gated less than its parts.
+			//
+			// Measured before this flag existed: an unauthenticated session ran `dump`
+			// and received 4063 bytes including the process table and the grants, while
+			// `ps` and `dmesg` refused it. The narrow command was gated twice - once
+			// here and once by the console credential inside ktty - and the broad one
+			// not at all.
+			Privileged: true,
 			Run: func(s *Session, args []string, stdin string) (string, error) {
 				var b strings.Builder
 				if err := kernel.Dump(&b); err != nil {
