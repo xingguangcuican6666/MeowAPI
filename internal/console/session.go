@@ -230,41 +230,48 @@ func (s *Session) readLine() (string, error) {
 }
 
 // execute parses and runs one line. It reports whether the session should end.
+//
+// A line may hold a pipeline: `log -n 50 | grep error | head`. Each stage's output is
+// the next stage's stdin. There is still no shell - no quoting, no globbing, no
+// variables, no redirection - so a `|` inside an argument is impossible to express,
+// which is the same trade split() makes for spaces and is the reason a command cannot
+// be tricked into reading a file by a metacharacter.
 func (s *Session) execute(line string) (bool, error) {
-	name, args := split(line)
-	if name == "" {
-		return false, nil
-	}
-
-	e, ok := s.d.table.Lookup(name)
-	if !ok {
-		return false, fmt.Errorf("%q: no such command; try `help`", name)
-	}
-	if e.privileged && !s.authenticated.Load() {
-		return false, fmt.Errorf("%q needs an authenticated session; run `auth` first", name)
+	stages := strings.Split(line, "|")
+	if len(stages) > maxPipelineStages {
+		return false, fmt.Errorf("a pipeline may have at most %d stages", maxPipelineStages)
 	}
 
 	s.closeRequested = false
 	s.poweroffRequested = false
 
-	var (
-		out string
-		err error
-	)
-	switch {
-	case e.builtin != nil:
-		out, err = e.builtin.Run(s, args)
-	case e.module != nil:
-		out, err = s.runModuleCommand(e.module, args)
-	default:
-		err = fmt.Errorf("%q has no body", name)
+	var stdin string
+	for i, stage := range stages {
+		name, args := split(stage)
+		if name == "" {
+			// An empty stage is a syntax error rather than skipped, because `a | | b`
+			// almost certainly means the operator meant something else, and guessing
+			// what would hide the mistake.
+			return false, fmt.Errorf("stage %d of the pipeline is empty", i+1)
+		}
+		out, err := s.runStage(name, args, stdin)
+		if err != nil {
+			// The error is RETURNED rather than printed here, so the caller has one
+			// place that reports a failed command - the serve loop - and a pipeline
+			// stage's failure is not printed twice. The stages after a failed one do
+			// not run, which is what a shell does and what makes `a | b` mean "b saw
+			// a's output" rather than "b saw a's output, unless a failed".
+			if len(stages) > 1 {
+				return s.closeRequested || s.poweroffRequested,
+					fmt.Errorf("stage %d (%s): %w", i+1, name, err)
+			}
+			return s.closeRequested || s.poweroffRequested, err
+		}
+		stdin = out
 	}
-	if err != nil {
-		// A command's failure is reported and the session continues. An operator
-		// who mistyped an argument should not lose their place.
-		_ = s.printf("%s: %v\n", name, err)
-	} else if out != "" {
-		_ = s.print(out)
+
+	if stdin != "" {
+		_ = s.print(stdin)
 	}
 
 	// Asked for asynchronously rather than stopped from here, so this session can
@@ -277,6 +284,30 @@ func (s *Session) execute(line string) (bool, error) {
 	return s.closeRequested || s.poweroffRequested, nil
 }
 
+// maxPipelineStages bounds one pipeline. Each stage holds its output in memory before
+// the next stage sees it, so an unbounded chain is an unbounded buffer.
+const maxPipelineStages = 16
+
+// runStage resolves and runs one stage with the previous stage's output as its stdin.
+func (s *Session) runStage(name string, args []string, stdin string) (string, error) {
+	e, ok := s.d.table.Lookup(name)
+	if !ok {
+		return "", fmt.Errorf("%q: no such command; try `help`", name)
+	}
+	if e.privileged && !s.authenticated.Load() {
+		return "", fmt.Errorf("%q needs an authenticated session; run `auth` first", name)
+	}
+
+	switch {
+	case e.builtin != nil:
+		return e.builtin.Run(s, args, stdin)
+	case e.module != nil:
+		return s.runModuleCommand(e.module, args, stdin)
+	default:
+		return "", fmt.Errorf("%q has no body", name)
+	}
+}
+
 // runModuleCommand invokes a contributed command under its component's own
 // context, with a deadline and with panics recovered.
 //
@@ -284,7 +315,7 @@ func (s *Session) execute(line string) (bool, error) {
 // disk but did not write: a component that blocks forever would otherwise hold a
 // session goroutine forever. The kernel's own supervised work has a deadline for
 // the same reason.
-func (s *Session) runModuleCommand(mc *moduleCommand, args []string) (string, error) {
+func (s *Session) runModuleCommand(mc *moduleCommand, args []string, stdin string) (string, error) {
 	type result struct {
 		out string
 		err error
@@ -299,7 +330,7 @@ func (s *Session) runModuleCommand(mc *moduleCommand, args []string) (string, er
 				done <- result{err: fmt.Errorf("the command panicked: %v", r)}
 			}
 		}()
-		out, err := mc.cmd.Run(mc.ctx, args)
+		out, err := mc.cmd.Run(mc.ctx, args, stdin)
 		done <- result{out, err}
 	}()
 

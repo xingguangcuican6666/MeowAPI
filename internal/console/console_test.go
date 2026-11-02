@@ -172,7 +172,7 @@ func TestTableRefusesDuplicatesAndBuiltins(t *testing.T) {
 	builtin := Builtin{
 		Name: "help",
 		Help: "the builtin",
-		Run:  func(*Session, []string) (string, error) { return "", nil },
+		Run:  func(*Session, []string, string) (string, error) { return "", nil },
 	}
 	table := NewTable([]Builtin{builtin, builtin})
 	if table.Len() != 1 {
@@ -191,7 +191,7 @@ func TestTableRefusesDuplicatesAndBuiltins(t *testing.T) {
 	// command whose body takes a context and runs with none is not a command that
 	// can be allowed to exist.
 	collide := []abi.Command{{Name: "help", Help: "hijacked",
-		Run: func(abi.SContext, []string) (string, error) { return "", nil }}}
+		Run: func(abi.SContext, []string, string) (string, error) { return "", nil }}}
 	if err := table.Register(nil, 1, collide); err == nil ||
 		!strings.Contains(err.Error(), "context") {
 		t.Fatalf("a nil context returned %v, want a refusal naming the context", err)
@@ -215,7 +215,7 @@ func TestSessionRefusesPrivilegedBeforeTheBodyRuns(t *testing.T) {
 		Name:       "danger",
 		Help:       "does something",
 		Privileged: true,
-		Run: func(*Session, []string) (string, error) {
+		Run: func(*Session, []string, string) (string, error) {
 			ran = true
 			return "did it", nil
 		},
@@ -363,5 +363,106 @@ func TestPrivilegedLoadGoesThroughKtty(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "no module registered") {
 		t.Fatalf("the unprivileged loader returned %v, want the registry refusal", err)
+	}
+}
+
+// TestPipelinesFeedOneStageToTheNext pins the mechanism: a stage's output becomes the
+// next stage's stdin, and the last stage's output is what the session prints.
+//
+// The stages here are test builtins rather than the real filters, so a failure names
+// the pipeline rather than the filter that happened to be first.
+func TestPipelinesFeedOneStageToTheNext(t *testing.T) {
+	var seen []string
+	mk := func(name string, fn func(string) string) Builtin {
+		return Builtin{
+			Name:       name,
+			TakesInput: true,
+			Run: func(_ *Session, _ []string, stdin string) (string, error) {
+				seen = append(seen, name+"<"+stdin+">")
+				return fn(stdin), nil
+			},
+		}
+	}
+	table := NewTable([]Builtin{
+		mk("one", func(string) string { return "a" }),
+		mk("two", func(s string) string { return s + "b" }),
+		mk("three", func(s string) string { return s + "c" }),
+	})
+	s := &Session{d: &Daemon{table: table}}
+
+	out, err := s.runStage("one", nil, "")
+	if err != nil || out != "a" {
+		t.Fatalf("stage one gave %q, %v", out, err)
+	}
+	out, err = s.runStage("two", nil, out)
+	if err != nil || out != "ab" {
+		t.Fatalf("stage two gave %q, %v", out, err)
+	}
+	out, err = s.runStage("three", nil, out)
+	if err != nil || out != "abc" {
+		t.Fatalf("stage three gave %q, %v", out, err)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("only %d stages ran", len(seen))
+	}
+}
+
+// TestPipelineRefusesAnEmptyStage pins that `a | | b` is an error rather than a
+// pipeline with the gap skipped. The operator almost certainly meant something else,
+// and guessing would hide the typo.
+func TestPipelineRefusesAnEmptyStage(t *testing.T) {
+	table := NewTable([]Builtin{{
+		Name: "noop", TakesInput: true,
+		Run: func(*Session, []string, string) (string, error) { return "", nil },
+	}})
+	s := &Session{d: &Daemon{table: table}}
+	if _, err := s.execute("noop | | noop"); err == nil {
+		t.Fatal("an empty pipeline stage was accepted")
+	}
+}
+
+// TestPipelineStopsAtTheFirstFailure pins that a later stage does not run when an
+// earlier one fails, which is what makes `a | b` mean "b saw a's output" rather than
+// "b saw a's output, unless a failed".
+func TestPipelineStopsAtTheFirstFailure(t *testing.T) {
+	ran := false
+	table := NewTable([]Builtin{
+		{Name: "boom", Run: func(*Session, []string, string) (string, error) {
+			return "", errors.New("nope")
+		}},
+		{Name: "after", TakesInput: true, Run: func(*Session, []string, string) (string, error) {
+			ran = true
+			return "ran", nil
+		}},
+	})
+	s := &Session{d: &Daemon{table: table}}
+	_, err := s.execute("boom | after")
+	if err == nil {
+		t.Fatal("a pipeline whose first stage failed reported no error")
+	}
+	if ran {
+		t.Fatal("a stage after a failure ran anyway")
+	}
+	if !strings.Contains(err.Error(), "stage 1") {
+		t.Fatalf("the error does not name the stage: %v", err)
+	}
+}
+
+// TestPipelineStageCeiling pins the bound on one line's pipeline.
+func TestPipelineStageCeiling(t *testing.T) {
+	table := NewTable([]Builtin{{
+		Name: "noop", TakesInput: true,
+		Run: func(*Session, []string, string) (string, error) { return "", nil },
+	}})
+	s := &Session{d: &Daemon{table: table}}
+	// Exactly the ceiling is legal; one more is not. Asserting only the refusal would
+	// pass on a ceiling of 1.
+	ok := strings.TrimSuffix(strings.Repeat("noop|", maxPipelineStages), "|")
+	if _, err := s.execute(ok); err != nil {
+		t.Fatalf("%d stages were refused: %v", maxPipelineStages, err)
+	}
+	over := strings.TrimSuffix(strings.Repeat("noop|", maxPipelineStages+1), "|")
+	if _, err := s.execute(over); err == nil {
+		t.Fatalf("%d stages were accepted, ceiling is %d", maxPipelineStages+1, maxPipelineStages)
 	}
 }

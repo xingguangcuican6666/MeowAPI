@@ -342,3 +342,69 @@ func knownLevel(s string) bool {
 	}
 	return false
 }
+
+// dmesg renders the kernel's own messages: `dmesg [-n N] [-l level] [-H]`.
+//
+// It exists as a builtin because reading the kernel console requires tty:open, which
+// only the init domain holds - so no component can do it however it is written, and
+// dmesg is the first thing an operator reaches for when the kernel starts refusing
+// things.
+//
+// Why not a method on the kernel handle, which is where every other host privilege
+// lives? Because the read already exists and is already audited: TTYRead is the
+// syscall a console handle exists to make, it is bounded, it is counted, and it
+// appears on the chain. A second host-side reader would be a second path to the same
+// buffer with none of that, and the whole point of ktty is that there is one.
+//
+// -H is not a GNU flag and the help says so: the kernel console is a bounded ring, and
+// -H asks for everything still retained rather than the default window.
+func (d *Daemon) dmesg(args []string) (string, error) {
+	n := 20
+	level := ""
+	all := false
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-n":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("-n needs a count")
+			}
+			v, err := strconv.Atoi(args[i+1])
+			if err != nil || v < 0 {
+				return "", fmt.Errorf("%q is not a count", args[i+1])
+			}
+			n = v
+			i++
+		case "-l":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("-l needs a level")
+			}
+			level = strings.ToLower(args[i+1])
+			if !knownLevel(level) {
+				return "", fmt.Errorf("%q is not a level; try debug, info, warn, error or fault", args[i+1])
+			}
+			i++
+		case "-H", "--history":
+			all = true
+		default:
+			return "", fmt.Errorf("unknown flag %q", args[i])
+		}
+	}
+	if all {
+		// The ring is bounded by the console's retention limit, so "everything" is a
+		// finite read rather than a request for unbounded output.
+		n = maxLogLines
+	}
+	if n > maxLogLines {
+		n = maxLogLines
+	}
+
+	records, err := d.tail(n, level)
+	if err != nil {
+		return "", err
+	}
+	if len(records) == 0 {
+		return "the kernel console is empty\n", nil
+	}
+	return renderRecords(records), nil
+}

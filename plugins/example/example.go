@@ -97,7 +97,7 @@ var MeowAPICommands = []abi.Command{
 	{
 		Name: "example",
 		Help: "say hello from a loaded component",
-		Run: func(ctx abi.SContext, args []string) (string, error) {
+		Run: func(ctx abi.SContext, args []string, stdin string) (string, error) {
 			return fmt.Sprintf("hello from %q, pid %d, domain %s\n",
 				ctx.Name(), ctx.PID(), ctx.Domain()), nil
 		},
@@ -106,7 +106,7 @@ var MeowAPICommands = []abi.Command{
 		Name:     "say",
 		Help:     "log a line through the kernel console: say <words>",
 		Requires: abi.OpLogWrite,
-		Run: func(ctx abi.SContext, args []string) (string, error) {
+		Run: func(ctx abi.SContext, args []string, stdin string) (string, error) {
 			if len(args) == 0 {
 				return "", fmt.Errorf("usage: say <words>")
 			}
@@ -120,7 +120,7 @@ var MeowAPICommands = []abi.Command{
 	{
 		Name: "boot-id",
 		Help: "read the kernel-published boot id",
-		Run: func(ctx abi.SContext, args []string) (string, error) {
+		Run: func(ctx abi.SContext, args []string, stdin string) (string, error) {
 			v, err := ctx.SyscallMetadataGet("kernel.boot.id")
 			if err != nil {
 				return "", err
@@ -131,7 +131,7 @@ var MeowAPICommands = []abi.Command{
 	{
 		Name: "cpu",
 		Help: "this pid's supervised-work accounting",
-		Run: func(ctx abi.SContext, args []string) (string, error) {
+		Run: func(ctx abi.SContext, args []string, stdin string) (string, error) {
 			stat, err := ctx.SyscallCPUStat()
 			if err != nil {
 				return "", err
@@ -143,7 +143,7 @@ var MeowAPICommands = []abi.Command{
 	{
 		Name: "selftest",
 		Help: "prove the component is live: print its own build facts",
-		Run: func(ctx abi.SContext, args []string) (string, error) {
+		Run: func(ctx abi.SContext, args []string, stdin string) (string, error) {
 			loaded = time.Now().UTC()
 			return fmt.Sprintf("component %q v%s, go %s, %s/%s, first command at %s\n",
 				MeowAPIManifest.Name, MeowAPIManifest.Version,

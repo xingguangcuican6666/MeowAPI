@@ -69,7 +69,15 @@ type Builtin struct {
 	Privileged bool
 	// Run returns text to print, or an error. A nil error with empty text prints
 	// nothing, which is how a command that already wrote its own output says so.
-	Run func(s *Session, args []string) (string, error)
+	//
+	// stdin is the output of the previous stage of a pipeline, or "" when the command
+	// is standing alone. A command that takes no input ignores it; a command that
+	// REQUIRES input refuses when it is empty, which is what makes `head` with no pipe
+	// a usage error rather than a silent success.
+	Run func(s *Session, args []string, stdin string) (string, error)
+	// TakesInput marks a command as a filter. It is used only to render `help`, so an
+	// operator can see which commands can stand at the end of a pipe.
+	TakesInput bool
 }
 
 // entry is one row of the table, whichever kind it came from.
@@ -77,6 +85,7 @@ type entry struct {
 	name       string
 	help       string
 	privileged bool
+	takesInput bool
 	builtin    *Builtin
 	// module is set for a contributed command: the context it runs under and the
 	// operation its session must hold.
@@ -130,7 +139,9 @@ func (t *Table) addBuiltin(b Builtin) error {
 	if len(t.entries) >= maxCommands {
 		return fmt.Errorf("the command table is full at %d entries", maxCommands)
 	}
-	t.entries[b.Name] = &entry{name: b.Name, help: b.Help, privileged: b.Privileged, builtin: &b}
+	t.entries[b.Name] = &entry{
+		name: b.Name, help: b.Help, privileged: b.Privileged, takesInput: b.TakesInput, builtin: &b,
+	}
 	t.order = append(t.order, b.Name)
 	return nil
 }
@@ -316,9 +327,15 @@ func (t *Table) Help(s *Session) string {
 		if e.privileged {
 			mark = "*"
 		}
+		if e.takesInput {
+			mark += ">"
+		} else {
+			mark += " "
+		}
 		fmt.Fprintf(&b, "  %s %-*s  %s\n", mark, width, n, e.help)
 	}
 	b.WriteString("\n  * needs this session to be authenticated\n")
+	b.WriteString("  > reads its input from the previous stage of a pipeline\n")
 	if !s.authenticated.Load() {
 		b.WriteString("  you are not authenticated; run `auth` first\n")
 	}
@@ -333,7 +350,7 @@ func Builtins(d *Daemon) []Builtin {
 		{
 			Name: "help",
 			Help: "list commands, or `help <name>` for one",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				if len(args) == 0 {
 					return d.table.Help(s), nil
 				}
@@ -352,7 +369,7 @@ func Builtins(d *Daemon) []Builtin {
 		{
 			Name: "auth",
 			Help: "authenticate this session with the operator password",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				if s.authenticated.Load() {
 					return "this session is already authenticated\n", nil
 				}
@@ -365,7 +382,7 @@ func Builtins(d *Daemon) []Builtin {
 		{
 			Name: "whoami",
 			Help: "show this session's identity and authority",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				state := "unauthenticated"
 				if s.authenticated.Load() {
 					state = "authenticated"
@@ -377,7 +394,7 @@ func Builtins(d *Daemon) []Builtin {
 		{
 			Name: "status",
 			Help: "kernel, module, console and usage summary",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				return d.status(), nil
 			},
 		},
@@ -389,7 +406,7 @@ func Builtins(d *Daemon) []Builtin {
 			// same reason. Going through TTYProcessTable keeps the read on the audit
 			// chain rather than making it a free look.
 			Privileged: true,
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				rows, err := d.processTable()
 				if err != nil {
 					return "", err
@@ -406,7 +423,7 @@ func Builtins(d *Daemon) []Builtin {
 		{
 			Name: "ls",
 			Help: "loaded modules and their effective grants",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				modules := kernel.LoadedModules()
 				if len(modules) == 0 {
 					return "no modules are loaded\n", nil
@@ -430,21 +447,94 @@ func Builtins(d *Daemon) []Builtin {
 		{
 			Name: "log",
 			Help: "console history; `log -f` follows, `log -n N` sets the count",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				return d.logCommand(s, args)
+			},
+		},
+		{
+			Name:       "dmesg",
+			Help:       "the kernel's own messages: `dmesg -n N`, `-l level`, `-H` for history",
+			Privileged: true,
+			// A builtin rather than a component, and the reason is policy rather than
+			// convenience: reading the kernel console requires tty:open, which only
+			// the init domain holds, so no component could do it however it was
+			// written. dmesg is what an operator reaches for first when the kernel
+			// starts refusing things, so it has to exist somewhere.
+			Run: func(s *Session, args []string, stdin string) (string, error) {
+				return d.dmesg(args)
+			},
+		},
+		{
+			Name:       "grep",
+			Help:       "print lines matching a pattern: grep [-i] [-v] [-c] [-n] PATTERN",
+			TakesInput: true,
+			// A builtin as well, because `log | grep error` is the single most useful
+			// thing an operator types and it must work before any component exists.
+			// The component in plugins/gnu is the same filter, available when the
+			// console is not.
+			Run: func(s *Session, args []string, stdin string) (string, error) {
+				return grepFilter(args, stdin)
+			},
+		},
+		{
+			Name:       "head",
+			Help:       "the first lines: head [-n N]",
+			TakesInput: true,
+			Run: func(s *Session, args []string, stdin string) (string, error) {
+				return headFilter(args, stdin)
+			},
+		},
+		{
+			Name:       "tail",
+			Help:       "the last lines: tail [-n N]",
+			TakesInput: true,
+			Run: func(s *Session, args []string, stdin string) (string, error) {
+				return tailFilter(args, stdin)
+			},
+		},
+		{
+			Name:       "wc",
+			Help:       "count lines, words and bytes: wc [-l] [-w] [-c]",
+			TakesInput: true,
+			Run: func(s *Session, args []string, stdin string) (string, error) {
+				return wcFilter(args, stdin)
+			},
+		},
+		{
+			Name:       "cut",
+			Help:       "select fields: cut -d SEP -f N",
+			TakesInput: true,
+			Run: func(s *Session, args []string, stdin string) (string, error) {
+				return cutFilter(args, stdin)
+			},
+		},
+		{
+			Name:       "sort",
+			Help:       "sort lines: sort [-r] [-u]",
+			TakesInput: true,
+			Run: func(s *Session, args []string, stdin string) (string, error) {
+				return sortFilter(args, stdin)
+			},
+		},
+		{
+			Name:       "uniq",
+			Help:       "drop repeated lines: uniq [-c]",
+			TakesInput: true,
+			Run: func(s *Session, args []string, stdin string) (string, error) {
+				return uniqFilter(args, stdin)
 			},
 		},
 		{
 			Name: "audit",
 			Help: "recent audit entries; `audit -n N` sets the count",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				return d.auditCommand(args)
 			},
 		},
 		{
 			Name: "dump",
 			Help: "a read-only rendering of kernel state",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				var b strings.Builder
 				if err := kernel.Dump(&b); err != nil {
 					return "", err
@@ -455,7 +545,7 @@ func Builtins(d *Daemon) []Builtin {
 		{
 			Name: "bin",
 			Help: "list the components in root/bin and whether each is loaded",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				return d.binCommand(), nil
 			},
 		},
@@ -463,7 +553,7 @@ func Builtins(d *Daemon) []Builtin {
 			Name:       "load",
 			Help:       "load a component from root/bin by name",
 			Privileged: true,
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				if len(args) != 1 {
 					return "", errors.New("usage: load <name>")
 				}
@@ -478,7 +568,7 @@ func Builtins(d *Daemon) []Builtin {
 			Name:       "unload",
 			Help:       "unload a module by pid",
 			Privileged: true,
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				if len(args) != 1 {
 					return "", errors.New("usage: unload <pid>")
 				}
@@ -496,7 +586,7 @@ func Builtins(d *Daemon) []Builtin {
 			Name:       "reload",
 			Help:       "re-scan root/bin and reload what changed",
 			Privileged: true,
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				return d.reloadComponents()
 			},
 		},
@@ -504,28 +594,28 @@ func Builtins(d *Daemon) []Builtin {
 			Name:       "harden",
 			Help:       "withdraw operations from a domain for the rest of this boot: harden <domain> <op>...",
 			Privileged: true,
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				return d.harden(args)
 			},
 		},
 		{
 			Name: "policy",
 			Help: "show the operation set each domain holds, and what was withdrawn",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				return d.policyReport(), nil
 			},
 		},
 		{
 			Name: "passwd",
 			Help: "set or change the operator password",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				return "", s.changePassword()
 			},
 		},
 		{
 			Name: "quit",
 			Help: "close this session; the kernel keeps running",
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				s.closeRequested = true
 				return "", nil
 			},
@@ -534,7 +624,7 @@ func Builtins(d *Daemon) []Builtin {
 			Name:       "poweroff",
 			Help:       "shut the kernel down and stop the daemon",
 			Privileged: true,
-			Run: func(s *Session, args []string) (string, error) {
+			Run: func(s *Session, args []string, stdin string) (string, error) {
 				s.poweroffRequested = true
 				return "shutting down\n", nil
 			},

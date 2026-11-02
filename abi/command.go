@@ -75,7 +75,12 @@ type Command struct {
 	//
 	// It returns the text to print. An error is printed as this command's failure
 	// and does not close the session.
-	Run func(ctx SContext, args []string) (string, error) `json:"-"`
+	//
+	// A pipeline stage is fed the previous stage's output as stdin and returns what
+	// the next stage should see. There is no shell: arguments are already split on
+	// whitespace and nothing expands, so a metacharacter in an argument is a
+	// character in a string.
+	Run func(ctx SContext, args []string, stdin string) (string, error) `json:"-"`
 	// Complete offers argument completions for the word being typed, or nil when
 	// the command has none.
 	//

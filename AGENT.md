@@ -245,9 +245,15 @@ satisfy `InstallConsoleCredential`. A Go string cannot be wiped, so the plaintex
 stays in memory for the life of the request; what this code does control is that it
 never reaches disk or a log line.
 
-**The command table.** `help`, `auth`, `whoami`, `status`, `ps`, `ls`, `log`, `audit`,
-`dump`, `bin`, `load`, `unload`, `reload`, `policy`, `harden`, `passwd`, `quit`,
-`poweroff`. A command
+**The command table.** `help`, `auth`, `whoami`, `status`, `ps`, `ls`, `log`, `dmesg`,
+`grep`, `head`, `tail`, `wc`, `cut`, `sort`, `uniq`, `audit`, `dump`, `bin`, `load`,
+`unload`, `reload`, `policy`, `harden`, `passwd`, `quit`, `poweroff`. A line may be a
+pipeline - `log | grep error | head` - with one stage's output as the next stage's
+stdin, still with no shell anywhere: no quoting, no globbing, no redirection, so a
+metacharacter in an argument is a character in a string. The text filters ship as
+builtins because `log | grep error` has to work before any component has loaded and
+after one has failed to; `dmesg` is a builtin because reading the console needs
+`tty:open`, which only init holds, so no component could provide it. A command
 marked privileged needs an authenticated session; a command that then performs a
 kernel act is re-checked inside ktty against its own credential, which is why the two
 layers are not redundant. The table is dynamic: a component in `root/bin` contributes
