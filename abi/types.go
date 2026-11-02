@@ -140,4 +140,21 @@ func (m *Manifest) Digest() string {
 // of API versions it supports, and the kernel refuses one whose range excludes this
 // number - so the number has to be visible to the module that writes the range as
 // well as to the kernel that checks it.
+//
+// # What this number does not cover, and why it is still worth having
+//
+// Go's plugin package is stricter than this constant and in a way no constant can
+// express. A .so records a hash of the source of every package it imports, and
+// plugin.Open refuses a mismatch with "plugin was built with a different version of
+// package". So a component built against a previous revision of THIS package will be
+// refused by the loader even when the number below is unchanged - measured: adding
+// one field to Command invalidated Example.so with no ABI change at all.
+//
+// That check is exact, which is good, and it means a component is only ever valid
+// against the tree it was built from. KernelAPI is therefore not a compatibility
+// window for .so files; it is the version a STATICALLY linked module's manifest is
+// checked against, where no such hash exists, and it is the number a deployment
+// record quotes. Raise it when a module written against an older tree could notice a
+// behavioural difference, and do not expect raising it to help a stale .so - rebuilding
+// the component is the only thing that does.
 const KernelAPI = 1

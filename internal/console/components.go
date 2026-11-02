@@ -252,7 +252,7 @@ func (c *components) load(k moduleLoader, table *Table, comp *component) error {
 
 	p, err := openPlugin(comp.path)
 	if err != nil {
-		return fail(fmt.Errorf("opening the component: %w", err))
+		return fail(fmt.Errorf("opening the component: %w%s", err, rebuildHint(err)))
 	}
 
 	sym, err := p.Lookup(ManifestSymbol)
@@ -360,6 +360,28 @@ func (c *components) forget(pid kernel.PID) {
 		}
 		return
 	}
+}
+
+// rebuildHint adds the one sentence that turns the most common component failure into
+// something an operator can act on.
+//
+// Go's plugin loader refuses a .so whose imported packages have changed source with
+// "plugin was built with a different version of package X", and that message, read
+// alone, suggests the kernel is incompatible. It is not: the component is stale. The
+// fix is one command, and saying which command is the difference between a confusing
+// refusal and an obvious one. This is measured behaviour rather than a guess - adding a
+// field to abi.Command invalidated a component with no version change anywhere.
+func rebuildHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "different version of package") ||
+		strings.Contains(msg, "plugin was built with a different") {
+		return "\n  the component was built against different source of a package it " +
+			"imports; rebuild it with the current tree: go build -buildmode=plugin -o <path> <pkg>"
+	}
+	return ""
 }
 
 // openPlugin calls plugin.Open with a panic shield, and the shield is not

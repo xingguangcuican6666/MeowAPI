@@ -117,6 +117,10 @@ tests/                       external test suites, one package per architectural
 internal/auditfile/          the durable audit sink: JSON Lines, per-boot segments
 plugins/                     one directory per module. Each is independently buildable.
   diag/                      reference module: the smallest conforming plugin
+  example/                   a loadable .so component: manifest + command table,
+                             imports abi and nothing else
+  gnu/                       the text toolkit as a component (gnu-grep, gnu-head, ...);
+                             requires no operations at all, which is the point
 tools/instrcheck/            instruction-file integrity checker, runs in CI
 tools/auditverify/           verify an audit trail without the kernel, CLI
 tools/ci/                    the suite gate's `go test -json` classifier, awk not Go
