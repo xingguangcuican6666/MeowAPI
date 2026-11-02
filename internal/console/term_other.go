@@ -25,27 +25,43 @@ package console
 import (
 	"errors"
 	"os"
+	"syscall"
 )
 
-// Terminal echo control on platforms this build was not written for.
+// Terminal control on platforms this build was not written for.
 //
-// The ioctl names differ per platform - TCGETS/TCSETS on Linux, TIOCGETA/TIOCSETA
-// on the BSDs and macOS, and something else again on Windows - and guessing at
-// them is how a program ends up clearing flags it did not mean to touch. So this
-// file refuses instead, and the refusal is visible: the session warns the operator
-// that what they type will be echoed, rather than silently displaying a password.
+// The ioctl names differ per platform - TCGETS/TCSETS on Linux, TIOCGETA/TIOCSETA on
+// the BSDs and macOS, and something else again on Windows - and guessing at them is
+// how a program ends up clearing flags it did not mean to touch. So this file refuses
+// instead, and the refusals are visible: the password prompt warns that what is typed
+// will be echoed, and the client reads whole lines rather than editing them.
 //
-// A wrong termios write is worse than an echoed password, because it can leave the
-// terminal unusable after the process exits and the operator has no way to type the
-// command that would fix it.
+// A wrong termios write is worse than either, because it can leave the terminal
+// unusable after the process exits and the operator has no way to type the command
+// that would fix it.
 
-var errEchoUnsupported = errors.New("console: this build cannot control terminal echo")
+var errTermUnsupported = errors.New("console: this build cannot control the terminal")
 
-// isTerminal reports false, so no echo change is attempted.
+// isTerminal reports false, so no terminal state is changed.
 func isTerminal(f *os.File) bool { return false }
 
-// setEcho reports that it cannot.
-func setEcho(f *os.File, on bool) error { return errEchoUnsupported }
+// getTermios has nothing to return.
+func getTermios(f *os.File) (syscall.Termios, error) { return syscall.Termios{}, errTermUnsupported }
+
+// setTermios refuses.
+func setTermios(f *os.File, t *syscall.Termios) error { return errTermUnsupported }
+
+// setEcho refuses.
+func setEcho(f *os.File, on bool) error { return errTermUnsupported }
+
+// rawMode refuses.
+func rawMode(f *os.File) (*syscall.Termios, error) { return nil, errTermUnsupported }
+
+// restore refuses.
+func restore(f *os.File, saved *syscall.Termios) error { return errTermUnsupported }
 
 // echoSupported is false, and the session says so before asking for a password.
 const echoSupported = false
+
+// rawModeSupported is false, so the client reads whole lines.
+const rawModeSupported = false

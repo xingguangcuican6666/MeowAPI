@@ -186,6 +186,19 @@ func (s *Session) serve() {
 			_ = s.printf("%v\n", err)
 			return
 		}
+		// A control message is not a command. Completion is answered here, in the
+		// same goroutine that would otherwise be running a command, because a
+		// session is one conversation: an operator cannot complete a word while a
+		// command is still producing output, and pretending otherwise would need a
+		// second reader on the same connection.
+		if kind, payload, ok := isControl(line); ok {
+			if kind == ctrlComplete {
+				lineText, word, _ := strings.Cut(payload, string(rune(completeFieldSeparator)))
+				_ = s.write(control(ctrlComplete, s.d.complete(s, lineText, word).encode()))
+			}
+			continue
+		}
+
 		line = strings.TrimSpace(line)
 		if line == "" {
 			_ = s.prompt(prompt)

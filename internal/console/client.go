@@ -26,6 +26,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -85,6 +86,23 @@ func ServeTerminal(conn net.Conn, stdin io.Reader, stdout io.Writer) error {
 	// ServeTerminal returns. It is not cancelled, and cannot be: there is no portable
 	// way to interrupt a blocking read on a tty. It dies with the process, which for
 	// a client whose only job is this session is the whole process lifetime anyway.
+	if c.hasTerminal() {
+		// The editor path: one goroutine, because the editor blocks for the prompt
+		// after every command and a second reader would take lines away from it.
+		// This is the shape a shell has, and the piped path below is what a script
+		// gets.
+		if err := c.readDaemonFirstBanner(); err != nil {
+			_ = conn.Close()
+			return nil
+		}
+		err := c.interactive()
+		_ = conn.Close()
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+			return err
+		}
+		return nil
+	}
+
 	go c.readKeyboard()
 	err := c.readDaemon()
 	_ = conn.Close()
@@ -104,7 +122,24 @@ type client struct {
 	term   *os.File
 	in     *boundedReader
 	wire   *boundedReader
+
+	// ctrlMu serializes a client-to-daemon control exchange. There is at most one
+	// outstanding - a completion - and the mutex is what makes that a property of
+	// the code rather than a hope about the caller.
+	ctrlMu sync.Mutex
+	// awaiting is set while a control reply is expected, so nothing else tries to
+	// consume the wire.
+	awaiting bool
 }
+
+// readDaemonFirstBanner consumes everything up to and including the first prompt,
+// which is where the editor takes over.
+//
+// It exists because the daemon writes its banner, its notices and a prompt immediately
+// on accept, and the editor expects to be looking at a prompt when it starts reading
+// keys. Reading those first is the same loop awaitPrompt runs, so this is one call to
+// it rather than a second implementation.
+func (c *client) readDaemonFirstBanner() error { return c.awaitPrompt() }
 
 // readDaemon prints what the daemon sends and interprets its control messages.
 func (c *client) readDaemon() error {

@@ -47,7 +47,67 @@ const (
 	// ctrlBye is sent before the daemon closes a session, so a client can tell
 	// "the kernel stopped" from "my socket broke".
 	ctrlBye = byte('B')
+	// ctrlComplete travels in BOTH directions. A client sends it with the line and
+	// the word to complete, separated by NUL; the daemon answers with the same kind,
+	// carrying the longest common prefix and then every candidate. It is one message
+	// rather than a request and a reply the client has to correlate, because a
+	// session is a single synchronous conversation and there is exactly one
+	// completion outstanding at a time.
+	//
+	// The word is sent separately rather than being re-derived by the daemon, because
+	// the client's editor knows exactly where its cursor is and the two would
+	// otherwise have to agree on what "the current word" means down to the byte.
+	ctrlComplete = byte('C')
+	// ctrlInterrupt travels client to daemon: the operator pressed Ctrl-C. The daemon
+	// uses it to stop a streaming command, and for nothing else - a command that has
+	// not finished in a second is not a command Ctrl-C should be able to kill, because
+	// a component's body may be holding a lock the kernel owns.
+	ctrlInterrupt = byte('I')
 )
+
+// candidateSeparator divides the fields of a completion reply. It is not a newline
+// because a control message is one line, and it is not a space because an argument
+// may contain one - the operator's command line has no quoting, so a candidate that
+// needs a space is a candidate the completion cannot offer anyway, but a separator
+// that cannot appear in a candidate is still the safer choice.
+const candidateSeparator = 0x02
+
+// completeFieldSeparator divides the two fields of a completion REQUEST. It is NUL
+// because neither a line nor a word can contain one - the editor never inserts it and
+// the line cannot carry it over the wire anyway.
+const completeFieldSeparator = 0x00
+
+// completion is one answer to a completion request.
+type completion struct {
+	// prefix is what the client should replace the word with when there is exactly
+	// one candidate, or the longest common prefix of several.
+	prefix string
+	// candidates is every match, for the client to display when there is more than
+	// one and no common prefix to add.
+	candidates []string
+}
+
+// encode renders a completion as a control message payload.
+func (c completion) encode() string {
+	parts := append([]string{c.prefix}, c.candidates...)
+	return strings.Join(parts, string(rune(candidateSeparator)))
+}
+
+// decodeCompletion parses a completion payload. A malformed one yields an empty
+// completion rather than an error: a client and a daemon disagreeing about this is a
+// version mismatch, and the right response is to offer nothing rather than to break
+// the session the operator is typing into.
+func decodeCompletion(payload string) completion {
+	if payload == "" {
+		return completion{}
+	}
+	parts := strings.Split(payload, string(rune(candidateSeparator)))
+	c := completion{prefix: parts[0]}
+	if len(parts) > 1 {
+		c.candidates = parts[1:]
+	}
+	return c
+}
 
 // maxLineBytes bounds one protocol line in either direction. A session that
 // sends more than this is disconnected rather than buffered: the daemon holds one

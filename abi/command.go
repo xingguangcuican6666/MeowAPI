@@ -76,4 +76,15 @@ type Command struct {
 	// It returns the text to print. An error is printed as this command's failure
 	// and does not close the session.
 	Run func(ctx SContext, args []string) (string, error) `json:"-"`
+	// Complete offers argument completions for the word being typed, or nil when
+	// the command has none.
+	//
+	// It is the component's own knowledge that is being asked for, which is why it
+	// lives here rather than in the daemon: only the component knows what its
+	// arguments mean, and only the component can say without the daemon reading the
+	// host's filesystem on an unauthenticated session's behalf.
+	//
+	// It has a much shorter deadline than Run - a completion happens while a human
+	// types - and a timeout, a panic or an error all mean "offer nothing".
+	Complete func(ctx SContext, word string) ([]string, error) `json:"-"`
 }
