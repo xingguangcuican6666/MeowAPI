@@ -231,6 +231,18 @@ func resetKernel() {
 	// the root it was installed under: an operator session's console key must not
 	// survive the operator's decision to restart.
 	resetTTYs()
+	// kverifier is dropped with the secrets and before the root they derive from: the
+	// posture is read against the sealed trust root and the ledger records appraisals
+	// made under it, so a restarted kernel re-derives both from its own configuration.
+	// A boot under a root with no cluster keys must not silently keep enforcing against
+	// keys that are no longer configured, and one that added keys must not silently keep
+	// skipping them. resetVerifier also clears the seal latch, which is what reopens the
+	// configuration window for the next boot - without it a declared posture could not
+	// be set on boot two.
+	//
+	// This is the hook verifier.go's header documented as missing. It is wired now
+	// because the load path depends on the posture.
+	resetVerifier()
 	resetKeyring()
 	resetReceipts()
 	kboot.reset()

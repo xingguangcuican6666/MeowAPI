@@ -353,7 +353,8 @@ func TestAuditSinkReceivesEveryEntry(t *testing.T) {
 		return nil
 	})
 
-	k, err := kernel.Boot(kernel.BootConfig{AuditSink: sink})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, AuditSink: sink})
 	require.NoError(t, err)
 
 	pid, err := k.Load(diag.Manifest())
@@ -404,7 +405,8 @@ func TestAuditSinkFailureIsNotFatal(t *testing.T) {
 		return assert.AnError
 	})
 
-	k, err := kernel.Boot(kernel.BootConfig{AuditSink: sink})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, AuditSink: sink})
 	require.NoError(t, err, "a failing sink must not prevent boot")
 	defer func() { _ = k.Shutdown() }()
 
@@ -456,7 +458,8 @@ func TestAuditHeadAdvances(t *testing.T) {
 func TestAuditWindowIsConfigurableAndFloored(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k, err := kernel.Boot(kernel.BootConfig{AuditWindow: 24})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, AuditWindow: 24})
 	require.NoError(t, err)
 	assert.Equal(t, 24, kernel.AuditWindow())
 
@@ -471,13 +474,15 @@ func TestAuditWindowIsConfigurableAndFloored(t *testing.T) {
 	require.NoError(t, k.Shutdown())
 
 	// A nonsense window is raised to the floor rather than honored.
-	k2, err := kernel.Boot(kernel.BootConfig{AuditWindow: 0})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, AuditWindow: 0})
 	require.NoError(t, err)
 	assert.Equal(t, kernel.DefaultAuditWindow(), kernel.AuditWindow(),
 		"zero means keep the default")
 	require.NoError(t, k2.Shutdown())
 
-	k3, err := kernel.Boot(kernel.BootConfig{AuditWindow: 1})
+	k3, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, AuditWindow: 1})
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, kernel.AuditWindow(), kernel.MinAuditWindow(),
 		"a window below the floor is raised to it")

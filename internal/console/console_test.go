@@ -345,7 +345,7 @@ func TestPrivilegedLoadGoesThroughKtty(t *testing.T) {
 
 	// With no shadow record there is no credential to present, so the console loader
 	// must refuse rather than falling back to the daemon's own authority.
-	_, err = consoleLoader{d}.LoadModule(abi.Manifest{Name: "probe", Version: "0.1.0", MinKernelAPI: 1, MaxKernelAPI: 1})
+	_, err = consoleLoader{d}.LoadModule(abi.Manifest{Name: "probe", Version: "0.1.0", MinKernelAPI: 1, MaxKernelAPI: 1}, nil)
 	if err == nil {
 		t.Fatal("the console loader loaded a module with no credential available")
 	}
@@ -354,13 +354,19 @@ func TestPrivilegedLoadGoesThroughKtty(t *testing.T) {
 	}
 
 	// And the two loaders refuse for DIFFERENT reasons, which is the whole point of
-	// having two. The unprivileged one reaches the registry - this test binary
-	// registers no factories, so it fails there - while the console loader never gets
-	// that far. Asserting on the messages rather than on "both failed" is what keeps
-	// this from passing when both refuse for the same reason.
+	// having two. The console loader refuses at the credential, before the kernel is
+	// ever asked; the unprivileged one reaches the kernel and fails there on the
+	// registry - this test binary registers no factories.
+	//
+	// The assertion is on what the console loader's refusal DOESN'T say as well as what
+	// it does. That is the half that discriminates: "both failed" is true whether or not
+	// the credential is the reason, and a loader that silently fell back to the daemon's
+	// own authority would fail with a kernel-side message - here the registry's, but
+	// equally an appraisal refusal, since LoadModule appraises before the registry
+	// lookup. Naming neither is what pins the credential as the gate.
 	_, err = (kernelLoader{d.kernel}).LoadModule(abi.Manifest{
 		Name: "diag", Version: "0.1.0", MinKernelAPI: 1, MaxKernelAPI: 1,
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "no module registered") {
 		t.Fatalf("the unprivileged loader returned %v, want the registry refusal", err)
 	}

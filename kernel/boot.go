@@ -33,6 +33,24 @@ type BootConfig struct {
 	// Modules are loaded in order during init. A failure aborts the boot and
 	// everything already loaded is unloaded, newest first.
 	Modules []Manifest
+	// ModulesSigned carries the operator's signature over each entry of Modules, by
+	// module name. A module with no entry is loaded unsigned, which the default
+	// posture refuses and an explicit VerifierOff admits.
+	//
+	// It is a map beside the slice rather than a field of Manifest for the reason
+	// LoadModule gives: the signature is the operator's appraisal and the manifest
+	// belongs to the module, so the two must not travel as one value the module could
+	// have produced.
+	ModulesSigned map[string]*VerifierSignature
+	// VerifierPolicy is the manifest appraisal posture for this boot. Empty means no
+	// host choice, which resolves to enforce - see verifierEffective.
+	//
+	// It is a boot field rather than something the host sets with VerifierSetPolicy
+	// after Boot returns, because Boot loads cfg.Modules before it returns: the first
+	// appraisal happens inside Boot and the configuration window closes at the first
+	// appraisal. A host that wants a laxer posture has to say so here, where the choice
+	// is part of the boot and therefore on the audit chain.
+	VerifierPolicy VerifierPolicy
 	// Console redirects the kernel console sink. Nil keeps stderr.
 	Console io.Writer
 	// LogFormat selects JSON or text rendering. Empty keeps JSON, which is the
@@ -147,6 +165,11 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 		}
 	}()
 
+	// A host may set the appraisal posture BEFORE booting, which is the configuration
+	// window kverifier documents. resetVerifier below clears it with the previous boot's
+	// evidence, so the choice is read out first and restored unless cfg overrides it.
+	preBoot, _ := VerifierPolicyExplicit()
+
 	// Reset first, then apply configuration. The order matters: configuration
 	// comes from this BootConfig, so a leftover sink or window from a previous
 	// boot would be operator state the caller did not ask for. Resetting first
@@ -167,6 +190,28 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 	}
 	kaudit.setSink(cfg.AuditSink)
 
+	// The appraisal posture is installed before the trust root is sealed and before any
+	// module is appraised, which is the only window in which a host may choose a laxer
+	// one: the first appraisal latches the seal, and everything after that can only
+	// tighten it. An unknown posture is refused here rather than defaulted, for the
+	// reason VerifierSetPolicy gives - a typo silently landing on audit is how enforce
+	// gets lost.
+	if cfg.VerifierPolicy != "" {
+		if err := VerifierSetPolicy(cfg.VerifierPolicy); err != nil {
+			return nil, fmt.Errorf("kernel: invalid boot verifier policy: %w", err)
+		}
+	} else if preBoot != "" {
+		// A host that set the posture before calling Boot keeps it. That is the
+		// configuration window verifierSyncBoot documents - state created while no boot
+		// record exists belongs to the forthcoming boot - and resetVerifier() above
+		// clears it along with the previous boot's evidence. Without this restore the
+		// documented pre-boot path would be silently broken by wiring the reset, and the
+		// two would each look correct in isolation.
+		if err := VerifierSetPolicy(preBoot); err != nil {
+			return nil, fmt.Errorf("kernel: invalid pre-boot verifier policy: %w", err)
+		}
+	}
+
 	// The trust root is sealed here, before any context exists, so no code that
 	// runs later can have read it unsealed and no code at all can write it.
 	trustRoot := cfg.TrustRoot
@@ -185,9 +230,14 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 	// The boot record is the first link in the audit chain, so it is written
 	// before init is spawned. A chain that opened with the spawn would leave the
 	// fact that a boot happened at all unattributed.
+	_, explicit := VerifierPolicyExplicit()
 	kaudit.record(AuditBoot, root, "kernel booting", map[string]any{
 		"kernel_api": KernelAPI, "modules_requested": len(cfg.Modules),
 		"trust_root_digest": BootDigest(), "node_id": trustRoot.NodeID,
+		// The posture and whether the host chose it. An investigator reading this chain
+		// after a module loaded unverified needs both facts, and "absent from the
+		// record" is not a way to learn that off was in force.
+		"verify_policy": string(VerifierPolicyCurrent()), "verify_explicit": explicit,
 	})
 
 	spawned, err := root.SyscallSpawn(DomainInit, "init")
@@ -209,7 +259,7 @@ func Boot(cfg BootConfig) (k *Kernel, err error) {
 	k = &Kernel{initCtx: initCtx, live: true}
 
 	for _, m := range cfg.Modules {
-		pid, err := LoadModule(initCtx, m)
+		pid, err := LoadModule(initCtx, m, cfg.ModulesSigned[m.Name])
 		if err != nil {
 			// Unwind newest-first, then report the original cause. A partial
 			// boot is worse than a failed boot.
@@ -262,7 +312,13 @@ func (k *Kernel) InitContext() SContext {
 }
 
 // Load loads a module into the running kernel.
-func (k *Kernel) Load(m Manifest) (PID, error) {
+func (k *Kernel) Load(m Manifest) (PID, error) { return k.LoadSigned(m, nil) }
+
+// LoadSigned is Load with the operator's signature over the manifest. Under the default
+// posture Load, which passes nil here, refuses an unsigned manifest; a host that has
+// signed its declarations calls this instead, and a host that has not must declare
+// VerifierOff in its BootConfig before the boot's first appraisal.
+func (k *Kernel) LoadSigned(m Manifest, sig *VerifierSignature) (PID, error) {
 	if err := k.hostOnly(); err != nil {
 		return 0, err
 	}
@@ -272,7 +328,7 @@ func (k *Kernel) Load(m Manifest) (PID, error) {
 	if done {
 		return 0, errors.New("kernel: already shut down")
 	}
-	pid, err := LoadModule(k.initCtx, m)
+	pid, err := LoadModule(k.initCtx, m, sig)
 	if err != nil {
 		return 0, err
 	}

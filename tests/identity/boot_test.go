@@ -36,11 +36,13 @@ import (
 func TestBootReentrancyGuard(t *testing.T) {
 	buf := harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err, "first boot must succeed")
 	defer func() { _ = k1.Shutdown() }()
 
-	k2, err := kernel.Boot(kernel.BootConfig{})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.Error(t, err, "second boot must fail, not silently succeed")
 	require.Nil(t, k2)
 	assert.Contains(t, err.Error(), "already booted")
@@ -60,13 +62,15 @@ func TestBootReentrancyGuard(t *testing.T) {
 func TestBootAfterShutdownIsFresh(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	_, err = k1.Load(diag.Manifest())
 	require.NoError(t, err)
 	require.NoError(t, k1.Shutdown())
 
-	k2, err := kernel.Boot(kernel.BootConfig{})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err, "boot after shutdown must succeed")
 	defer func() { _ = k2.Shutdown() }()
 
@@ -81,7 +85,8 @@ func TestBootAfterShutdownIsFresh(t *testing.T) {
 func TestRootContextHandoffIsOnceOnly(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k, err := kernel.Boot(kernel.BootConfig{})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -109,6 +114,7 @@ func TestRootContextHandoffIsOnceOnly(t *testing.T) {
 	// observable: it must refuse rather than hand out a second root. It fails
 	// at the boot guard, before the handoff is ever attempted again, which is
 	// the stronger ordering - a caller cannot reach the handoff twice.
-	_, err = kernel.Boot(kernel.BootConfig{})
+	_, err = kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.Error(t, err)
 }

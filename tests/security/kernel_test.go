@@ -71,7 +71,8 @@ func TestPluginCannotEscalateOrForge(t *testing.T) {
 func TestResetKernelIsComplete(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 
 	harness.RegisterProbe(t, "leaky", &harness.Probe{Load: func(ctx kernel.SContext) error {
@@ -97,7 +98,8 @@ func TestResetKernelIsComplete(t *testing.T) {
 	_, constrained := kernel.GrantsFor(pid)
 	assert.False(t, constrained, "grant sets must be cleared")
 
-	k2, err := kernel.Boot(kernel.BootConfig{})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
 
@@ -120,6 +122,7 @@ func TestResetClearsTheSubsystemStateAddedSince(t *testing.T) {
 	harness.QuietConsole(t)
 
 	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff,
 		TrustRoot: kernel.BootTrustRoot{NodeID: "node-reset", Limits: kernel.BootLimits{
 			MaxKVBytesPerModule:        1 << 20,
 			MaxAccountedBytesPerModule: 1,
@@ -185,7 +188,8 @@ func TestResetClearsTheSubsystemStateAddedSince(t *testing.T) {
 	assert.Zero(t, oom.Sweeps)
 
 	k2, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: "node-reset-2"},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "node-reset-2"},
 	})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
@@ -227,7 +231,8 @@ func TestResetClearsWhatUnloadNeverTouches(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "secret.txt"), []byte("BOOT-ONE"), 0o600))
 
-	k1, err := kernel.Boot(kernel.BootConfig{})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 
 	// init's own namespace, which no unload reaches.
@@ -242,7 +247,8 @@ func TestResetClearsWhatUnloadNeverTouches(t *testing.T) {
 
 	assert.Zero(t, kernel.KVBytes(1), "init's namespace must not survive the shutdown")
 
-	k2, err := kernel.Boot(kernel.BootConfig{})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
 
@@ -347,6 +353,15 @@ func TestAZeroKernelCannotAct(t *testing.T) {
 		}},
 		{"Load", func() error {
 			_, err := z.Load(kernel.Manifest{Name: "forged", Version: "1"})
+			return err
+		}},
+		{"LoadSigned", func() error {
+			// The signed variant is a separate method with the same gate, and it is the
+			// one the appraised load path actually uses, so it is listed rather than
+			// covered by Load: the reflection walk below would fail on it otherwise, and
+			// "Load is tested therefore LoadSigned is" is exactly the inference the walk
+			// exists to refuse.
+			_, err := z.LoadSigned(kernel.Manifest{Name: "forged", Version: "1"}, nil)
 			return err
 		}},
 		{"Unload", func() error { return z.Unload(1) }},
@@ -503,13 +518,15 @@ func (forgedSampler) ReservedBytes() uint64    { return 1 << 20 }
 func TestAContextRetainedAcrossShutdownCannotActOnTheNextBoot(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	stale := k1.InitContext()
 	require.NotNil(t, stale)
 	require.NoError(t, k1.Shutdown())
 
-	k2, err := kernel.Boot(kernel.BootConfig{})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err, "the boot guard is released by Shutdown")
 	defer func() { _ = k2.Shutdown() }()
 	fresh := k2.InitContext()

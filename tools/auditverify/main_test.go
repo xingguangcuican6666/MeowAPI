@@ -44,8 +44,9 @@ func buildTrail(t *testing.T, path string) {
 	sink, err := auditfile.New(auditfile.Options{Path: path})
 	require.NoError(t, err)
 	k, err := kernel.Boot(kernel.BootConfig{
-		AuditSink: sink,
-		TrustRoot: kernel.BootTrustRoot{NodeID: "verify-test"},
+		VerifierPolicy: kernel.VerifierOff,
+		AuditSink:      sink,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "verify-test"},
 	})
 	require.NoError(t, err)
 	pid, err := k.Load(diag.Manifest())

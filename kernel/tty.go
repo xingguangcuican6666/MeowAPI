@@ -652,7 +652,7 @@ func TTYWrite(ctx SContext, fd FD, level Level, msg string) error {
 // 20 packages green. verifyConsoleCredential still wipes on its own paths, which is
 // now redundant and harmless - zeroing twice is the same as zeroing once, and the
 // installer copies before storing so nothing stored aliases this slice.
-func TTYLoadModule(ctx SContext, fd FD, credential []byte, m Manifest) (PID, error) {
+func TTYLoadModule(ctx SContext, fd FD, credential []byte, m Manifest, sig *VerifierSignature) (PID, error) {
 	defer wipe(credential)
 
 	c, ok := ctx.(*sContext)
@@ -669,7 +669,7 @@ func TTYLoadModule(ctx SContext, fd FD, credential []byte, m Manifest) (PID, err
 		return 0, err
 	}
 
-	pid, err := LoadModule(c, m)
+	pid, err := LoadModule(c, m, sig)
 	if err != nil {
 		return 0, err
 	}
@@ -895,8 +895,8 @@ func (c *sContext) SyscallTTYRead(fd FD, since int) (TTYWindow, error) {
 func (c *sContext) SyscallTTYWrite(fd FD, level Level, msg string) error {
 	return TTYWrite(c, fd, level, msg)
 }
-func (c *sContext) SyscallTTYLoadModule(fd FD, credential []byte, m Manifest) (PID, error) {
-	return TTYLoadModule(c, fd, credential, m)
+func (c *sContext) SyscallTTYLoadModule(fd FD, credential []byte, m Manifest, sig *VerifierSignature) (PID, error) {
+	return TTYLoadModule(c, fd, credential, m, sig)
 }
 func (c *sContext) SyscallTTYUnloadModule(fd FD, credential []byte, pid PID) error {
 	return TTYUnloadModule(c, fd, credential, pid)

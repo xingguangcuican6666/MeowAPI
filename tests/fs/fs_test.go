@@ -59,7 +59,8 @@ func fsNextName(prefix string) string {
 func fsBoot(t *testing.T) *kernel.Kernel {
 	t.Helper()
 	k, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: "node-fs"},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "node-fs"},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })

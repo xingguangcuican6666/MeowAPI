@@ -827,12 +827,19 @@ func TestVerifierPolicies(t *testing.T) {
 	})
 }
 
-// TestVerifierPolicyDefaultsFromTrustRoot pins the derivation rule and the reason
-// it exists. A deployment that configured cluster root keys meant to verify
-// against them; defaulting such a deployment to off would leave the keys
-// configured and unused, which is precisely the gap where a reviewed manifest
-// gets widened. The derivation is also read live rather than cached at seal time,
-// so the posture can never disagree with the roots actually in force.
+// TestVerifierPolicyDefaultsFromTrustRoot pins the derivation rule, and the rule is
+// enforce whatever the trust root says.
+//
+// It used to be derived from the roots: enforce when the deployment configured cluster
+// keys, off when it did not. The off branch is gone, on the owner's instruction that a
+// boot which cannot appraise must refuse rather than admit. So this test now pins the
+// opposite of what it pinned before for the no-keys case, and the change is the whole
+// point of the wiring: a single-node deployment with no keys configured cannot load an
+// unsigned module by default, and must say VerifierOff in its BootConfig to do so - which
+// puts the choice on the boot record instead of leaving it as an absence.
+//
+// The derivation is still read live rather than cached at seal time, so the posture can
+// never disagree with the roots actually in force.
 func TestVerifierPolicyDefaultsFromTrustRoot(t *testing.T) {
 	seed, pub := verifierKeyPair(t)
 
@@ -851,14 +858,19 @@ func TestVerifierPolicyDefaultsFromTrustRoot(t *testing.T) {
 			kernel.VerifyManifestLoad(nil, m, nil), kernel.ErrVerifierUnsigned))
 	})
 
-	t.Run("no cluster roots derives off", func(t *testing.T) {
+	t.Run("no cluster roots still derives enforce", func(t *testing.T) {
 		_, _ = verifierBoot(t, nil, seed)
-		assert.Equal(t, kernel.VerifierOff, kernel.VerifierPolicyCurrent())
+		assert.Equal(t, kernel.VerifierEnforce, kernel.VerifierPolicyCurrent(),
+			"having nothing to verify against is a reason to refuse, not to admit")
 
 		m := verifierManifest("unsigned", kernel.OpLogWrite)
-		assert.NoError(t, kernel.VerifyManifestLoad(nil, m, nil),
-			"a deployment with nothing to verify against admits")
-		assert.Empty(t, kernel.VerifierLedger())
+		assert.Error(t, kernel.VerifyManifestLoad(nil, m, nil),
+			"a deployment with nothing to verify against must not silently admit")
+		// The refusal is recorded rather than swallowed, which is what makes the
+		// outage diagnosable: an operator who sees this in the ledger knows the
+		// fix is either to configure roots or to declare off, and which they chose
+		// is on the boot record either way.
+		assert.NotEmpty(t, kernel.VerifierLedger())
 	})
 
 	t.Run("harness placeholder roots also derive enforce", func(t *testing.T) {
@@ -1398,10 +1410,14 @@ func TestVerifierBootBoundaryDropsStaleEvidence(t *testing.T) {
 
 	// Evidence from the boot that just ended is gone, and the posture with it.
 	assert.Empty(t, kernel.VerifierLedger())
+	// This is the assertion that actually discriminates: the host's pre-boot choice did
+	// not survive. VerifierPolicyCurrent cannot tell the two apart any more, because
+	// enforce is the default - before the default changed, this same line asserted off
+	// and the default answered off, so it read as evidence when it was decoration.
 	_, set = kernel.VerifierPolicyExplicit()
-	assert.False(t, set)
-	assert.Equal(t, kernel.VerifierOff, kernel.VerifierPolicyCurrent(),
-		"with no boot and no explicit choice the posture is off")
+	assert.False(t, set, "the previous boot's explicit posture is not inherited")
+	assert.Equal(t, kernel.VerifierEnforce, kernel.VerifierPolicyCurrent(),
+		"with no boot and no explicit choice the posture is the default, enforce")
 }
 
 // TestVerifierSignatureIsNotACapability is the boundary that keeps appraisal from
@@ -1417,13 +1433,12 @@ func TestVerifierSignatureIsNotACapability(t *testing.T) {
 	m := verifierManifest("narrow", kernel.OpLogWrite)
 	require.NoError(t, kernel.ValidateManifest(&m))
 	sig := verifierSign(t, seed, m)
-	require.NoError(t, kernel.VerifyManifestLoad(k.InitContext(), m, &sig))
 
 	var ctx kernel.SContext
 	harness.RegisterProbe(t, m.Name, &harness.Probe{
 		Load: func(c kernel.SContext) error { ctx = c; return nil },
 	})
-	pid, err := k.Load(m)
+	pid, err := k.LoadSigned(m, &sig)
 	require.NoError(t, err)
 
 	// The effective grants are exactly the manifest narrowed to the ceiling, with
@@ -1586,21 +1601,44 @@ func TestVerifierRefusalPrecedesModuleCode(t *testing.T) {
 	})
 	t.Cleanup(func() { kernel.Unregister(m.Name) })
 
-	// The unsigned declaration is refused by the hook, and the load path the
-	// integrator wires stops there.
-	require.True(t, errors.Is(
-		kernel.VerifyManifestLoad(k.InitContext(), m, nil), kernel.ErrVerifierUnsigned))
+	// The unsigned load is refused THROUGH THE LOAD PATH, which is what makes this a
+	// test of the wiring rather than of the appraisal function. Before the hook existed
+	// this assertion could only be made by calling VerifyManifestLoad directly, and a
+	// direct call says nothing about whether LoadModule invokes it: it passed for the
+	// whole of the subsystem's life while AGENT.md claimed the opposite.
+	_, err := k.Load(m)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, kernel.ErrVerifierUnsigned),
+		"the refusal must name the missing signature, got %v", err)
 
 	// Nothing downstream ran, and no module is live.
 	assert.False(t, factoryRan, "the factory must not run for a refused manifest")
 	assert.False(t, onLoadRan, "OnLoad must not run for a refused manifest")
 	assert.Empty(t, kernel.LoadedModules(), "a refused module is not live")
 
-	// The signed declaration passes the hook and then loads for real, which is
-	// the same code path with the appraisal satisfied.
+	// The refusal is on the chain before the error reaches the caller, and the process
+	// table shows a rejected record rather than merely nothing.
+	found := false
+	for _, e := range kernel.AuditQuery(kernel.AuditFilter{Kind: kernel.AuditReject}) {
+		if strings.Contains(e.Msg, "failed appraisal") &&
+			strings.Contains(e.Fields["module"].(string), "late") {
+			found = true
+		}
+	}
+	assert.True(t, found, "a signature refusal must be on the audit chain as a reject")
+	rejected := false
+	for _, r := range kernel.ProcTable() {
+		if r.State == kernel.ProcRejected && r.Name == "late" {
+			rejected = true
+		}
+	}
+	assert.True(t, rejected, "and in the process table, so a refusal is investigable")
+
+	// The signed declaration loads for real, which is the same code path with the
+	// appraisal satisfied - and it goes through LoadSigned, because the load path
+	// appraises and Load passes nil.
 	sig := verifierSign(t, seed, m)
-	require.NoError(t, kernel.VerifyManifestLoad(k.InitContext(), m, &sig))
-	pid, err := k.Load(m)
+	pid, err := k.LoadSigned(m, &sig)
 	require.NoError(t, err)
 	assert.NotZero(t, pid)
 	assert.True(t, factoryRan)
@@ -1608,6 +1646,15 @@ func TestVerifierRefusalPrecedesModuleCode(t *testing.T) {
 	require.Len(t, kernel.LoadedModules(), 1)
 	assert.Equal(t, m.Digest(), kernel.LoadedModules()[0].Manifest.Digest(),
 		"the module that loaded is the one that was appraised")
+
+	// A signature for a DIFFERENT declaration is refused on the load path too, which is
+	// the widening-between-review-and-deployment case the subsystem exists for: the
+	// digest moved, so the signature no longer covers what is loading.
+	widened := verifierManifest(m.Name, kernel.OpLogWrite, kernel.OpKVWrite)
+	_, err = k.LoadSigned(widened, &sig)
+	require.Error(t, err, "a signature minted for a narrower declaration must not cover a wider one")
+	assert.True(t, errors.Is(err, kernel.ErrVerifierDigestMismatch),
+		"and the refusal must say which digest mismatched, got %v", err)
 }
 
 // TestVerifierAuditComplementsValidation is the non-duplication property, stated

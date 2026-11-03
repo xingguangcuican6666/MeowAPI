@@ -53,8 +53,10 @@ func TestAPanicInTheSettlementWindowDoesNotWedgeShutdown(t *testing.T) {
 	// compares it - and it must be unparseable, so nothing else in this kernel can
 	// have populated the cache with a real key.
 	const badMaterial = "not-an-ed25519-key"
-	kc, err := Boot(BootConfig{Console: io.Discard,
-		TrustRoot: BootTrustRoot{NodeID: "settle-probe", SigningKeyPEM: badMaterial}})
+	kc, err := Boot(BootConfig{
+		VerifierPolicy: VerifierOff,
+		Console:        io.Discard,
+		TrustRoot:      BootTrustRoot{NodeID: "settle-probe", SigningKeyPEM: badMaterial}})
 	if err != nil {
 		t.Fatalf("boot: %v", err)
 	}

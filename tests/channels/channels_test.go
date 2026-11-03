@@ -1388,7 +1388,8 @@ func TestEventDetailIsBounded(t *testing.T) {
 func TestEventResetsAcrossRestart(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k1.Shutdown() })
 
@@ -1404,7 +1405,8 @@ func TestEventResetsAcrossRestart(t *testing.T) {
 	assert.Zero(t, st.Posts, "the post counter resets with the boot")
 	assert.Zero(t, st.Pending)
 
-	k2, err := kernel.Boot(kernel.BootConfig{})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
 	assert.Zero(t, kernel.EventStatsSnapshot().Subscriptions)
@@ -1415,7 +1417,8 @@ func TestEventResetsAcrossRestart(t *testing.T) {
 func TestLocksAndPipesResetAcrossRestart(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k1.Shutdown() })
 
@@ -1437,7 +1440,8 @@ func TestLocksAndPipesResetAcrossRestart(t *testing.T) {
 	assert.Empty(t, kernel.LockSnapshot(), "locks must not survive a shutdown")
 	assert.Zero(t, kernel.SlotStatsSnapshot().Total)
 
-	k2, err := kernel.Boot(kernel.BootConfig{})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
 

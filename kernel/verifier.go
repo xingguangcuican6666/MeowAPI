@@ -173,12 +173,9 @@ import (
 	"sync"
 )
 
-// VerifierBindingVersion is the binding-payload version this kernel signs
-// and accepts. A signature minted under another version is refused rather
-// than reinterpreted: the field layout is part of what the signature covers,
-// and a verifier that guessed at an unknown layout would be appraising an
-// encoding it did not read.
-const VerifierBindingVersion = 1
+// VerifierBindingVersion is abi.VerifierBindingVersion: it appears in the type of a
+// syscall parameter, so it lives in the package a module compiles against.
+const VerifierBindingVersion = abi.VerifierBindingVersion
 
 // VerifierPolicy is abi.VerifierPolicy: a module has to be able to name these, so
 // they live in the package it compiles against (see abi/abi.go). The kernel
@@ -311,34 +308,10 @@ func verifierRefuse(m Manifest, sig *VerifierSignature, sentinel error, format s
 	}
 }
 
-// VerifierSignature is a detached operator signature over one manifest's
-// binding payload. It travels beside the deployment rather than inside the
-// manifest: the manifest is module-authored data, the signature is the
-// operator's appraisal of it, and storing the appraisal inside the thing
-// appraised would let the appraised party carry and re-present it.
-type VerifierSignature struct {
-	// Version is the binding-payload version and must equal
-	// VerifierBindingVersion.
-	Version int `json:"version"`
-	// Module, ModuleVersion and Digest restate the signed identity, so a
-	// mismatch is diagnosable from the refusal alone and a refused load names
-	// what the signature was actually minted for. Digest is the sha256 hex of
-	// the manifest the signer reviewed, matching Manifest.Digest().
-	Module        string `json:"module"`
-	ModuleVersion string `json:"module_version"`
-	Digest        string `json:"digest"`
-	// KeyID identifies the signing key as its short public-key digest, so the
-	// trust check and the operator's key inventory use the same name and no key
-	// material appears in a record.
-	KeyID string `json:"key_id"`
-	// SignedMono is the signer's mono() reading at mint time. It is evidence
-	// inside the payload and not an authorization input: no freshness, expiry
-	// or ordering decision reads it, because a decision that did would let a
-	// signer weaken a later appraisal by backdating this one.
-	SignedMono int64 `json:"signed_mono"`
-	// Bytes is the raw ed25519 signature over the binding payload.
-	Bytes []byte `json:"bytes"`
-}
+// VerifierSignature is abi.VerifierSignature: it appears in a syscall's parameter
+// list, so the shape lives in the package a module compiles against. The kernel
+// re-exports it so this file and a module name one type.
+type VerifierSignature = abi.VerifierSignature
 
 // verifierBindingPayload is the canonical encoding the signature covers, and
 // the only thing it covers. It binds the module identity and the declaration
@@ -512,38 +485,35 @@ func verifierSyncBoot() {
 	}
 }
 
-// verifierEffective resolves the posture in force. hasClusterRoots is read by
-// the caller before taking the lock, so this subsystem never holds its own lock
-// across another subsystem's.
+// verifierEffective resolves the posture in force, and the default is enforce.
 //
-// An explicit host choice always wins. Without one the posture is derived from
-// the sealed trust root: a deployment that configured cluster root keys almost
-// certainly meant to verify against them, so the derived posture is enforce, and
-// the gap between configuring those keys and enforcing against them is exactly
-// where a reviewed manifest gets widened without anyone re-approving it. A
-// deployment with no keys derives off, because there is nothing to verify
-// against and refusing every module would be a self-inflicted outage rather than
-// a control.
+// It used to be derived: enforce when the trust root carried cluster keys, off when it
+// did not. The off branch is gone. "No keys configured" means the kernel cannot
+// appraise anything, and a kernel that cannot appraise a manifest must not admit the
+// module - so the derivation now has one answer, and the only route to a laxer posture
+// is an explicit host choice made before the boot's first appraisal.
 //
-// The derivation reads the trust root rather than caching a decision made at
-// seal time, so the posture can never disagree with the roots actually in force.
-func verifierEffective(hasClusterRoots bool) VerifierPolicy {
+// What that costs, stated plainly because it is the whole reason the old default
+// existed: a single-node deployment that never configured cluster keys can no longer
+// load anything without signing its manifests or declaring VerifierOff. The owner
+// chose refusal over starting, on the reasoning that a gateway which loads unsigned
+// code by default is a gateway whose "reviewed declaration" claim is unenforced, and
+// that a refusal with a one-line fix is better than a bypass nobody notices. The fix
+// is one field in BootConfig, and the boot record names the posture in force, so a
+// deployment that chose off is on the audit chain rather than merely absent from it.
+func verifierEffective() VerifierPolicy {
 	if kverifier.explicit != nil {
 		return *kverifier.explicit
 	}
-	if hasClusterRoots {
-		return VerifierEnforce
-	}
-	return VerifierOff
+	return VerifierEnforce
 }
 
 // VerifierPolicyCurrent reports the posture in force, explicit or derived.
 func VerifierPolicyCurrent() VerifierPolicy {
 	verifierSyncBoot()
-	hasRoots := len(ClusterRootKeys()) > 0
 	kverifier.mu.RLock()
 	defer kverifier.mu.RUnlock()
-	return verifierEffective(hasRoots)
+	return verifierEffective()
 }
 
 // VerifierPolicyExplicit reports the host-set posture and whether the host set
@@ -589,13 +559,12 @@ func VerifierSetPolicy(p VerifierPolicy) error {
 		return fmt.Errorf("kernel: unknown verifier policy %q (want one of off, audit, enforce)", p)
 	}
 	verifierSyncBoot()
-	hasRoots := len(ClusterRootKeys()) > 0
 
 	kverifier.mu.Lock()
 	defer kverifier.mu.Unlock()
-	if kverifier.armed && verifierStrictness(p) < verifierStrictness(verifierEffective(hasRoots)) {
+	if kverifier.armed && verifierStrictness(p) < verifierStrictness(verifierEffective()) {
 		return fmt.Errorf("%w: %s is in force and this boot has appraised a manifest",
-			ErrVerifierSealed, verifierEffective(hasRoots))
+			ErrVerifierSealed, verifierEffective())
 	}
 	set := p
 	kverifier.explicit = &set
@@ -658,7 +627,6 @@ func verifierResetLocked() {
 // anyone else's behalf.
 func VerifierRecord(module, version, digest, keyID string, admitted bool, reason string) {
 	verifierSyncBoot()
-	hasRoots := len(ClusterRootKeys()) > 0
 
 	kverifier.mu.Lock()
 	defer kverifier.mu.Unlock()
@@ -668,7 +636,7 @@ func VerifierRecord(module, version, digest, keyID string, admitted bool, reason
 		Version:  version,
 		Digest:   digest,
 		KeyID:    keyID,
-		Policy:   verifierEffective(hasRoots),
+		Policy:   verifierEffective(),
 		Admitted: admitted,
 		Reason:   reason,
 	})
@@ -743,11 +711,10 @@ func VerifyManifest(m Manifest, sig *VerifierSignature) error {
 func VerifyManifestLoad(ctx SContext, m Manifest, sig *VerifierSignature) error {
 	c, _ := ctx.(*sContext)
 	verifierSyncBoot()
-	hasRoots := len(ClusterRootKeys()) > 0
 
 	kverifier.mu.Lock()
 	kverifier.armed = true
-	policy := verifierEffective(hasRoots)
+	policy := verifierEffective()
 	kverifier.mu.Unlock()
 
 	if policy == VerifierOff {

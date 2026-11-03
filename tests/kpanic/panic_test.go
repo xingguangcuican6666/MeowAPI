@@ -58,7 +58,8 @@ func panicNextName(prefix string) string {
 
 func panicBoot(t *testing.T) *kernel.Kernel {
 	t.Helper()
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{NodeID: "node-panic"}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{NodeID: "node-panic"}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
 	return k
@@ -384,8 +385,9 @@ func TestAFlushWithADurableSinkReportsItselfDurable(t *testing.T) {
 	t.Cleanup(func() { _ = sink.Close() })
 
 	k, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: "node-panic-sink"},
-		AuditSink: sink,
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "node-panic-sink"},
+		AuditSink:      sink,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
@@ -732,7 +734,8 @@ func TestSubprocessRecoverFlushesOnTheWayOut(t *testing.T) {
 // register the builtins, panic, recover, flush, report, exit non-zero.
 func panicSubprocessMain() {
 	k, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: "node-subprocess"},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "node-subprocess"},
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "boot failed:", err)

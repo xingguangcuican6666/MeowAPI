@@ -109,8 +109,9 @@ func schedQuiet(t *testing.T, limits kernel.BootLimits) (*kernel.Kernel, *schedS
 	t.Helper()
 	sink := &schedSink{}
 	k, err := kernel.Boot(kernel.BootConfig{
-		Console:   sink,
-		TrustRoot: kernel.BootTrustRoot{NodeID: "sched-test", Limits: limits},
+		VerifierPolicy: kernel.VerifierOff,
+		Console:        sink,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "sched-test", Limits: limits},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
@@ -903,7 +904,8 @@ func TestSchedStateDoesNotSurviveRestart(t *testing.T) {
 		return running == 0 && timers == 0
 	}), "counters must be cleared, not merely orphaned")
 
-	k2, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{NodeID: "sched-test-2"}})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{NodeID: "sched-test-2"}})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
 

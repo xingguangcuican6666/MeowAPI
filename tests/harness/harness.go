@@ -130,7 +130,28 @@ func Faults(buf *bytes.Buffer) []kernel.Record {
 // fixture.
 func BootOne(t *testing.T) *kernel.Kernel {
 	t.Helper()
-	k, err := kernel.Boot(kernel.BootConfig{})
+	k, err := kernel.Boot(kernel.BootConfig{
+		// Appraisal off, and this is a declaration rather than a convenience. The
+		// default posture is enforce, so a suite that loads an unsigned probe module -
+		// nearly every suite here - would otherwise be refused at load. The posture
+		// itself is exercised under real keys in tests/verifier; a suite that wants a
+		// different posture uses BootWith and says which one.
+		VerifierPolicy: kernel.VerifierOff,
+	})
+	if err != nil {
+		t.Fatalf("boot failed: %v", err)
+	}
+	t.Cleanup(func() { _ = k.Shutdown() })
+	return k
+}
+
+// BootWith boots with a caller-supplied configuration and the same cleanup as BootOne.
+// It exists so a suite whose SUBJECT is the boot configuration - the verifier posture,
+// the trust root - does not repeat the cleanup, whose absence is what turns one leaked
+// boot into a cascade of "already booted" failures across the rest of the binary.
+func BootWith(t *testing.T, cfg kernel.BootConfig) *kernel.Kernel {
+	t.Helper()
+	k, err := kernel.Boot(cfg)
 	if err != nil {
 		t.Fatalf("boot failed: %v", err)
 	}

@@ -42,7 +42,8 @@ func TestTrustRootSealsOnBoot(t *testing.T) {
 	require.False(t, kernel.BootSealed(), "an unbooted kernel has no sealed root")
 	require.NoError(t, kernel.BootSet("pre.boot", "writable"))
 
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -107,8 +108,9 @@ func TestTrustRootIsSealedBeforeModulesRun(t *testing.T) {
 	t.Cleanup(func() { kernel.Unregister("sealprobe") })
 
 	k, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: harness.BootTrust(),
-		Modules:   []kernel.Manifest{{Name: "sealprobe", Version: "1", MinKernelAPI: 1, MaxKernelAPI: 1}},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      harness.BootTrust(),
+		Modules:        []kernel.Manifest{{Name: "sealprobe", Version: "1", MinKernelAPI: 1, MaxKernelAPI: 1}},
 	})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
@@ -123,20 +125,23 @@ func TestTrustRootIsSealedBeforeModulesRun(t *testing.T) {
 func TestTrustRootDigestIsStableAndCoversConfig(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	d1 := kernel.BootDigest()
 	require.NoError(t, k1.Shutdown())
 	assert.Len(t, d1, 64)
 
-	k2, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	assert.Equal(t, d1, kernel.BootDigest(), "the same root must hash identically across boots")
 	require.NoError(t, k2.Shutdown())
 
 	mutated := harness.BootTrust()
 	mutated.ClusterRootKeys = []string{"root-key-a", "root-key-EVIL"}
-	k3, err := kernel.Boot(kernel.BootConfig{TrustRoot: mutated})
+	k3, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: mutated})
 	require.NoError(t, err)
 	defer func() { _ = k3.Shutdown() }()
 	assert.NotEqual(t, d1, kernel.BootDigest(),
@@ -166,7 +171,8 @@ func TestTrustRootValidationRejectsGarbage(t *testing.T) {
 			c.mut(&tr)
 			// Boot substitutes "local" for an empty node id, so drive the loader
 			// through Boot for the key cases and assert the outcome.
-			k, err := kernel.Boot(kernel.BootConfig{TrustRoot: tr})
+			k, err := kernel.Boot(kernel.BootConfig{
+				VerifierPolicy: kernel.VerifierOff, TrustRoot: tr})
 			if err == nil {
 				if c.name == "empty node id" {
 					// Documented behavior: an empty node id defaults to "local" so a
@@ -192,7 +198,8 @@ func TestTrustRootValidationRejectsGarbage(t *testing.T) {
 func TestLimitsComeFromSealedRootAndHaveDefaults(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k, err := kernel.Boot(kernel.BootConfig{})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	d := kernel.Limits()
 	assert.Positive(t, d.MaxModules)
@@ -204,10 +211,11 @@ func TestLimitsComeFromSealedRootAndHaveDefaults(t *testing.T) {
 	assert.Positive(t, d.CallTimeoutMillis)
 	require.NoError(t, k.Shutdown())
 
-	k2, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n",
-		Limits: kernel.BootLimits{MaxModules: 1, MaxOpenFDsPerModule: 2, MaxTotalSlots: 3},
-	}})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n",
+			Limits: kernel.BootLimits{MaxModules: 1, MaxOpenFDsPerModule: 2, MaxTotalSlots: 3},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
 
@@ -229,9 +237,10 @@ func TestLimitsComeFromSealedRootAndHaveDefaults(t *testing.T) {
 func TestModuleLimitIsEnforced(t *testing.T) {
 	buf := harness.QuietConsole(t)
 
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxModules: 2},
-	}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxModules: 2},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -273,7 +282,8 @@ func TestModuleLimitIsEnforced(t *testing.T) {
 func TestBootConfigIsResetBetweenBoots(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	d1 := kernel.BootDigest()
 	require.NoError(t, k1.Shutdown())
@@ -284,7 +294,8 @@ func TestBootConfigIsResetBetweenBoots(t *testing.T) {
 	assert.False(t, ok, "the previous root must not survive a shutdown")
 	assert.Empty(t, kernel.ClusterRootKeys())
 
-	k2, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{NodeID: "different"}})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{NodeID: "different"}})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
 
@@ -299,7 +310,8 @@ func TestBootConfigIsResetBetweenBoots(t *testing.T) {
 func TestBootAllIsACopySortedAndSecretFree(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -340,7 +352,8 @@ func TestModuleReadsTrustRoot(t *testing.T) {
 	})
 	t.Cleanup(func() { kernel.Unregister("rootreader") })
 
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -377,7 +390,8 @@ func TestEverySealedLimitIsAttestedByTheDigest(t *testing.T) {
 	digestOf := func(mutate func(*kernel.BootLimits)) string {
 		tr := harness.BootTrust()
 		mutate(&tr.Limits)
-		k, err := kernel.Boot(kernel.BootConfig{TrustRoot: tr})
+		k, err := kernel.Boot(kernel.BootConfig{
+			VerifierPolicy: kernel.VerifierOff, TrustRoot: tr})
 		require.NoError(t, err)
 		d := kernel.BootDigest()
 		require.NoError(t, k.Shutdown())
@@ -438,7 +452,8 @@ func TestSealedLimitsAreReadableByAModuleWithoutAGrant(t *testing.T) {
 	tr := harness.BootTrust()
 	tr.Limits.MaxAccountedBytesPerModule = 1234
 	tr.Limits.OomHostKillBP = 4321
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: tr})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: tr})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 

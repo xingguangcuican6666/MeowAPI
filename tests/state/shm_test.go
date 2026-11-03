@@ -110,7 +110,8 @@ func (p statePool) allocations() int64 {
 func stateShmSetup(t *testing.T, extra int64) (*kernel.Kernel, statePool) {
 	t.Helper()
 
-	pre, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{NodeID: "node-state"}})
+	pre, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{NodeID: "node-state"}})
 	require.NoError(t, err)
 	// Shutdown is registered before the drain runs, so a failure inside it cannot
 	// leave the boot guard held and take every later test with it.
@@ -1081,7 +1082,8 @@ func TestShmConcurrencyIsRaceFree(t *testing.T) {
 func TestShmPoolIsClearedAcrossRestart(t *testing.T) {
 	stateQuiet(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{NodeID: "node-state"}})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{NodeID: "node-state"}})
 	require.NoError(t, err)
 	// Shutdown is registered before any assertion that can fail, so a failure here
 	// cannot leave the boot guard held and take every later test with it.
@@ -1116,7 +1118,8 @@ func TestShmPoolIsClearedAcrossRestart(t *testing.T) {
 	assert.Zero(t, kernel.ShmSnapshot().Allocations)
 	assert.Zero(t, kernel.ShmSnapshot().Zeroed)
 
-	k2, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{NodeID: "node-state"}})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{NodeID: "node-state"}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k2.Shutdown() })
 

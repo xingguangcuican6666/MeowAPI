@@ -56,8 +56,10 @@ func TestResetSchedDoesNotReenterItsOwnLock(t *testing.T) {
 	Register(moduleName, func() (Module, error) { return &resetSchedProbe{}, nil })
 	t.Cleanup(func() { Unregister(moduleName) })
 
-	kc, err := Boot(BootConfig{Console: io.Discard,
-		TrustRoot: BootTrustRoot{NodeID: "reset-sched-probe"}})
+	kc, err := Boot(BootConfig{
+		VerifierPolicy: VerifierOff,
+		Console:        io.Discard,
+		TrustRoot:      BootTrustRoot{NodeID: "reset-sched-probe"}})
 	require.NoError(t, err)
 	// Shutdown is registered but skipped once the test has failed, because the failure
 	// this test detects is a wedged schedMu and Shutdown calls resetSched. Measured: an
@@ -81,7 +83,7 @@ func TestResetSchedDoesNotReenterItsOwnLock(t *testing.T) {
 		Name: moduleName, Version: "1",
 		MinKernelAPI: KernelAPI, MaxKernelAPI: KernelAPI,
 		Require: []Op{OpSchedTimer},
-	})
+	}, nil)
 	require.NoError(t, err)
 	_ = pid
 

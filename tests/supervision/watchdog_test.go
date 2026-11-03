@@ -554,6 +554,7 @@ func TestWatchdogStateDoesNotSurviveRestart(t *testing.T) {
 	assert.False(t, kernel.SignalTerminated(pid))
 
 	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff,
 		TrustRoot: kernel.BootTrustRoot{NodeID: "watchdog-test-2",
 			Limits: kernel.BootLimits{CallTimeoutMillis: 50}},
 	})

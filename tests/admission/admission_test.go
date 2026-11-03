@@ -102,9 +102,10 @@ func TestSlotRequiresGrant(t *testing.T) {
 // is enforced at acquire time rather than being advisory.
 func TestPerModuleSlotCeiling(t *testing.T) {
 	buf := harness.QuietConsole(t)
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 3, MaxTotalSlots: 100},
-	}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 3, MaxTotalSlots: 100},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -129,9 +130,10 @@ func TestPerModuleSlotCeiling(t *testing.T) {
 // TestTotalSlotCeilingIsAcrossModules proves the global ceiling, which is what stops
 // N well-behaved modules from collectively exhausting the gateway.
 func TestTotalSlotCeilingIsAcrossModules(t *testing.T) {
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 10, MaxTotalSlots: 4},
-	}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 10, MaxTotalSlots: 4},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -156,9 +158,10 @@ func TestTotalSlotCeilingIsAcrossModules(t *testing.T) {
 // broken adapter becomes a gateway-wide outage.
 func TestSlotsAreReleasedOnUnload(t *testing.T) {
 	harness.QuietConsole(t)
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 5, MaxTotalSlots: 5},
-	}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 5, MaxTotalSlots: 5},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -187,9 +190,10 @@ func TestSlotsAreReleasedOnUnload(t *testing.T) {
 // capacity must come back.
 func TestSlotsAreReleasedWhenOnLoadPanics(t *testing.T) {
 	harness.QuietConsole(t)
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 3, MaxTotalSlots: 3},
-	}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 3, MaxTotalSlots: 3},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -230,9 +234,10 @@ func (m *slotPanics) OnUnload() error { return nil }
 // idempotence that makes reclamation safe to run afterwards.
 func TestExplicitSlotReleaseIsNotDoubleCounted(t *testing.T) {
 	harness.QuietConsole(t)
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 2, MaxTotalSlots: 2},
-	}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 2, MaxTotalSlots: 2},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -258,9 +263,10 @@ func TestExplicitSlotReleaseIsNotDoubleCounted(t *testing.T) {
 // admission side: a slot handle is not a capability that can be passed around.
 func TestReleaseSlotRejectsForeignHandles(t *testing.T) {
 	harness.QuietConsole(t)
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 2, MaxTotalSlots: 4},
-	}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 2, MaxTotalSlots: 4},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -338,9 +344,10 @@ func (p *kindProbe) OnUnload() error { return nil }
 // the suite runs under -race.
 func TestConcurrentSlotAcquireIsRaceFree(t *testing.T) {
 	harness.QuietConsole(t)
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 40, MaxTotalSlots: 40},
-	}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 40, MaxTotalSlots: 40},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -379,9 +386,10 @@ func TestConcurrentSlotAcquireIsRaceFree(t *testing.T) {
 func TestSlotsResetAcrossRestart(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 4, MaxTotalSlots: 4},
-	}})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 4, MaxTotalSlots: 4},
+		}})
 	require.NoError(t, err)
 	p := &slotProbe{want: 4}
 	pid, _ := loadAdmissionProbe(t, k1, p, kernel.OpSlotAcquire)
@@ -393,7 +401,8 @@ func TestSlotsResetAcrossRestart(t *testing.T) {
 	assert.Empty(t, st.PerPid)
 	assert.Zero(t, st.Refused, "the refusal counter resets too")
 
-	k2, err := kernel.Boot(kernel.BootConfig{})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
 	assert.Zero(t, kernel.SlotStatsSnapshot().Total)
@@ -442,7 +451,8 @@ func TestQosRefusesPastTheCeiling(t *testing.T) {
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 2}))
 	t.Cleanup(func() { _ = kernel.SetQosPolicy("uid", kernel.QosPolicy{}) })
 
-	k, err := kernel.Boot(kernel.BootConfig{})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -482,7 +492,8 @@ func TestQosTokenCeilingIsSeparate(t *testing.T) {
 	}))
 	t.Cleanup(func() { _ = kernel.SetQosPolicy("uid", kernel.QosPolicy{}) })
 
-	k, err := kernel.Boot(kernel.BootConfig{})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -507,7 +518,8 @@ func TestQosNegativeCostIsRefused(t *testing.T) {
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 1}))
 	t.Cleanup(func() { _ = kernel.SetQosPolicy("uid", kernel.QosPolicy{}) })
 
-	k, err := kernel.Boot(kernel.BootConfig{})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -550,7 +562,8 @@ func TestQosBucketRefillsOnTheKernelClock(t *testing.T) {
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 60_000, Burst: 3}))
 	t.Cleanup(func() { _ = kernel.SetQosPolicy("uid", kernel.QosPolicy{}) })
 
-	k, err := kernel.Boot(kernel.BootConfig{})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -614,7 +627,8 @@ func TestQosBucketCountIsBounded(t *testing.T) {
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 10}))
 	t.Cleanup(func() { _ = kernel.SetQosPolicy("uid", kernel.QosPolicy{}) })
 
-	k, err := kernel.Boot(kernel.BootConfig{})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -637,7 +651,8 @@ func TestQosResetsAcrossRestart(t *testing.T) {
 	harness.QuietConsole(t)
 	require.NoError(t, kernel.SetQosPolicy("uid", kernel.QosPolicy{RequestsPerMinute: 1}))
 
-	k1, err := kernel.Boot(kernel.BootConfig{})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	capture := &ctxCapture{}
 	pid, _ := loadAdmissionProbe(t, k1, capture, kernel.OpQosAdmit)
@@ -817,7 +832,8 @@ func TestCPUStatsListsEveryAccount(t *testing.T) {
 func TestCPUResetsAcrossRestart(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	// Shutdown must run even if an assertion below fails, or the boot guard stays
 	// set and every later test in the package fails with "already booted".
@@ -838,9 +854,10 @@ func TestCPUResetsAcrossRestart(t *testing.T) {
 // to distinguish saturation from a fault with errors.Is.
 func TestErrNoSlotIsCheckable(t *testing.T) {
 	harness.QuietConsole(t)
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 1, MaxTotalSlots: 1},
-	}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxSlotsPerModule: 1, MaxTotalSlots: 1},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 

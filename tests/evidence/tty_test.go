@@ -249,7 +249,7 @@ func TestConsoleCredentialIsNeverDisclosed(t *testing.T) {
 	_, err = kernel.TTYLoadModule(k.InitContext(), fd, append([]byte(nil), cred...),
 		kernel.Manifest{
 			Name: name, Version: "1", MinKernelAPI: kernel.KernelAPI, MaxKernelAPI: kernel.KernelAPI,
-		})
+		}, nil)
 	require.NoError(t, err)
 
 	_, err = kernel.TTYProcessTable(k.InitContext(), fd, []byte("definitely-not-the-credential"))
@@ -455,7 +455,7 @@ func TestTTYPrivilegedActionsLeaveAuditEvidence(t *testing.T) {
 		Name: name, Version: "1", MinKernelAPI: kernel.KernelAPI, MaxKernelAPI: kernel.KernelAPI,
 	}
 
-	pid, err := kernel.TTYLoadModule(k.InitContext(), fd, append([]byte(nil), cred...), manifest)
+	pid, err := kernel.TTYLoadModule(k.InitContext(), fd, append([]byte(nil), cred...), manifest, nil)
 	require.NoError(t, err)
 	assert.NotZero(t, pid)
 
@@ -524,7 +524,7 @@ func TestTTYPrivilegedActWithWrongCredentialLeavesNoLoadEvidence(t *testing.T) {
 		[]byte("a-wrong-credential-of-length-32!"),
 		kernel.Manifest{
 			Name: name, Version: "1", MinKernelAPI: kernel.KernelAPI, MaxKernelAPI: kernel.KernelAPI,
-		})
+		}, nil)
 	require.Error(t, err)
 
 	assert.Equal(t, before, countAuditMsg(t, kernel.AuditLoad, ""),
@@ -563,7 +563,7 @@ func TestTTYLoadModuleStillChecksModuleLoad(t *testing.T) {
 	// is not written for it: the provenance record describes an accomplished act.
 	before := countAuditMsg(t, kernel.AuditPolicy, "console module load")
 	_, err = kernel.TTYLoadModule(k.InitContext(), fd, append([]byte(nil), cred...),
-		kernel.Manifest{Name: "", Version: "1"})
+		kernel.Manifest{Name: "", Version: "1"}, nil)
 	require.Error(t, err)
 	assert.Equal(t, before, countAuditMsg(t, kernel.AuditPolicy, "console module load"),
 		"a failed load must not be recorded as an accomplished one")
@@ -903,7 +903,7 @@ func TestTTYPresentersWipeTheCredentialTheyAreGiven(t *testing.T) {
 
 	// Wrong-kind handle: refused before the credential reaches the comparison.
 	wrongKind := append([]byte(nil), cred...)
-	_, err = kernel.TTYLoadModule(k.InitContext(), timerFD, wrongKind, manifest)
+	_, err = kernel.TTYLoadModule(k.InitContext(), timerFD, wrongKind, manifest, nil)
 	assertRefused(t, "TTYLoadModule with a non-console handle", wrongKind, err)
 
 	wrongKind = append([]byte(nil), cred...)
@@ -917,7 +917,7 @@ func TestTTYPresentersWipeTheCredentialTheyAreGiven(t *testing.T) {
 	// Wrong credential: refused inside verifyConsoleCredential, which is a different
 	// return path and the one a host with a stale credential takes.
 	wrong := []byte("not-the-console-credential-32-bytes")
-	_, err = kernel.TTYLoadModule(k.InitContext(), fd, wrong, manifest)
+	_, err = kernel.TTYLoadModule(k.InitContext(), fd, wrong, manifest, nil)
 	assertRefused(t, "TTYLoadModule with the wrong credential", wrong, err)
 
 	wrong = []byte("not-the-console-credential-32-bytes")
@@ -930,7 +930,7 @@ func TestTTYPresentersWipeTheCredentialTheyAreGiven(t *testing.T) {
 
 	// And the success path, so the wipe is not a refusal-only habit.
 	good := append([]byte(nil), cred...)
-	pid, err := kernel.TTYLoadModule(k.InitContext(), fd, good, manifest)
+	pid, err := kernel.TTYLoadModule(k.InitContext(), fd, good, manifest, nil)
 	require.NoError(t, err)
 	assertWiped(t, "TTYLoadModule success", good)
 

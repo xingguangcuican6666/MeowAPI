@@ -264,8 +264,8 @@ jobs:
           # project supports. Adding margin here would reopen the hole the allowlist
           # closes: slack is what lets a test quietly stop asserting. If this number
           # has to move, it moves up with the suite.
-          if [ $((PASSED + SKIP_TOP)) -lt 713 ]; then
-            echo "::error::expected at least 713 tests to run, got $((PASSED + SKIP_TOP))"
+          if [ $((PASSED + SKIP_TOP)) -lt 727 ]; then
+            echo "::error::expected at least 727 tests to run, got $((PASSED + SKIP_TOP))"
             echo "a guard against the suite silently not running"
             exit 1
           fi
@@ -291,8 +291,15 @@ jobs:
           # the audit trail this job verifies would be written by a process that is
           # still running when the verifier reads it. The flag exists for exactly this
           # caller: a single kernel lifetime, a report, and exit.
-          go run . -once -text -audit /tmp/meow-audit.log >/dev/null
-          go run . -once -text -audit /tmp/meow-audit.log >/dev/null
+          #
+          # -verify-policy off, because this job's subject is the audit chain and not the
+          # appraisal posture: the binary ships the unsigned reference module diag, which
+          # the default posture (enforce) refuses, and under enforce the daemon would
+          # correctly refuse to start. The posture has its own suite under real keys in
+          # tests/verifier, and an end-to-end run of the shipped binary under enforce is
+          # the deployment's own smoke test, not this one's.
+          go run . -once -text -verify-policy off -audit /tmp/meow-audit.log >/dev/null
+          go run . -once -text -verify-policy off -audit /tmp/meow-audit.log >/dev/null
           echo "wrote two boots to one trail"
 
       - name: verify the clean trail

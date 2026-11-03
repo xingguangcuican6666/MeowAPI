@@ -23,6 +23,7 @@ package console
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -109,6 +110,14 @@ type component struct {
 	reason string
 	// commands is how many it contributed, for `bin`.
 	commands int
+	// signature is the operator's signature beside the .so, read from <path>.sig at
+	// discovery time. A FILE rather than a symbol the component exports, and the
+	// difference is the enforcement: a component that could hand the kernel its own
+	// signature could sign its own declaration, which is what the appraisal exists to
+	// prevent. The operator writes the file; the component cannot.
+	signature *kernel.VerifierSignature
+	// sigNote records why a .sig was not used, for `bin`.
+	sigNote string
 }
 
 // components is the discovery table.
@@ -158,6 +167,16 @@ func (c *components) scan() ([]*component, []string, error) {
 			continue
 		}
 		if !strings.HasSuffix(e.Name(), pluginExtension) {
+			// A .sig is the signature BESIDE a component and belongs in this directory,
+			// so naming it "not a .so file; ignored" is a false alarm for exactly the file
+			// the appraisal needs. It is skipped silently: an operator who sees a note about
+			// their own signature file learns nothing except to distrust the notes.
+			//
+			// Any other stray file is still reported, because that one is a real question -
+			// a component built for the wrong platform, or a .so.bak somebody forgot.
+			if strings.HasSuffix(e.Name(), signatureFileSuffix) {
+				continue
+			}
 			notes = append(notes, fmt.Sprintf("%s: not a %s file; ignored", e.Name(), pluginExtension))
 			continue
 		}
@@ -169,8 +188,12 @@ func (c *components) scan() ([]*component, []string, error) {
 			continue
 		}
 
+		sig, sigNote := readComponentSignature(abs)
+
 		existing := c.byPath[abs]
 		if existing != nil {
+			existing.signature = sig
+			existing.sigNote = sigNote
 			if existing.digest != digest {
 				// Contents changed under a loaded component. Reported and left
 				// alone: reloading it silently would mean the operator's `ls`
@@ -182,7 +205,7 @@ func (c *components) scan() ([]*component, []string, error) {
 			}
 			continue
 		}
-		c.byPath[abs] = &component{path: abs, digest: digest}
+		c.byPath[abs] = &component{path: abs, digest: digest, signature: sig, sigNote: sigNote}
 	}
 
 	for path, comp := range c.byPath {
@@ -313,7 +336,7 @@ func (c *components) load(k moduleLoader, table *Table, comp *component) error {
 		}
 	}()
 
-	pid, err := k.LoadModule(manifest)
+	pid, err := k.LoadModule(manifest, comp.signature)
 	if err != nil {
 		shim.err = err
 		return fail(fmt.Errorf("the kernel refused the component: %w", err))
@@ -382,6 +405,50 @@ func rebuildHint(err error) string {
 			"imports; rebuild it with the current tree: go build -buildmode=plugin -o <path> <pkg>"
 	}
 	return ""
+}
+
+// signatureFileSuffix is the file an operator writes beside a component.
+//
+// Separate from the .so on purpose: a signature stored INSIDE the component would be
+// the component attesting to its own declaration, and the whole point of kverifier is
+// that the appraisal is the operator's. Keeping it beside the file also means
+// re-signing a manifest does not mean rebuilding the .so, and rebuilding the .so does
+// not silently re-sign it.
+const signatureFileSuffix = ".sig"
+
+// maxSignatureFileBytes bounds what is read from a .sig. A signature is a small JSON
+// object; anything larger is a mistake or an attempt to make the daemon allocate.
+const maxSignatureFileBytes = 64 << 10
+
+// readComponentSignature reads and parses <so>.sig, if it exists.
+//
+// A missing file is not an error: it is the unsigned case, and the kernel's posture
+// decides whether that is admissible. A file that exists and cannot be parsed is
+// reported as a note rather than refused here, because the authoritative refusal is the
+// kernel's and duplicating it would give an operator two messages for one problem - but
+// the note is what explains why a component they believe they signed is being refused.
+func readComponentSignature(componentPath string) (*kernel.VerifierSignature, string) {
+	path := componentPath + signatureFileSuffix
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ""
+	}
+	if err != nil {
+		return nil, fmt.Sprintf("%s: %v", filepath.Base(path), err)
+	}
+	if info.Size() > maxSignatureFileBytes {
+		return nil, fmt.Sprintf("%s is %d bytes, above the %d-byte ceiling",
+			filepath.Base(path), info.Size(), maxSignatureFileBytes)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Sprintf("%s: %v", filepath.Base(path), err)
+	}
+	var sig kernel.VerifierSignature
+	if err := json.Unmarshal(raw, &sig); err != nil {
+		return nil, fmt.Sprintf("%s is not a valid signature file: %v", filepath.Base(path), err)
+	}
+	return &sig, ""
 }
 
 // openPlugin calls plugin.Open with a panic shield, and the shield is not
@@ -458,29 +525,40 @@ func (m *componentModule) OnUnload() error {
 
 // discoverComponents scans root/bin and loads what it finds. Called at startup and
 // by `reload`.
-func (d *Daemon) discoverComponents() {
+func (d *Daemon) discoverComponents() []*component {
 	if d.bin == nil {
 		d.bin = newComponents(d.BinDir())
 	}
 	found, notes, err := d.bin.scan()
 	if err != nil {
 		d.logf("scanning %s: %v", d.BinDir(), err)
-		return
+		return nil
 	}
 	for _, n := range notes {
 		d.logf("root/bin: %s", n)
 	}
+	// Discovery SCANS and does not load. It used to load everything it found, under the
+	// daemon's own authority, which made root/bin a place a file could become a running
+	// pid without anyone authorising it - the same defect the load/unload path had, one
+	// layer along. It matters more now that the kernel appraises: a component loaded this
+	// way carried no credential, so the appraisal was the only thing between a file on
+	// disk and a pid, and under off it was nothing at all.
+	//
+	// So the daemon reports what it found. An operator authenticates and runs `reload`,
+	// which loads through consoleLoader and therefore presents the credential, and the
+	// load lands on the audit chain with the provenance ktty adds.
 	for _, comp := range found {
 		if comp.loaded || comp.failed {
 			continue
 		}
-		if err := d.bin.load(kernelLoader{d.kernel}, d.table, comp); err != nil {
-			d.logf("component %s: %v", filepath.Base(comp.path), err)
-			continue
+		note := ""
+		if comp.sigNote != "" {
+			note = "; " + comp.sigNote
 		}
-		d.logf("component %s loaded as pid %d with %d command(s)",
-			filepath.Base(comp.path), comp.pid, comp.commands)
+		d.logf("component %s found in %s%s; run `reload` from an authenticated session to load it",
+			filepath.Base(comp.path), d.BinDir(), note)
 	}
+	return found
 }
 
 // binCommand renders the discovery table.
@@ -583,9 +661,31 @@ func (d *Daemon) reloadComponents() (string, error) {
 		before[comp.path] = comp.loaded
 	}
 
-	d.discoverComponents()
+	found := d.discoverComponents()
+
+	// This is the only place a component is loaded, and it goes through consoleLoader:
+	// the operator's credential is presented to ktty, the load is appraised against the
+	// component's .sig, and the act lands on the audit chain under whoever authorised it.
+	//
+	// The loop walks the pointers scan returned, NOT snapshot(). snapshot copies each
+	// entry on purpose so a render cannot race a load, and loading through a copy would
+	// leave the discovery table saying "not loaded" about a pid the kernel is running -
+	// which is exactly what `bin` reported while the daemon log said the load succeeded.
+	for _, comp := range found {
+		if comp.loaded || comp.failed {
+			continue
+		}
+		if err := d.bin.load(consoleLoader{d}, d.table, comp); err != nil {
+			d.logf("component %s: %v", filepath.Base(comp.path), err)
+			continue
+		}
+		d.logf("component %s loaded as pid %d with %d command(s)",
+			filepath.Base(comp.path), comp.pid, comp.commands)
+	}
 
 	var b strings.Builder
+	// Taken AFTER the loads above, not before: the report is the answer to "what did
+	// reload do", and a snapshot taken first reports the state reload was asked to change.
 	after := d.bin.snapshot()
 	loadedNow := 0
 	for _, comp := range after {

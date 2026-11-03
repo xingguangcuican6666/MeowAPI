@@ -50,7 +50,8 @@ func seccompNextName(prefix string) string {
 
 func seccompBoot(t *testing.T) *kernel.Kernel {
 	t.Helper()
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{NodeID: "node-seccomp"}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{NodeID: "node-seccomp"}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
 	return k

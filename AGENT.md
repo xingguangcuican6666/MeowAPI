@@ -123,6 +123,7 @@ plugins/                     one directory per module. Each is independently bui
                              requires no operations at all, which is the point
 tools/instrcheck/            instruction-file integrity checker, runs in CI
 tools/auditverify/           verify an audit trail without the kernel, CLI
+tools/meowsign/              mint the manifest signature the kernel appraises, CLI
 tools/ci/                    the suite gate's `go test -json` classifier, awk not Go
 .github/workflows/ci.yml     integrity, build, vet, race, audit end to end
 stage/                       reference material from the archived fork. Not built.
@@ -141,8 +142,16 @@ cleared: the process table, the audit ledger, per-pid tallies, granted scopes,
 installed filters, condemnation marks, host-injected dependencies. Configuration
 derived from the sealed trust root is not, because `Boot` calls `resetKernel()`
 before `loadBootConfig`, so resetting derived configuration there clears state the
-current boot has not chosen yet. `verifierSyncBoot` detects a boot boundary from the
-audit chain instead of being reset, for exactly this reason, while `resetPeers` and
+current boot has not chosen yet. `resetVerifier` is the one exception that was
+originally documented as such: the posture is derived from the sealed root, so it was
+left to `verifierSyncBoot` to detect a boot boundary from the audit chain rather than
+being reset with everything else. It is reset now, in the secrets block beside
+`resetKeyring`, because the load path depends on the posture and a latch that survived
+a restart would leave the next boot unable to declare one; `verifierSyncBoot` remains
+as a second boundary check and is a no-op on every call it makes now. `Boot` reads the
+pre-boot posture back out before the reset and restores it when `cfg.VerifierPolicy`
+is empty, so the documented configuration window - a host may set the posture before
+booting - still works. `resetPeers` and
 `resetNet` do drop the host-injected transport and resolver: those are dependencies
 the host supplies rather than facts the kernel derives, and a restarted kernel
 inheriting the previous boot's transport would send traffic somewhere it has not been
@@ -176,7 +185,7 @@ something the kernel learned during the boot or something it was told before it,
 | `kernel/crypto.go` | kcrypto | randomness, hashing, verification for everyone; signing for the kernel | none |
 | `kernel/keyring.go` | kkeyring | secret custody by use, prefix-scoped, plaintext only for `secret:read` | none |
 | `kernel/receipt.go` | kreceipt | signed settlement receipts over a canonical encoding | none |
-| `kernel/verifier.go` | kverifier | manifest appraisal against a signature on the load path, before any module code runs; no signing entry point exists for a module to appraise its own widened declaration | none |
+| `kernel/verifier.go` | kverifier | manifest appraisal against a signature on the load path, before any module code runs; no signing entry point exists for a module to appraise its own widened declaration | `LoadModule` refuses an appraisal failure before the registry lookup, and the default posture is enforce, so an unsigned manifest does not load unless the boot declares off |
 | `kernel/sched.go` | ksched | supervised jobs and timers, deadline clamped to the sealed ceiling | none |
 | `kernel/signal.go` | ksignal | reload, drain, kill, abort, with termination as the default for drain | none |
 | `kernel/watchdog.go` | kwatchdog | detects overdue kernel-run work, captures a stack, asks for termination | none |
@@ -380,10 +389,19 @@ Files are named after the kernel subsystem that owns the type, and a new type go
 in the file of the subsystem it serves rather than in a grab-bag: `abi/abi.go` is
 the package doc, `context.go` holds `SContext` and its groups, `ops.go` the
 operations, `enums.go` the closed enumerations and the ids, `types.go` the scalars
-and `Manifest`, and one file each for audit, clock, console, crypto, events, fs,
-keyring, meter, net, peer, pipe, proc, qos, receipt, route, sched, shm, signal,
-slashing, tokenizer, trace, tty, usage and cputime. `types2.go` was the
+and `Manifest`, `command.go` the dynamic-command table a component exports, and one
+file each for audit, bootconfig, clock, console, cputime, crypto, events, fdtable,
+fs, keyring, meter, net, peer, pipe, proc, qos, receipt, route, sched, shm, signal,
+slashing, tokenizer, trace, tty, usage and verifier. `types2.go` was the
 pre-split grab-bag; it is gone and should not come back.
+
+`verifier.go` is the file to read if you wonder why a data type is here at all. The
+appraisal, the trust check and the ledger are all in the kernel and none of it moved;
+what moved is `VerifierSignature` and `VerifierBindingVersion`, because
+`SyscallTTYLoadModule` takes a signature as a parameter and a module has to be able
+to name a type in a signature it calls. The file says so in a header, so a later
+reader does not take the presence of a signature type here as permission to move the
+verification with it.
 
 The migration left two API changes worth knowing. `Manifest.Validate` is now
 `kernel.ValidateManifest(*Manifest)`, and the receipt's canonical encoding is
@@ -414,7 +432,7 @@ is broken even when every test passes.
 | kcrypto | Key material does not cross the syscall boundary in either direction. Signing is reachable by no live context after boot. Randomness comes from `crypto/rand` alone, and a failed entropy read fails the call rather than returning a partially filled buffer. |
 | kkeyring | A module names an alias and an action and receives the result, never the credential. Scope is by declared prefix; an out-of-scope alias and an unknown one are indistinguishable, so the call is not an oracle for what a deployment holds. A credential handed to the kernel stops existing in the caller's heap: `SecretSpec.Value` transfers ownership and is zeroed on every return path, including a refusal, because a host that read it from an environment variable or a file must not be left holding a recoverable copy of something it believes it gave away. `tests/security` asserts that for both refusals the host-only install can return. |
 | kreceipt | A receipt is signed over a canonical encoding, so verification recomputes rather than trusts. Sequence numbers are per boot and per node, so a cursor surviving a restart cannot repeat one or open a gap. |
-| kverifier | A manifest is appraised against a signature before any module code runs, so a declaration that was reviewed cannot be widened between review and deployment. The signature binds name, version and digest together, so one minted for a module cannot be replayed onto another or onto a widened copy of itself. There is no signing entry point anywhere in the kernel: a package-level signer would be an oracle any in-process module could call to appraise its own widened declaration, which is the attack this subsystem exists to stop. The posture can only tighten once a boot has appraised anything, and it is derived from the sealed trust root when the host has not chosen one. |
+| kverifier | A manifest is appraised against a signature before any module code runs, so a declaration that was reviewed cannot be widened between review and deployment. The signature binds name, version and digest together, so one minted for a module cannot be replayed onto another or onto a widened copy of itself. There is no signing entry point anywhere in the kernel: a package-level signer would be an oracle any in-process module could call to appraise its own widened declaration, which is the attack this subsystem exists to stop. The posture can only tighten once a boot has appraised anything, and the default when the host has not chosen one is enforce: a deployment with no cluster keys configured cannot appraise anything and must therefore refuse, so a single-node deployment that ships unsigned manifests has to declare off in its BootConfig, which puts the choice on the boot record rather than leaving it as an absence. |
 | krlimit | Both ceilings hold under concurrency, and the refusal is a typed saturation error rather than a policy denial, so a gateway answers 429 instead of 403. Slots held by a dying module come back, which is what stops one broken adapter becoming a gateway-wide outage. |
 | kqos | Refill is driven by the kernel clock and cannot be advanced by a caller. Policies are operator configuration and no module can raise its own rate. Buckets are bounded, so a key space a module influences is not a leak. |
 | kcputime | Work the kernel runs for a module is accounted to that module and charged even when it panics. A pid over budget is refused before doing more work, so a runaway cannot take one more full slice per call forever. Budgets are settable by the kernel and init only. |

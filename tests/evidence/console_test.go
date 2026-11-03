@@ -92,7 +92,8 @@ func TestConsoleTextFormat(t *testing.T) {
 		c.SetOutput(nil)
 	})
 
-	k, err := kernel.Boot(kernel.BootConfig{})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -124,7 +125,8 @@ func TestConsoleLevelFilter(t *testing.T) {
 		c.SetOutput(nil)
 	})
 
-	k, err := kernel.Boot(kernel.BootConfig{})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -178,9 +180,10 @@ func TestTextConsoleCannotForgeARecord(t *testing.T) {
 	prev := kernel.KernelConsole().Format()
 
 	k, err := kernel.Boot(kernel.BootConfig{
-		Console:   sink,
-		LogFormat: kernel.FormatText,
-		LogLevel:  kernel.LogDebug,
+		VerifierPolicy: kernel.VerifierOff,
+		Console:        sink,
+		LogFormat:      kernel.FormatText,
+		LogLevel:       kernel.LogDebug,
 	})
 	require.NoError(t, err)
 	// Measured before this existed: leaving the format at text made three tests in this

@@ -125,7 +125,8 @@ func stateForgetContext(pid kernel.PID) {
 func stateBoot(t *testing.T, limits kernel.BootLimits) *kernel.Kernel {
 	t.Helper()
 	k, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: "node-state", Limits: limits},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "node-state", Limits: limits},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
@@ -1045,7 +1046,8 @@ func TestKVStateDoesNotSurviveRestart(t *testing.T) {
 	stateQuiet(t)
 
 	k1, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: "node-state"},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "node-state"},
 	})
 	require.NoError(t, err)
 	pid := stateLoadNoUnload(t, k1, "kvreset", stateKVManifest(), func(ctx kernel.SContext) error {
@@ -1060,7 +1062,8 @@ func TestKVStateDoesNotSurviveRestart(t *testing.T) {
 	assert.Zero(t, kernel.FDCount(pid))
 
 	k2, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: "node-state"},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "node-state"},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k2.Shutdown() })

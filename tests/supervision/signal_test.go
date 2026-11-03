@@ -772,7 +772,8 @@ func TestSignalStateDoesNotSurviveRestart(t *testing.T) {
 	assert.False(t, kernel.SignalTerminated(pid))
 	assert.Zero(t, kernel.SignalPending(pid))
 
-	k2, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{NodeID: "signal-test-2"}})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{NodeID: "signal-test-2"}})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
 

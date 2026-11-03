@@ -141,7 +141,18 @@ var (
 // abandon function rather than three copies of the cleanup.
 //
 // The caller context must hold module:load. In practice that is init.
-func LoadModule(ctx SContext, m Manifest) (PID, error) {
+//
+// sig is the operator's detached signature over this manifest, or nil for an unsigned
+// load. It is a parameter rather than a field of Manifest because the signature is the
+// operator's appraisal of the declaration and the declaration belongs to the module:
+// storing the appraisal inside the appraised thing would let the appraised party carry
+// and re-present it.
+//
+// The appraisal runs after validation and BEFORE the registry lookup, so a module whose
+// declaration fails appraisal never reaches a factory, never gets a pid in the plugin
+// domain, and never runs a line of its own code. That ordering is the enforcement;
+// everything below it assumes the manifest was signed by somebody the root names.
+func LoadModule(ctx SContext, m Manifest, sig *VerifierSignature) (PID, error) {
 	c, ok := ctx.(*sContext)
 	if !ok {
 		return 0, errors.New("kernel: LoadModule requires a kernel-issued context")
@@ -161,6 +172,23 @@ func LoadModule(ctx SContext, m Manifest) (PID, error) {
 		}
 		fault(c, "module rejected before load", map[string]any{"module": m.Name, "reason": err.Error()})
 		kaudit.record(AuditReject, c, "module manifest rejected", map[string]any{
+			"module": m.Name, "version": m.Version, "digest": m.Digest(),
+			"reason": err.Error(), "rejected_pid": rejectedPID,
+		})
+		return 0, err
+	}
+
+	// Appraisal. The fault and the ledger entry are written inside VerifyManifestLoad
+	// with this context attached; this branch adds the untrusted process-table record
+	// and the reject entry, mirroring the validation branch above, so a signature
+	// refusal is as investigable as a validation refusal.
+	if err := VerifyManifestLoad(c, m, sig); err != nil {
+		var rejectedPID PID
+		if rejected, spawnErr := kscm.spawn(c, DomainUntrusted, m.Name); spawnErr == nil {
+			kscm.setArtifact(rejected.pid, m.Name, m.Digest(), ProcRejected)
+			rejectedPID = rejected.pid
+		}
+		kaudit.record(AuditReject, c, "module manifest failed appraisal", map[string]any{
 			"module": m.Name, "version": m.Version, "digest": m.Digest(),
 			"reason": err.Error(), "rejected_pid": rejectedPID,
 		})

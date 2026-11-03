@@ -565,7 +565,10 @@ type SyscallTTY interface {
 	SyscallTTYWrite(fd FD, level Level, msg string) error
 	// SyscallTTYLoadModule loads a module on the operator's behalf. Requires
 	// tty:open and the console credential.
-	SyscallTTYLoadModule(fd FD, credential []byte, m Manifest) (PID, error)
+	// SyscallTTYLoadModule loads a module on the operator's behalf. Requires
+	// tty:open and the console credential; module:load is re-checked inside, and so
+	// is the manifest's appraisal against sig.
+	SyscallTTYLoadModule(fd FD, credential []byte, m Manifest, sig *VerifierSignature) (PID, error)
 	// SyscallTTYUnloadModule unloads a module on the operator's behalf. Requires
 	// tty:open and the console credential.
 	SyscallTTYUnloadModule(fd FD, credential []byte, pid PID) error

@@ -75,7 +75,8 @@ func krQuiet(t *testing.T) *krBuf {
 func krBoot(t *testing.T) *kernel.Kernel {
 	t.Helper()
 	k, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: "kr-node"},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "kr-node"},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
@@ -549,7 +550,8 @@ func TestSecretHandleCeilingIsTyped(t *testing.T) {
 		NodeID: "kr-node",
 		Limits: kernel.BootLimits{MaxOpenFDsPerModule: 1},
 	}
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: tr})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: tr})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -790,7 +792,8 @@ func TestSecretResetBetweenBoots(t *testing.T) {
 func TestSecretHostPathsRefuseAfterShutdown(t *testing.T) {
 	krQuiet(t)
 	k, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: "kr-node"},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "kr-node"},
 	})
 	require.NoError(t, err)
 	require.NoError(t, k.Shutdown())

@@ -99,7 +99,8 @@ func crxTrustRoot(t *testing.T) kernel.BootTrustRoot {
 // crxBoot starts a kernel with the given trust root.
 func crxBoot(t *testing.T, tr kernel.BootTrustRoot) *kernel.Kernel {
 	t.Helper()
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: tr})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: tr})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
 	return k

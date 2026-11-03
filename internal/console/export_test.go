@@ -56,6 +56,11 @@ func bootForTest() (*Daemon, error) {
 	d := New(Options{
 		Root:      dir,
 		LogWriter: io.Discard,
+		// Appraisal off, for the same reason tests/harness.BootOne declares it: the
+		// default posture is enforce, and this fixture registers probe factories whose
+		// manifests nobody signed. The console suite's subject is the daemon's session
+		// handling, not the appraisal posture - that has its own suite under real keys.
+		Boot: kernel.BootConfig{VerifierPolicy: kernel.VerifierOff},
 	})
 	go func() { _ = d.Start() }()
 	// Ready, not "the socket accepts". The listener binds before the kernel boots, so

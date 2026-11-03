@@ -31,6 +31,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -38,6 +39,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,6 +62,30 @@ type options struct {
 	dumpState bool
 	auditPath string
 	crashPath string
+	// verifyPolicy is the manifest appraisal posture this process boots with. Empty
+	// leaves the kernel default, which is enforce.
+	verifyPolicy string
+	// nodeID is this node's mesh identity.
+	nodeID string
+	// verifyKeys are the trusted cluster roots a manifest signature is checked against.
+	verifyKeys stringList
+	// signingKey is this node's own key material, for the receipts it issues.
+	signingKey string
+}
+
+// stringList collects a repeatable flag. The standard library's flag package has no such
+// type and flag.Func would have to parse and store in one call, which cannot report the
+// accumulated list back to the caller.
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(v string) error {
+	if v == "" {
+		return errors.New("an empty key is not a key")
+	}
+	*l = append(*l, v)
+	return nil
 }
 
 func parseFlags() *options {
@@ -84,6 +110,16 @@ func parseFlags() *options {
 		"append the sealed audit chain to this JSON Lines file (created with 0600)")
 	flag.StringVar(&o.crashPath, "crash", "",
 		"append the console tail and flush outcome to this file at every exit")
+	flag.StringVar(&o.verifyPolicy, "verify-policy", "",
+		"manifest appraisal posture at boot: enforce (the default), audit, or off. "+
+			"Modules must be signed under enforce and audit.")
+	flag.StringVar(&o.nodeID, "node-id", "",
+		"this node's identity in the mesh; defaults to local")
+	flag.Var(&o.verifyKeys, "verify-key",
+		"a trusted signing key for manifest appraisal (hex or base64, repeatable). "+
+			"Without one, nothing is signed by anyone the kernel trusts")
+	flag.StringVar(&o.signingKey, "signing-key", "",
+		"this node's signing key seed (hex or base64) for receipts it issues; never printed")
 	flag.Parse()
 	return o
 }
@@ -260,17 +296,47 @@ func waitForSocket(path string, timeout time.Duration) error {
 	}
 }
 
+// startupModules is the module list this binary loads at boot, and it is EMPTY under a
+// posture that appraises.
+//
+// diag is the reference module the binary ships, and its manifest is unsigned. Under
+// enforce the kernel refuses it, so the binary would fail to start - and the tempting
+// fix, an exemption for a module we ship, is precisely the bypass this whole change
+// exists to remove: a declaration that nobody signed and that the kernel admits anyway
+// on the grounds that it is ours. So the list is posture-dependent instead. A deployment
+// that wants diag loads it from root/bin under a signature, like any other component.
+//
+// The empty case is REPORTED rather than silent. A daemon that comes up with no modules
+// and says nothing about it is indistinguishable from one whose operator never put any
+// there, and the operator who expected diag has no way to tell which they got.
+func startupModules(o *options, logf func(string, ...any)) []kernel.Manifest {
+	if o.verifyPolicy == "" || o.verifyPolicy == string(kernel.VerifierEnforce) {
+		if logf != nil {
+			logf("the reference module %q is unsigned, so the appraisal posture (%s) "+
+				"refuses it and it is not loaded; sign it with tools/meowsign and put it in "+
+				"root/bin, or boot with -verify-policy off to load it unsigned",
+				diag.Manifest().Name, kernel.VerifierEnforce)
+		}
+		return nil
+	}
+	return []kernel.Manifest{diag.Manifest()}
+}
+
 // ---------------------------------------------------------------------------
 // The daemon: boot the kernel, serve the socket, stop on a signal or on poweroff.
 
 // runDaemon is the -daemon path. It does not return until the kernel has stopped.
 func runDaemon(o *options) error {
 	opts := console.Options{
-		Root:    o.rootDir(),
-		Socket:  o.socket,
-		BinDir:  o.binDir,
-		Boot:    bootConfig(o, os.Stderr),
-		Modules: []kernel.Manifest{diag.Manifest()},
+		Root:   o.rootDir(),
+		Socket: o.socket,
+		BinDir: o.binDir,
+		Boot:   bootConfig(o, os.Stderr),
+		// The daemon reports through os.Stderr, which startDaemon has redirected to its
+		// own log file, so the operator finds the note in the log rather than nowhere.
+		Modules: startupModules(o, func(format string, a ...any) {
+			fmt.Fprintf(os.Stderr, "meowapi: "+format+"\n", a...)
+		}),
 	}
 
 	// The daemon's own log goes to stderr, which startDaemon redirected to a file.
@@ -361,11 +427,22 @@ func bootConfig(o *options, w io.Writer) kernel.BootConfig {
 	if o.textMode {
 		format = kernel.FormatText
 	}
-	return kernel.BootConfig{
+	cfg := kernel.BootConfig{
 		LogFormat: format,
 		LogLevel:  kernel.Level(o.logLevel),
 		Console:   w,
 	}
+	if o.verifyPolicy != "" {
+		cfg.VerifierPolicy = kernel.VerifierPolicy(o.verifyPolicy)
+	}
+	if o.nodeID != "" || len(o.verifyKeys) > 0 || o.signingKey != "" {
+		cfg.TrustRoot = kernel.BootTrustRoot{
+			NodeID:          o.nodeID,
+			ClusterRootKeys: o.verifyKeys,
+			SigningKeyPEM:   o.signingKey,
+		}
+	}
+	return cfg
 }
 
 // verifyTrail reads back the audit file and checks every boot segment. A daemon
@@ -475,8 +552,12 @@ func runOnce(o *options) error {
 		return fmt.Errorf("publishing the boot id: %w", err)
 	}
 
-	if _, err := k.Load(diag.Manifest()); err != nil {
-		return err
+	if mods := startupModules(o, func(format string, a ...any) {
+		fmt.Fprintf(os.Stderr, "meowapi: "+format+"\n", a...)
+	}); len(mods) > 0 {
+		if _, err := k.Load(mods[0]); err != nil {
+			return err
+		}
 	}
 
 	fmt.Println("kernel booted")

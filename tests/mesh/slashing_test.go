@@ -92,6 +92,7 @@ func slashBoot(t *testing.T, selfNode string, peers ...slashPeer) *kernel.Kernel
 	}
 
 	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff,
 		TrustRoot: kernel.BootTrustRoot{
 			NodeID:          selfNode,
 			ClusterRootKeys: roots,
@@ -348,6 +349,7 @@ func TestSlashConfigurationFailureIsAnErrorNotAVerdict(t *testing.T) {
 	// Boot with no cluster roots at all, then file through a reporter.
 	selfSeed, _, _ := meshKeyPair(t)
 	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff,
 		TrustRoot: kernel.BootTrustRoot{
 			NodeID: slashSeq.next("slash-self"), SigningKeyPEM: selfSeed,
 		},

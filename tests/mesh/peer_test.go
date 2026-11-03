@@ -96,6 +96,7 @@ func meshBoot(t *testing.T) (*kernel.Kernel, string, ed25519.PrivateKey) {
 
 	nodeID := peerNodeName("mesh-self")
 	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff,
 		TrustRoot: kernel.BootTrustRoot{
 			NodeID:          nodeID,
 			ClusterRootKeys: []string{selfPub, peerPub},
@@ -516,8 +517,9 @@ func TestPeerHandshakeRejectsAnUntrustedKey(t *testing.T) {
 func TestPeerHandshakeConfigurationFailureIsAnError(t *testing.T) {
 	harness.QuietConsole(t)
 	k, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: peerNodeName("mesh-noroots")},
-		Console:   meshDiscard{},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: peerNodeName("mesh-noroots")},
+		Console:        meshDiscard{},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
@@ -1965,7 +1967,8 @@ func TestPeerTransportPanicIsContained(t *testing.T) {
 	assert.True(t, saw, "the panic must be on the chain as a kernel-observed fact")
 
 	// And the kernel keeps serving, which is the actual guarantee.
-	k2, err := kernel.Boot(kernel.BootConfig{Console: meshDiscard{}})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, Console: meshDiscard{}})
 	if err == nil {
 		_ = k2.Shutdown()
 	}
@@ -2004,6 +2007,7 @@ func TestPeersResetAcrossRestart(t *testing.T) {
 	// A second kernel, booted with a different identity, must start with no mesh.
 	seed2, pub2, priv2 := meshKeyPair(t)
 	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff,
 		TrustRoot: kernel.BootTrustRoot{
 			NodeID:          peerNodeName("mesh-restart"),
 			ClusterRootKeys: []string{pub2},

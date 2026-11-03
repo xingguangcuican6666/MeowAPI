@@ -68,7 +68,9 @@ func TestClearFSScopeIsIdempotent(t *testing.T) {
 // and gone after Unload, which is the two-line contract UnloadModule has carried in a
 // comment since kv.go was written.
 func TestUnloadDropsTheFSScope(t *testing.T) {
-	k, err := Boot(BootConfig{})
+	k, err := Boot(BootConfig{
+		VerifierPolicy: VerifierOff,
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
 
@@ -113,7 +115,9 @@ func TestResetFSScopesClearsWhatUnloadNeverReaches(t *testing.T) {
 	require.Equal(t, []string{"planted-by-a-test"}, read, "the scope is installed before the boot")
 	require.Equal(t, []string{"planted-write"}, write)
 
-	k, err := Boot(BootConfig{})
+	k, err := Boot(BootConfig{
+		VerifierPolicy: VerifierOff,
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
 	require.NoError(t, k.Shutdown())

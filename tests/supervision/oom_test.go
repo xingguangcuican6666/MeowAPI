@@ -78,7 +78,8 @@ func oomBoot(t *testing.T, l kernel.BootLimits) *kernel.Kernel {
 		l.CallTimeoutMillis = 3_600_000
 	}
 	k, err := kernel.Boot(kernel.BootConfig{
-		TrustRoot: kernel.BootTrustRoot{NodeID: "node-oom", Limits: l},
+		VerifierPolicy: kernel.VerifierOff,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "node-oom", Limits: l},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
@@ -904,6 +905,7 @@ func TestThePatrolStartsWithTheBoot(t *testing.T) {
 	harness.QuietConsole(t)
 	// A 1s call ceiling derives a 100ms interval, clamped up to the 500ms floor.
 	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff,
 		TrustRoot: kernel.BootTrustRoot{NodeID: "node-oom-patrol",
 			Limits: kernel.BootLimits{CallTimeoutMillis: 1_000}},
 	})
@@ -949,6 +951,7 @@ func TestThePatrolIntervalIsClampedAtBothEnds(t *testing.T) {
 			// boot guard is process-wide and the outer test's kernel is already down by the
 			// time this function runs.
 			k, err := kernel.Boot(kernel.BootConfig{
+				VerifierPolicy: kernel.VerifierOff,
 				TrustRoot: kernel.BootTrustRoot{NodeID: "node-oom-clamp",
 					Limits: kernel.BootLimits{CallTimeoutMillis: tc.millis}},
 			})

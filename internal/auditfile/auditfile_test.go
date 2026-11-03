@@ -45,8 +45,9 @@ func bootWithSink(t *testing.T, path string, opts auditfile.Options) (*kernel.Ke
 	t.Cleanup(func() { _ = sink.Close() })
 
 	k, err := kernel.Boot(kernel.BootConfig{
-		AuditSink: sink,
-		TrustRoot: kernel.BootTrustRoot{NodeID: "auditfile-test"},
+		VerifierPolicy: kernel.VerifierOff,
+		AuditSink:      sink,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "auditfile-test"},
 	})
 	require.NoError(t, err)
 	return k, sink
@@ -138,9 +139,10 @@ func TestFileSurvivesWindowEviction(t *testing.T) {
 	t.Cleanup(func() { _ = small.Close() })
 
 	k2, err := kernel.Boot(kernel.BootConfig{
-		AuditSink:   small,
-		AuditWindow: kernel.MinAuditWindow(),
-		TrustRoot:   kernel.BootTrustRoot{NodeID: "evict-test"},
+		VerifierPolicy: kernel.VerifierOff,
+		AuditSink:      small,
+		AuditWindow:    kernel.MinAuditWindow(),
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "evict-test"},
 	})
 	require.NoError(t, err)
 
@@ -346,7 +348,8 @@ func TestAppendDoesNotTruncate(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s2.Close() })
 	k2, err := kernel.Boot(kernel.BootConfig{
-		AuditSink: s2, TrustRoot: kernel.BootTrustRoot{NodeID: "second-run"},
+		VerifierPolicy: kernel.VerifierOff,
+		AuditSink:      s2, TrustRoot: kernel.BootTrustRoot{NodeID: "second-run"},
 	})
 	require.NoError(t, err)
 	require.NoError(t, k2.Shutdown())
@@ -485,8 +488,9 @@ func TestSecretValuesNeverReachTheFile(t *testing.T) {
 
 	const secret = "SECRET-KEY-MATERIAL"
 	k, err := kernel.Boot(kernel.BootConfig{
-		AuditSink: sink,
-		TrustRoot: kernel.BootTrustRoot{NodeID: "leak-test", SigningKeyPEM: secret},
+		VerifierPolicy: kernel.VerifierOff,
+		AuditSink:      sink,
+		TrustRoot:      kernel.BootTrustRoot{NodeID: "leak-test", SigningKeyPEM: secret},
 	})
 	require.NoError(t, err)
 
@@ -595,8 +599,9 @@ func TestVerifyFileSplitsBoots(t *testing.T) {
 		sink, err := auditfile.New(auditfile.Options{Path: path})
 		require.NoError(t, err)
 		k, err := kernel.Boot(kernel.BootConfig{
-			AuditSink: sink,
-			TrustRoot: kernel.BootTrustRoot{NodeID: "boot-" + string(rune('a'+i))},
+			VerifierPolicy: kernel.VerifierOff,
+			AuditSink:      sink,
+			TrustRoot:      kernel.BootTrustRoot{NodeID: "boot-" + string(rune('a'+i))},
 		})
 		require.NoError(t, err)
 		pid, err := k.Load(diag.Manifest())
@@ -637,7 +642,8 @@ func TestVerifyFileDetectsTamperingInsideASegment(t *testing.T) {
 	for range 2 {
 		sink, err := auditfile.New(auditfile.Options{Path: path})
 		require.NoError(t, err)
-		k, err := kernel.Boot(kernel.BootConfig{AuditSink: sink, TrustRoot: kernel.BootTrustRoot{NodeID: "n"}})
+		k, err := kernel.Boot(kernel.BootConfig{
+			VerifierPolicy: kernel.VerifierOff, AuditSink: sink, TrustRoot: kernel.BootTrustRoot{NodeID: "n"}})
 		require.NoError(t, err)
 		pid, err := k.Load(diag.Manifest())
 		require.NoError(t, err)
@@ -701,7 +707,8 @@ func TestASplicedBootIsAttributable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.log")
 	sink, err := auditfile.New(auditfile.Options{Path: path})
 	require.NoError(t, err)
-	k, err := kernel.Boot(kernel.BootConfig{AuditSink: sink, TrustRoot: kernel.BootTrustRoot{NodeID: "real"}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, AuditSink: sink, TrustRoot: kernel.BootTrustRoot{NodeID: "real"}})
 	require.NoError(t, err)
 	pid, err := k.Load(diag.Manifest())
 	require.NoError(t, err)

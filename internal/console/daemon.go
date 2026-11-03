@@ -68,6 +68,10 @@ type Options struct {
 	// Modules are loaded during startup, after the kernel boots and before the
 	// first session can attach.
 	Modules []kernel.Manifest
+	// ModuleSignatures carries the operator's signature over each entry of Modules, by
+	// module name. A module with no entry is unsigned, which the default posture
+	// refuses.
+	ModuleSignatures map[string]*kernel.VerifierSignature
 }
 
 // Daemon holds one kernel and every attached session.
@@ -211,7 +215,7 @@ func (d *Daemon) Start() error {
 
 	startup := kernelLoader{k}
 	for _, m := range d.opts.Modules {
-		if _, err := startup.LoadModule(m); err != nil {
+		if _, err := startup.LoadModule(m, d.opts.ModuleSignatures[m.Name]); err != nil {
 			// A static module failing to load is a startup failure, not a
 			// degraded start: it was named in the configuration, and a gateway
 			// missing its own adapter is worse than one that refuses to come up.
@@ -428,7 +432,7 @@ func (d *Daemon) kernelCredential() ([]byte, error) {
 // interface the second layer was missing for `load` and `unload`: they called
 // Kernel.Load, which checks only hostOnly - measured, and it is why this type exists.
 type moduleLoader interface {
-	LoadModule(m kernel.Manifest) (kernel.PID, error)
+	LoadModule(m kernel.Manifest, sig *kernel.VerifierSignature) (kernel.PID, error)
 	UnloadModule(pid kernel.PID) error
 }
 
@@ -436,20 +440,22 @@ type moduleLoader interface {
 // used for the startup manifest list and for nothing a session can ask for.
 type kernelLoader struct{ k *kernel.Kernel }
 
-func (l kernelLoader) LoadModule(m kernel.Manifest) (kernel.PID, error) { return l.k.Load(m) }
-func (l kernelLoader) UnloadModule(pid kernel.PID) error                { return l.k.Unload(pid) }
+func (l kernelLoader) LoadModule(m kernel.Manifest, sig *kernel.VerifierSignature) (kernel.PID, error) {
+	return l.k.LoadSigned(m, sig)
+}
+func (l kernelLoader) UnloadModule(pid kernel.PID) error { return l.k.Unload(pid) }
 
 // consoleLoader is an operator's authority: the credential is presented to ktty, the
 // operation and the credential are both re-checked inside the kernel, and the act lands
 // on the audit chain before the caller sees a result.
 type consoleLoader struct{ d *Daemon }
 
-func (l consoleLoader) LoadModule(m kernel.Manifest) (kernel.PID, error) {
+func (l consoleLoader) LoadModule(m kernel.Manifest, sig *kernel.VerifierSignature) (kernel.PID, error) {
 	cred, err := l.d.kernelCredential()
 	if err != nil {
 		return 0, err
 	}
-	return kernel.TTYLoadModule(l.d.init, l.d.ttyFD, cred, m)
+	return kernel.TTYLoadModule(l.d.init, l.d.ttyFD, cred, m, sig)
 }
 
 func (l consoleLoader) UnloadModule(pid kernel.PID) error {

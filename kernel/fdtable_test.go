@@ -242,9 +242,10 @@ func (m *panicsAfterOpen) OnUnload() error { return nil }
 func TestHandleCeilingComesFromSealedRoot(t *testing.T) {
 	buf := harness.QuietConsole(t)
 
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{
-		NodeID: "n", Limits: kernel.BootLimits{MaxOpenFDsPerModule: 4},
-	}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{
+			NodeID: "n", Limits: kernel.BootLimits{MaxOpenFDsPerModule: 4},
+		}})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
@@ -424,7 +425,8 @@ func TestConcurrentHandleUseIsRaceFree(t *testing.T) {
 func TestFDTablesAreClearedAcrossRestart(t *testing.T) {
 	harness.QuietConsole(t)
 
-	k1, err := kernel.Boot(kernel.BootConfig{})
+	k1, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	m := &fdProbeModule{open: 3}
 	pid := loadFDProbe(t, k1, m)
@@ -433,7 +435,8 @@ func TestFDTablesAreClearedAcrossRestart(t *testing.T) {
 
 	assert.Zero(t, kernel.FDCount(pid), "the fd table must not survive a shutdown")
 
-	k2, err := kernel.Boot(kernel.BootConfig{})
+	k2, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff})
 	require.NoError(t, err)
 	defer func() { _ = k2.Shutdown() }()
 	assert.Zero(t, kernel.FDCount(pid))

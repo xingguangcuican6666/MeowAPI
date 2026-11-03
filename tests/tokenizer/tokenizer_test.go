@@ -50,7 +50,8 @@ func tokenNextName(prefix string) string {
 
 func tokenBoot(t *testing.T) *kernel.Kernel {
 	t.Helper()
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: kernel.BootTrustRoot{NodeID: "node-token"}})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: kernel.BootTrustRoot{NodeID: "node-token"}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = k.Shutdown() })
 	return k

@@ -390,7 +390,8 @@ func (m *captureModule2) OnUnload() error { return nil }
 // there is no exported accessor for it.
 func TestSigningKeyIsUnreachableFromTheModuleSurface(t *testing.T) {
 	harness.QuietConsole(t)
-	k, err := kernel.Boot(kernel.BootConfig{TrustRoot: harness.BootTrust()})
+	k, err := kernel.Boot(kernel.BootConfig{
+		VerifierPolicy: kernel.VerifierOff, TrustRoot: harness.BootTrust()})
 	require.NoError(t, err)
 	defer func() { _ = k.Shutdown() }()
 
