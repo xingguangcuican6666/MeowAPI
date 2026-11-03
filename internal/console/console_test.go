@@ -543,3 +543,82 @@ func TestNoUnauthenticatedCommandPrintsAnotherPidsFacts(t *testing.T) {
 		}
 	}
 }
+
+// TestTheClientsEchoControlReachesTheEditor is the integration half of
+// TestAMaskedEditorDrawsNothing.
+//
+// That test proves a masked editor draws nothing; this one proves the daemon's request
+// actually masks it. A client that implements masking perfectly and never receives the
+// control message is the same defect one layer up, and it is the layer where the original
+// bug lived: handleControl answered ctrlNoEcho by clearing a termios flag, which was a
+// correct-looking answer to the wrong question.
+//
+// It drives handleControl with the bytes the session actually writes, rather than calling
+// a helper, so a change to which control kind means "stop echoing" fails here.
+func TestTheClientsEchoControlReachesTheEditor(t *testing.T) {
+	e := newEditor()
+	c := &client{ed: e}
+
+	c.handleControl(ctrlNoEcho, "")
+	if !e.masked {
+		t.Fatal("ctrlNoEcho did not mask the editor, so what the operator types is drawn")
+	}
+
+	// With the mask on, the typing is stored and not drawn.
+	var out strings.Builder
+	apply := func(s string) { out.WriteString(s) }
+	for _, r := range "CorrectHorse99" {
+		e.insert([]rune{r})
+		render(apply, e)
+	}
+	if e.String() == "" {
+		t.Fatal("the editor did not take the typing; the fixture is wrong")
+	}
+	if got := out.String(); strings.ContainsAny(got, "CorrectHorse9") {
+		t.Fatalf("the masked editor drew part of the secret: %q", got)
+	}
+
+	c.handleControl(ctrlEcho, "")
+	if e.masked {
+		t.Fatal("ctrlEcho did not unmask, so the session stays blind after `auth`")
+	}
+	// And the secret is gone rather than revealed: the daemon read it already, and
+	// redrawing it would leave a password on screen for the rest of the session and in
+	// the terminal's scrollback, which outlives the process.
+	if got := e.String(); got != "" {
+		t.Fatalf("unmasking revealed the line: %q", got)
+	}
+}
+
+// TestThePipedPathStillAnswersWithTermios pins the other branch of setMasked.
+//
+// A build that cannot do raw mode falls back to reading whole lines on a terminal, where
+// there is no editor and the driver's echo is the only thing displaying the typing. That
+// branch has to keep going to setEcho, and it is asserted by the absence of an editor:
+// with c.ed nil, setMasked must not panic and must not invent one.
+func TestThePipedPathStillAnswersWithTermios(t *testing.T) {
+	c := &client{}
+	if c.ed != nil {
+		t.Fatal("the fixture should have no editor")
+	}
+	// c.term is nil too, so setMasked has nothing to act on. What is asserted is that
+	// the control path is total: a client with no terminal and no editor - a piped
+	// session, which is what CI drives - must still accept the daemon's echo request
+	// rather than panic in the middle of an `auth`.
+	assertNotPanics(t, func() {
+		c.handleControl(ctrlNoEcho, "")
+		c.handleControl(ctrlEcho, "")
+	})
+}
+
+// assertNotPanics fails on a panic rather than letting it take the whole test binary
+// down, which is what an unrecovered panic in a test does.
+func assertNotPanics(t *testing.T, f func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("panicked: %v", r)
+		}
+	}()
+	f()
+}

@@ -156,6 +156,7 @@ func (c *Console) SetLimit(n int) {
 func (c *Console) Emit(level Level, pid PID, dom Domain, msg string, fields map[string]any) {
 	rec := Record{
 		Time:   time.Now().UTC(),
+		Mono:   mono(),
 		Level:  level,
 		Pid:    pid,
 		Domain: dom,
@@ -205,7 +206,16 @@ func render(r Record, format Format) string {
 // It is deliberately not applied to the JSON format, which already escapes by
 // construction - doing it twice would turn a newline into the six characters \u000a
 // inside a JSON string and change what a machine-readable record says.
-func escapeText(s string) string {
+func escapeText(s string) string { return EscapeText(s) }
+
+// EscapeText is escapeText, exported.
+//
+// The console's own renderers in internal/console need the identical escape, and
+// they cannot have a second copy of it: an escape applied in one renderer and not
+// another means the record a module logs forges a line in one view and not the other,
+// which is a worse property than either choice alone. It is the kernel that defines
+// what a control character does to a record, so it is the kernel that says.
+func EscapeText(s string) string {
 	// Fast path: the overwhelming majority of messages contain nothing to escape, and
 	// this runs for every record on every sink.
 	clean := true

@@ -224,7 +224,7 @@ var reachableGroups = []struct {
 			"ReceiptPayload", "ReceiptDigest", "DecodeReceipt", "SequenceGaps", "VerifyEntry",
 			"VerifyChain", "TokenMeasure", "NewRequestID", "NewTraceID",
 			"NewOomTally", "OomSortVictims", "OomVictimEligible", "PeerHandshakePayload",
-			"PeerAnnouncePayload", "PeerForwardDigest", "VerifierBindingPayload",
+			"PeerAnnouncePayload", "PeerForwardDigest", "VerifierBindingPayload", "EscapeText",
 		},
 	},
 	{

@@ -99,6 +99,11 @@ func (c *client) interactive() error {
 	read := func() (byte, error) { return br.ReadByte() }
 
 	e := newEditor()
+	// Published on the client so handleControl can reach it. It is set before the loop
+	// and cleared after, because the piped path has no editor and its echo request has
+	// to go to the terminal driver instead.
+	c.ed = e
+	defer func() { c.ed = nil }()
 	// The prompt the daemon sent is already on screen; the editor's first render
 	// starts from an empty line after it.
 	for {
@@ -109,10 +114,9 @@ func (c *client) interactive() error {
 
 		switch kind {
 		case keyEnter:
-			line := e.String()
 			c.printf("\r\n")
-			e.record(line)
-			e.reset()
+			// submit decides about history, not this loop. See editor.submit.
+			line, _ := e.submit()
 			if _, werr := io.WriteString(c.conn, line+"\n"); werr != nil {
 				return nil
 			}
@@ -244,6 +248,35 @@ func (c *client) interactive() error {
 // expr writes to the client's output for the editor's render calls.
 func (c *client) expr(s string) { c.writeOut(s) }
 
+// setMasked applies the daemon's echo request, and HOW it applies depends on which
+// read path is running.
+//
+// Under the editor the terminal is already in raw mode with the driver's ECHO cleared,
+// because the editor draws every keystroke itself; so suppressing a password means
+// stopping the EDITOR from drawing it. Toggling the termios flag instead changed
+// nothing while it was off and, on the way back, made the driver echo a line the editor
+// was also drawing - measured on a pty, the password was displayed and the next command
+// came out as `dmmeessaagg`.
+//
+// On the piped path with a terminal (a build that cannot do raw mode) there is no
+// editor, and the driver's echo is the only thing displaying the typing, so that is
+// what has to be turned off.
+func (c *client) setMasked(on bool) {
+	if c.ed != nil {
+		c.ed.masked = on
+		if !on {
+			// The line is discarded rather than revealed: the daemon read it already,
+			// and redrawing a secret the operator has finished typing would leave it on
+			// screen for the rest of the session and in the terminal's scrollback.
+			c.ed.reset()
+		}
+		return
+	}
+	if c.term != nil {
+		_ = setEcho(c.term, !on)
+	}
+}
+
 // writeOut sends bytes to the terminal, ignoring the error: a failed write means the
 // terminal is gone, and the next read will report that properly.
 func (c *client) writeOut(s string) {
@@ -361,13 +394,9 @@ func (c *client) handleControl(kind byte, payload string) {
 	case ctrlPrompt:
 		c.writeOut(payload)
 	case ctrlNoEcho:
-		if c.term != nil {
-			_ = setEcho(c.term, false)
-		}
+		c.setMasked(true)
 	case ctrlEcho:
-		if c.term != nil {
-			_ = setEcho(c.term, true)
-		}
+		c.setMasked(false)
 	case ctrlBye:
 		if payload != "" {
 			c.printf("%s\r\n", payload)

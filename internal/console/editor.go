@@ -101,6 +101,21 @@ type editor struct {
 	// lastRender is how many columns the visible line occupied last time it was
 	// drawn, so a redraw can erase exactly that much.
 	lastRender int
+	// masked suppresses the line entirely: the daemon has asked for no echo, so what
+	// the operator types is a secret and this editor is what would display it.
+	//
+	// It is a field of the EDITOR rather than a termios flag because in raw mode the
+	// driver's echo is already off - it was cleared by rawMode, and the editor draws
+	// every keystroke itself. Turning ECHO off again changed nothing, and turning it
+	// back on afterwards made the driver echo a line the editor was also drawing, so
+	// each character appeared twice. Measured on a pty: the password was displayed in
+	// full, and the command typed after it came out as `dmmeessaagg`.
+	//
+	// Nothing is drawn and no placeholder is drawn either. An asterisk per character
+	// would leak the length of a password, which is the one fact about it that a
+	// shoulder-surfer cannot otherwise count, and `sudo` shows nothing for the same
+	// reason.
+	masked bool
 	// fullRedraw asks for the next render to repaint from column zero with an erase,
 	// rather than appending what was typed. Appending is what makes a keystroke cost
 	// one or two bytes instead of a whole line, and it is the difference between an
@@ -144,6 +159,32 @@ func (e *editor) reset() {
 
 // String is the line as typed.
 func (e *editor) String() string { return string(e.line) }
+
+// submit takes the finished line and puts the editor back on an empty one. It returns
+// what the operator typed, whether or not the caller may keep a copy of it.
+//
+// The history decision lives HERE rather than in the key loop that calls it, and that is
+// deliberate rather than a matter of taste: the rule is a property of the editor's own
+// masked state, and putting it in the loop means the loop has to remember to ask, while
+// putting it here means every submitter gets it. There is exactly one submitter today,
+// which is how the first version of this shipped the leak - a test that replicated the
+// loop's `if !masked` inline passed whether or not the loop had it, so the assertion was
+// about a copy of the code rather than the code.
+//
+// A masked line is not remembered, because history is recalled onto the command line by
+// Up, where it is drawn in plain text. A password in history therefore reappears on
+// screen for the rest of the session, sits in the terminal's scrollback, and is one
+// keypress from being submitted as a command. Hiding what is typed and not remembering
+// it are two halves of one property.
+func (e *editor) submit() (line string, remembered bool) {
+	line = e.String()
+	if !e.masked {
+		e.record(line)
+		remembered = true
+	}
+	e.reset()
+	return line, remembered
+}
 
 // insert writes runes at the cursor.
 func (e *editor) insert(rs []rune) {
@@ -422,6 +463,19 @@ func decodeKey(read func() (byte, error)) (keyKind, rune, error) {
 // case and costs one write; the fast path is the one that has to be proved to be
 // equivalent, and it is only taken when it trivially is.
 func render(out func(string), e *editor) {
+	if e.masked {
+		// Draw nothing, and erase only what a previous render actually put there. A
+		// password is typed character by character and each one calls render, so
+		// emitting an erase unconditionally writes one escape per keystroke to a line
+		// that is already blank - invisible to the operator and pure traffic to a slow
+		// terminal. lastRender is exactly the record of whether anything is there.
+		if e.lastRender > 0 || e.fullRedraw {
+			out("\r\x1b[K")
+		}
+		e.lastRender = 0
+		e.fullRedraw = false
+		return
+	}
 	if !e.fullRedraw && e.cursor == len(e.line) && len(e.line) > e.lastRender {
 		out(string(e.line[e.lastRender:]))
 		e.lastRender = len(e.line)

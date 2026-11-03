@@ -276,7 +276,17 @@ func (d *Daemon) endCursor() (int, error) {
 	}
 }
 
-// renderRecords formats records as aligned text.
+// renderRecords formats records as aligned text, one record per line.
+//
+// One line per record is the property that makes `log | grep x` and `log | wc -l`
+// mean anything: a record whose fields spilled onto continuation lines would be
+// counted as several records by wc, and grep would return the message while dropping
+// every field that explains it. The fields are therefore appended to the same line,
+// space-separated as key=value, which is the shape a grep pattern can match against.
+//
+// The message and every field value go through the kernel's own escape rather than a
+// copy of it here, so a module that logs a newline cannot forge a second record in one
+// view and not the other.
 func renderRecords(records []kernel.Record) string {
 	var b strings.Builder
 	for _, r := range records {
@@ -284,16 +294,63 @@ func renderRecords(records []kernel.Record) string {
 		if dom == "" {
 			dom = "-"
 		}
-		fmt.Fprintf(&b, "%s %-5s pid=%-4d %-18s %s\n",
-			r.Time.Format("15:04:05.000"), r.Level, r.Pid, dom, r.Msg)
-		if len(r.Fields) > 0 {
-			keys := sortedKeys(r.Fields)
-			for _, k := range keys {
-				fmt.Fprintf(&b, "    %s=%v\n", k, r.Fields[k])
-			}
-		}
+		fmt.Fprintf(&b, "%s %-5s pid=%-4d %-18s %s",
+			r.Time.Format("15:04:05.000"), r.Level, r.Pid, dom, kernel.EscapeText(r.Msg))
+		writeFields(&b, r.Fields)
+		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// renderDmesg formats records the way `dmesg` does, and the reason is that a command
+// with a familiar name should produce familiar output: an operator who has run
+// `dmesg -w | grep -Ei "drm|nvidia"` for years is reading this with those eyes.
+//
+//	[    1.234567] pid=1 u:r:init:s0 boot complete modules=0
+//
+// The bracketed number is elapsed time on the kernel's monotonic clock, counted from
+// process start rather than from Boot - the clock's origin is set when kclock is
+// initialised, so the first record of a boot reads as a small fraction of a second and
+// not as zero. That is what dmesg prints, and what the wall clock cannot do here: the
+// kernel's monotonic clock is not rewindable and not forgeable by a module, so two lines
+// in this order did happen in that order. The wall clock, which `log` prints, can be
+// stepped by NTP or by an operator, and a log whose timestamps can go backwards is a log
+// whose ordering is a claim rather than a fact.
+//
+// The pid and domain come next, in the position dmesg puts a device prefix, because
+// that is this kernel's answer to "which part of the machine said this". The level is
+// NOT rendered: dmesg has no analogue for it, this console has `-l` to filter on it, and
+// a column that only ever reads "info" is a column that costs width on every line.
+func renderDmesg(records []kernel.Record) string {
+	var b strings.Builder
+	for _, r := range records {
+		// %5d.%06d is dmesg's own field shape: seconds right-aligned in five, so a
+		// boot past 27 hours still lines up rather than pushing the message out.
+		secs, frac := r.Mono/int64(time.Second), r.Mono%int64(time.Second)
+		fmt.Fprintf(&b, "[%5d.%06d] pid=%d %s %s",
+			secs, frac/1000, r.Pid, domainOrDash(r.Domain), kernel.EscapeText(r.Msg))
+		writeFields(&b, r.Fields)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// writeFields appends one record's fields, sorted so the same record renders the same
+// way every time. A map's iteration order is randomised deliberately, and a log line
+// whose columns move between two reads of the same record cannot be diffed.
+func writeFields(b *strings.Builder, fields map[string]any) {
+	for _, k := range sortedKeys(fields) {
+		fmt.Fprintf(b, " %s=%s", k, kernel.EscapeText(fmt.Sprint(fields[k])))
+	}
+}
+
+// domainOrDash renders an empty domain as a dash, because a blank column in a fixed
+// position moves every column after it.
+func domainOrDash(d kernel.Domain) string {
+	if d == "" {
+		return "-"
+	}
+	return string(d)
 }
 
 func sortedKeys(m map[string]any) []string {
@@ -343,7 +400,8 @@ func knownLevel(s string) bool {
 	return false
 }
 
-// dmesg renders the kernel's own messages: `dmesg [-n N] [-l level] [-H]`.
+// dmesg renders the kernel's own messages the way the tool of that name does:
+// `dmesg [-n N] [-l level] [-H]`.
 //
 // It exists as a builtin because reading the kernel console requires tty:open, which
 // only the init domain holds - so no component can do it however it is written, and
@@ -406,5 +464,5 @@ func (d *Daemon) dmesg(args []string) (string, error) {
 	if len(records) == 0 {
 		return "the kernel console is empty\n", nil
 	}
-	return renderRecords(records), nil
+	return renderDmesg(records), nil
 }

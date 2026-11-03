@@ -29,7 +29,14 @@ import (
 // Record is one kernel console line. It is always emitted as a single JSON
 // object so that faults stay greppable and machine-readable.
 type Record struct {
-	Time   time.Time      `json:"time"`
+	Time time.Time `json:"time"`
+	// Mono is nanoseconds on the kernel's monotonic clock, counted from process start.
+	// It is what a terminal-style rendering prefixes a line with, in place of the wall
+	// clock: the monotonic clock is not rewindable and not forgeable by a module, while
+	// a wall timestamp is the one field an operator cannot trust for ordering - and
+	// "which of these happened first" is the question a log exists to answer.
+	// Zero on a record constructed without it, and renderers must handle that.
+	Mono   int64          `json:"mono,omitempty"`
 	Level  Level          `json:"level"`
 	Pid    PID            `json:"pid"`
 	Domain Domain         `json:"domain,omitempty"`

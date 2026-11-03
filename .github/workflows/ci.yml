@@ -264,8 +264,8 @@ jobs:
           # project supports. Adding margin here would reopen the hole the allowlist
           # closes: slack is what lets a test quietly stop asserting. If this number
           # has to move, it moves up with the suite.
-          if [ $((PASSED + SKIP_TOP)) -lt 727 ]; then
-            echo "::error::expected at least 727 tests to run, got $((PASSED + SKIP_TOP))"
+          if [ $((PASSED + SKIP_TOP)) -lt 737 ]; then
+            echo "::error::expected at least 737 tests to run, got $((PASSED + SKIP_TOP))"
             echo "a guard against the suite silently not running"
             exit 1
           fi

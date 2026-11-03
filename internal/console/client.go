@@ -123,6 +123,12 @@ type client struct {
 	in     *boundedReader
 	wire   *boundedReader
 
+	// ed is the running line editor, set only for the duration of interactive(). A
+	// control message has to reach it: the daemon's echo request is answered by the
+	// editor rather than by the terminal driver, because in raw mode the editor is what
+	// displays the typing. See setMasked.
+	ed *editor
+
 	// ctrlMu serializes a client-to-daemon control exchange. There is at most one
 	// outstanding - a completion - and the mutex is what makes that a property of
 	// the code rather than a hope about the caller.
