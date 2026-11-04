@@ -377,6 +377,7 @@ func TestAZeroKernelCannotAct(t *testing.T) {
 			return z.OomSetMemorySampler(forgedSampler{})
 		}},
 		{"NetSetResolver", func() error { return z.NetSetResolver(nil) }},
+		{"NetSetTLSRoots", func() error { return z.NetSetTLSRoots(nil) }},
 		{"PeerSetTransport", func() error { return z.PeerSetTransport(nil) }},
 		{"PeerDial", func() error {
 			_, err := z.PeerDial(kernel.PeerDialSpec{Endpoint: "forged.example"})

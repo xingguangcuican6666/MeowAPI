@@ -62,4 +62,22 @@ type NetSpec struct {
 	Scheme string `json:"scheme"`
 	// Label is an operator-visible description. Bounded, and never interpreted.
 	Label string `json:"label,omitempty"`
+	// TLS asks the kernel to terminate TLS on this connection, so that what the module
+	// reads and writes through the returned FD is application data rather than handshake
+	// records.
+	//
+	// It is a field of the dial rather than a scheme, because Scheme describes the
+	// transport this stack is willing to open and its allowlist was reviewed against
+	// that meaning; adding "tls" there would make one field answer two questions and
+	// leave a reviewer reading `scheme: tcp` unsure whether the bytes are encrypted.
+	//
+	// The module never holds a TLS connection and cannot configure one. The server name
+	// is the Host it declared, the certificate is validated against that name, the
+	// minimum version and the cipher suites are the kernel's choice, and ALPN is pinned
+	// to HTTP/1.1 so the framing a module writes is the framing the peer agreed to.
+	// There is no skip-verification switch anywhere in this ABI: a kernel that offered
+	// one would offer a module a way to be intercepted, and the switch would live in
+	// host configuration the module cannot read, so the failure would be invisible from
+	// inside. A deployment behind an intercepting proxy installs that proxy's root.
+	TLS bool `json:"tls,omitempty"`
 }

@@ -21,9 +21,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -663,4 +666,90 @@ func TestHomoglyphInNonInstructionGoFileIsNotAViolation(t *testing.T) {
 	// instrcheck does not parse Go, so it reports nothing either way.
 	write(t, root, "kernel/y.go", "package kernel\n\nvar n\u0435w = 1\n")
 	assert.Empty(t, checkRoot(t, root), "instrcheck does not parse Go; the compiler is the control here")
+}
+
+// TestASocketInTheTreeIsSkippedAndCounted covers a failure that stopped the scan.
+//
+// A running daemon leaves root/console.sock in the working tree, and WalkDir visits it as
+// an entry that is not a directory, so scan() called os.ReadFile on a Unix socket and got
+// ENXIO. The check exited 2 naming a file that is not text and never was. The repository
+// was clean and the tool reported failure, which is the worst shape a gate can take: an
+// operator learns to re-run it, and re-running is exactly the habit that lets a real
+// finding through.
+//
+// What is asserted is the distinction the fix rests on. A socket is skipped because it has
+// no readable content BY CONSTRUCTION, and a regular file that cannot be read is still an
+// error - silently passing what cannot be read is the hole this whole check exists to
+// close. If the two were conflated, an unreadable instruction file would become a pass.
+func TestASocketInTheTreeIsSkippedAndCounted(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "AGENT.md", "# ok\n")
+
+	sock := filepath.Join(root, "root", "console.sock")
+	require.NoError(t, os.MkdirAll(filepath.Dir(sock), 0o700))
+	ln, err := net.Listen("unix", sock)
+	require.NoError(t, err, "this platform cannot make a Unix socket, so the fixture cannot be built")
+	defer func() { _ = ln.Close() }()
+
+	findings, st, err := Check(root)
+	require.NoError(t, err, "a socket in the tree must not fail the scan")
+	assert.Empty(t, findings)
+	assert.Equal(t, 1, st.Scanned, "the socket is not counted as scanned text")
+	assert.Equal(t, 1, st.Irregular, "and the skip is counted, so it cannot grow unnoticed")
+}
+
+// TestAFIFOInTheTreeIsSkippedAndCounted is the other half of the same property, and it is
+// the one that would HANG rather than fail. Reading a FIFO nobody writes blocks forever,
+// so a check that reads every non-directory entry can be made to never finish by a file
+// in the working tree. A CI job that never finishes does not report a violation; it
+// reports a timeout, which reads as infrastructure rather than as a finding.
+func TestAFIFOInTheTreeIsSkippedAndCounted(t *testing.T) {
+	if err := syscall.Mkfifo(filepath.Join(t.TempDir(), "probe"), 0o600); err != nil {
+		t.Skipf("this platform cannot make a FIFO: %v", err)
+	}
+
+	root := t.TempDir()
+	write(t, root, "AGENT.md", "# ok\n")
+	fifo := filepath.Join(root, "root", "events.fifo")
+	require.NoError(t, os.MkdirAll(filepath.Dir(fifo), 0o700))
+	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
+
+	done := make(chan struct{})
+	var (
+		findings []Finding
+		st       Stats
+		err      error
+	)
+	go func() {
+		defer close(done)
+		findings, st, err = Check(root)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Check blocked on a FIFO; a file in the working tree can hang the gate")
+	}
+	require.NoError(t, err)
+	assert.Empty(t, findings)
+	assert.Equal(t, 1, st.Irregular)
+}
+
+// TestAnUnreadableRegularFileIsStillAnError is the boundary that keeps the skip from
+// becoming a bypass. Without it, "skip what has no readable content" and "skip what
+// cannot be read" are the same sentence, and the second one is how a payload survives:
+// make the instruction file unreadable and the check passes it.
+func TestAnUnreadableRegularFileIsStillAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, which can read a file regardless of its mode")
+	}
+	root := t.TempDir()
+	write(t, root, "AGENT.md", "# ok\n")
+	secret := filepath.Join(root, "locked.md")
+	require.NoError(t, os.WriteFile(secret, []byte("# ok\n"), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(secret, 0o600) })
+
+	_, _, err := Check(root)
+	require.Error(t, err, "an unreadable REGULAR file is an error, not a skip")
+	assert.Contains(t, err.Error(), "locked.md")
 }

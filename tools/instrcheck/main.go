@@ -333,6 +333,9 @@ type Stats struct {
 	// NestedCheckouts counts directories pruned because they are a separate git
 	// checkout rather than part of this repository.
 	NestedCheckouts int
+	// Irregular counts sockets, FIFOs and device nodes skipped because they have no
+	// text content to scan. Reported so the number cannot grow unnoticed.
+	Irregular int
 }
 
 // Check walks root and returns every violation, sorted by path, line and column.
@@ -392,6 +395,24 @@ func Check(root string) ([]Finding, Stats, error) {
 			return nil
 		}
 
+		// A socket, FIFO or device node is skipped, and counted so the skip is visible
+		// rather than silent. These are not files with content to scan: reading one
+		// either blocks forever (a FIFO nobody writes) or fails with ENXIO (a Unix
+		// socket), and the failure is what this check hit on a repository whose root/
+		// held a running daemon's console.sock - the scan died on a file that is not
+		// text and never was.
+		//
+		// The skip is keyed on the entry's type, not on a failed read. That distinction
+		// is the whole safety argument: a REGULAR file that cannot be read is still an
+		// error, because silently passing what cannot be read is the hole this check
+		// exists to close. What is exempted is a path that has no readable content by
+		// construction, and an attacker who wants a payload scanned as text has no
+		// reason to make it a socket.
+		if !d.Type().IsRegular() {
+			st.Irregular++
+			return nil
+		}
+
 		// A linked worktree's .git is a FILE holding a "gitdir: <path>" pointer rather
 		// than a directory, so the name-based prune above does not reach it and the file
 		// gets scanned. That makes the reported count differ by one between a normal
@@ -437,6 +458,21 @@ func Check(root string) ([]Finding, Stats, error) {
 	return findings, st, nil
 }
 
+// skipNote renders what the walk did not scan, and only what it did not scan. Both
+// numbers are zero in a clean checkout, so the ordinary output is unchanged and an
+// operator sees a note only when something was skipped - which is when the note is the
+// thing worth reading.
+func skipNote(st Stats) string {
+	var b strings.Builder
+	if st.NestedCheckouts > 0 {
+		fmt.Fprintf(&b, ", %d nested checkout(s) pruned", st.NestedCheckouts)
+	}
+	if st.Irregular > 0 {
+		fmt.Fprintf(&b, ", %d socket/FIFO/device node(s) skipped", st.Irregular)
+	}
+	return b.String()
+}
+
 func main() {
 	root := flag.String("root", ".", "repository root to scan")
 	asJSON := flag.Bool("json", false, "emit findings as JSON")
@@ -461,25 +497,18 @@ func main() {
 		_ = enc.Encode(map[string]any{
 			"scanned":           st.Scanned,
 			"instruction_files": st.InstructionFiles,
+			"irregular_skipped": st.Irregular,
 			"violations":        len(findings),
 			"findings":          findings,
 		})
 	} else if len(findings) == 0 {
 		if !*quiet {
-			nested := ""
-			if st.NestedCheckouts > 0 {
-				nested = fmt.Sprintf(", %d nested checkout(s) pruned", st.NestedCheckouts)
-			}
 			fmt.Printf("instrcheck: OK (%d files scanned, %d instruction files, 0 violations%s)\n",
-				st.Scanned, st.InstructionFiles, nested)
+				st.Scanned, st.InstructionFiles, skipNote(st))
 		}
 	} else {
-		nested := ""
-		if st.NestedCheckouts > 0 {
-			nested = fmt.Sprintf(", %d nested checkout(s) pruned", st.NestedCheckouts)
-		}
 		fmt.Fprintf(os.Stderr, "instrcheck: %d violation(s), %d files scanned, %d instruction files%s\n\n",
-			len(findings), st.Scanned, st.InstructionFiles, nested)
+			len(findings), st.Scanned, st.InstructionFiles, skipNote(st))
 		for _, f := range findings {
 			fmt.Fprintln(os.Stderr, "  "+f.String())
 		}

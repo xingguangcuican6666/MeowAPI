@@ -35,7 +35,14 @@ package egress
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
 	"strconv"
 	"strings"
@@ -120,10 +127,37 @@ func netStub(t *testing.T, k *kernel.Kernel, host string, ips ...string) {
 		require.NotNil(t, ip, "%q is not an address", s)
 		addrs = append(addrs, net.IPAddr{IP: ip})
 	}
-	require.NoError(t, k.NetSetResolver(netStubResolver{
-		hosts: map[string][]net.IPAddr{strings.ToLower(host): addrs},
-	}))
+	r := netStubResolver{hosts: map[string][]net.IPAddr{strings.ToLower(host): addrs}}
+	netInstalledResolver = r
+	require.NoError(t, k.NetSetResolver(r))
 }
+
+// netStubSecond adds a name to the installed stub mapping without replacing the entries
+// already there. The pooling test needs two names resolving to one address, which is the
+// ordinary shape of two providers behind one CDN edge, and netStub installs a map of one.
+func netStubSecond(t *testing.T, k *kernel.Kernel, host string, ips ...string) {
+	t.Helper()
+	r, ok := netInstalledResolver.(netStubResolver)
+	if !ok {
+		r = netStubResolver{hosts: map[string][]net.IPAddr{}}
+	}
+	if r.hosts == nil {
+		r.hosts = map[string][]net.IPAddr{}
+	}
+	addrs := make([]net.IPAddr, 0, len(ips))
+	for _, s := range ips {
+		ip := net.ParseIP(s)
+		require.NotNil(t, ip, "%q is not an address", s)
+		addrs = append(addrs, net.IPAddr{IP: ip})
+	}
+	r.hosts[strings.ToLower(host)] = addrs
+	netInstalledResolver = r
+	require.NoError(t, k.NetSetResolver(r))
+}
+
+// netInstalledResolver remembers what netStub installed, so a second name can be added to
+// the same mapping rather than replacing it.
+var netInstalledResolver kernel.NetResolver
 
 // netPrivateInterface finds a non-loopback private IPv4 address belonging to this
 // machine, which is what the success path dials. Loopback cannot be used: it is refused
@@ -162,6 +196,328 @@ func netPrivateInterface(t *testing.T) (string, string) {
 	}
 	t.Skip("this machine has no non-loopback private IPv4 interface, so the dial success path cannot be exercised")
 	return "", ""
+}
+
+// ---------------------------------------------------------------------------
+// TLS termination.
+//
+// The property under test is not "the handshake works" - Go's crypto/tls does that. It is
+// where the trust decision is made and who can make it: the kernel terminates, validates
+// against the DECLARED host, and a module gets application bytes on an FD with no switch
+// anywhere in the ABI that would let it accept a certificate it should not have.
+
+// tlsTestServer is a listener with a self-signed certificate, and the pair of facts that
+// make the tests below meaningful: the name the certificate is valid for, and the pool
+// that makes it trusted.
+type tlsTestServer struct {
+	addr     string
+	certPEM  []byte
+	pool     *x509.CertPool
+	listener net.Listener
+	closed   chan struct{}
+}
+
+// tlsSelfSigned mints a certificate for exactly one DNS name. It is generated per test
+// rather than committed as a fixture, because a committed certificate expires and the test
+// then fails for a reason that has nothing to do with the kernel.
+func tlsSelfSigned(t *testing.T, name string) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	return tlsSelfSignedFor(t, name)
+}
+
+// tlsSelfSignedFor mints a certificate valid for every name given. The pooling test needs
+// one certificate that satisfies two hostnames, so the handshake is NOT what refuses and
+// the assertion is about the pool rather than about x509.
+func tlsSelfSignedFor(t *testing.T, names ...string) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	name := names[0]
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: name},
+		DNSNames:              append([]string(nil), names...),
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	require.NoError(t, err)
+
+	cert, err := tls.X509KeyPair(pemBlock("CERTIFICATE", der),
+		pemBlock("PRIVATE KEY", func() []byte {
+			b, err := x509.MarshalPKCS8PrivateKey(key)
+			require.NoError(t, err)
+			return b
+		}()))
+	require.NoError(t, err)
+
+	pool := x509.NewCertPool()
+	parsed, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	pool.AddCert(parsed)
+	return cert, pool
+}
+
+func pemBlock(typ string, der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der})
+}
+
+// tlsStart brings up a server that terminates TLS with the given certificate and echoes
+// back whatever it reads, so a test can assert on a full round trip.
+func tlsStart(t *testing.T, ip string, cert tls.Certificate, pool *x509.CertPool) *tlsTestServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", net.JoinHostPort(ip, "0"))
+	require.NoError(t, err)
+	srv := &tlsTestServer{
+		addr: ln.Addr().String(), certPEM: nil, pool: pool,
+		listener: ln, closed: make(chan struct{}),
+	}
+	go func() {
+		defer close(srv.closed)
+		for {
+			raw, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			go func(raw net.Conn) {
+				defer func() { _ = raw.Close() }()
+				conn := tls.Server(raw, &tls.Config{
+					Certificates: []tls.Certificate{cert},
+					MinVersion:   tls.VersionTLS12,
+					NextProtos:   []string{"http/1.1"},
+				})
+				if herr := conn.Handshake(); herr != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				buf := make([]byte, 4096)
+				for {
+					n, rerr := conn.Read(buf)
+					if n > 0 {
+						if _, werr := conn.Write(buf[:n]); werr != nil {
+							return
+						}
+					}
+					if rerr != nil {
+						return
+					}
+				}
+			}(raw)
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-srv.closed
+	})
+	return srv
+}
+
+// tlsPortOf reads the port out of a host:port address.
+func tlsPortOf(t *testing.T, addr string) int {
+	t.Helper()
+	_, p, err := net.SplitHostPort(addr)
+	require.NoError(t, err)
+	n, err := strconv.Atoi(p)
+	require.NoError(t, err)
+	return n
+}
+
+// TestATLSDialTerminatesInTheKernelAndHandsBackApplicationBytes is the happy path, and the
+// assertion is about what the MODULE sees: it wrote plaintext and read plaintext back, on
+// an FD it got from an ordinary dial. Nothing in this test constructs a TLS client, which
+// is the point - a module cannot, because it has no net.Conn and no way to configure one.
+func TestATLSDialTerminatesInTheKernelAndHandsBackApplicationBytes(t *testing.T) {
+	harness.QuietConsole(t)
+	ip, cidr := netPrivateInterface(t)
+	netResetPrivate(t)
+	k := netBoot(t)
+	require.NoError(t, kernel.NetAllowPrivateRanges([]string{cidr}))
+
+	const host = "provider.internal"
+	cert, pool := tlsSelfSigned(t, host)
+	require.NoError(t, k.NetSetTLSRoots(pool))
+	t.Cleanup(func() { _ = k.NetSetTLSRoots(nil) })
+
+	srv := tlsStart(t, ip, cert, pool)
+	netStub(t, k, host, ip)
+
+	ctx, _ := netLoad(t, k, "nettls", []kernel.Op{kernel.OpNetDial}, []string{host}, "")
+	res, err := kernel.NetDial(ctx, kernel.NetSpec{Host: host, Port: tlsPortOf(t, srv.addr), TLS: true})
+	require.NoError(t, err)
+	defer func() { _ = kernel.NetClose(ctx, res.FD) }()
+
+	_, err = kernel.NetWrite(ctx, res.FD, []byte("plaintext over an encrypted socket"))
+	require.NoError(t, err)
+	got, err := kernel.NetRead(ctx, res.FD, 4096)
+	require.NoError(t, err)
+	assert.Equal(t, "plaintext over an encrypted socket", string(got))
+}
+
+// TestATLSDialRefusesACertificateForAnotherName is the interception case, and it is the
+// test that decides whether the trust decision is real. The certificate is valid, the root
+// is installed, the address is permitted - the ONLY thing wrong is that the peer proved
+// itself to be somebody else. A module that could not tell the difference would be
+// indistinguishable from one that does not verify at all.
+func TestATLSDialRefusesACertificateForAnotherName(t *testing.T) {
+	harness.QuietConsole(t)
+	ip, cidr := netPrivateInterface(t)
+	netResetPrivate(t)
+	k := netBoot(t)
+	require.NoError(t, kernel.NetAllowPrivateRanges([]string{cidr}))
+
+	const declared = "provider.internal"
+	cert, pool := tlsSelfSigned(t, "someone-else.internal")
+	require.NoError(t, k.NetSetTLSRoots(pool))
+	t.Cleanup(func() { _ = k.NetSetTLSRoots(nil) })
+
+	srv := tlsStart(t, ip, cert, pool)
+	netStub(t, k, declared, ip)
+
+	ctx, _ := netLoad(t, k, "nettlsbad", []kernel.Op{kernel.OpNetDial}, []string{declared}, "")
+	_, err := kernel.NetDial(ctx, kernel.NetSpec{Host: declared, Port: tlsPortOf(t, srv.addr), TLS: true})
+	require.Error(t, err, "a certificate for another name must not be accepted")
+	assert.Contains(t, err.Error(), "handshake")
+
+	// The refusal is on the egress ledger and escalated, so an operator sees an
+	// interception attempt rather than a module reporting "the provider was quiet".
+	found := false
+	for _, e := range kernel.NetHistory() {
+		if e.Host == declared && strings.Contains(e.Outcome, "TLS handshake") {
+			found = true
+		}
+	}
+	assert.True(t, found, "a failed handshake is recorded on the egress ledger")
+}
+
+// TestATLSDialRefusesAnUnknownRoot is the other half: the name matches but nothing vouches
+// for the certificate. This is what an unconfigured deployment gets, and it must be a
+// refusal rather than a warning.
+func TestATLSDialRefusesAnUnknownRoot(t *testing.T) {
+	harness.QuietConsole(t)
+	ip, cidr := netPrivateInterface(t)
+	netResetPrivate(t)
+	k := netBoot(t)
+	require.NoError(t, kernel.NetAllowPrivateRanges([]string{cidr}))
+
+	const host = "provider.internal"
+	cert, _ := tlsSelfSigned(t, host)
+	// No roots installed, so the system pool is consulted and does not contain this one.
+	srv := tlsStart(t, ip, cert, nil)
+	netStub(t, k, host, ip)
+
+	ctx, _ := netLoad(t, k, "nettlnoroot", []kernel.Op{kernel.OpNetDial}, []string{host}, "")
+	_, err := kernel.NetDial(ctx, kernel.NetSpec{Host: host, Port: tlsPortOf(t, srv.addr), TLS: true})
+	require.Error(t, err, "a certificate nobody vouches for must not be accepted")
+}
+
+// TestATLSPoolingDoesNotDowngrade is the reuse case, and the shape of the bug it prevents
+// is specific: two providers behind one CDN edge resolve to the same address, so a pool
+// keyed on the address alone would hand a socket validated against one name to a caller
+// asking about the other. The module cannot detect it, because it never sees a handshake.
+func TestATLSPoolingDoesNotDowngrade(t *testing.T) {
+	harness.QuietConsole(t)
+	ip, cidr := netPrivateInterface(t)
+	netResetPrivate(t)
+	k := netBoot(t)
+	require.NoError(t, kernel.NetAllowPrivateRanges([]string{cidr}))
+
+	const host = "provider.internal"
+	const other = "other.internal"
+	// One certificate valid for BOTH names, and that is what makes this a test of the pool
+	// rather than of x509: the handshake succeeds under either name, so the only thing
+	// standing between a caller asking about `other` and being handed a connection
+	// established for `provider` is the pool key.
+	cert, pool := tlsSelfSignedFor(t, host, other)
+	require.NoError(t, k.NetSetTLSRoots(pool))
+	t.Cleanup(func() { _ = k.NetSetTLSRoots(nil) })
+
+	srv := tlsStart(t, ip, cert, pool)
+	port := tlsPortOf(t, srv.addr)
+	netStub(t, k, host, ip)
+	// The SAME address answers under a second name, which is the CDN-edge shape.
+	netStubSecond(t, k, other, ip)
+
+	ctx, _ := netLoad(t, k, "nettlspool", []kernel.Op{kernel.OpNetDial},
+		[]string{host, other}, "")
+
+	// A TLS socket, released to the pool.
+	first, err := kernel.NetDial(ctx, kernel.NetSpec{Host: host, Port: port, TLS: true})
+	require.NoError(t, err)
+	require.NoError(t, kernel.NetRelease(ctx, first.FD))
+	require.Equal(t, 1, kernel.NetStatsSnapshot().Pooled)
+
+	// A plaintext dial to the same address must NOT draw it.
+	plain, err := kernel.NetDial(ctx, kernel.NetSpec{Host: host, Port: port})
+	require.NoError(t, err)
+	defer func() { _ = kernel.NetClose(ctx, plain.FD) }()
+	assert.False(t, plain.Pooled, "a plaintext dial must not be handed a TLS socket")
+	assert.Equal(t, 1, kernel.NetStatsSnapshot().Pooled, "and the TLS entry is still in the pool")
+
+	// Nor may a TLS dial under a DIFFERENT declared name, even though it resolves to the
+	// same address and its certificate would validate. The reason is attribution rather
+	// than cryptography: the module's boundary was reviewed per host and the egress ledger
+	// says which host a connection belongs to, so reusing a socket established for one
+	// declared name to serve another would make the ledger say the dial went somewhere it
+	// did not. Certificate validity is not the boundary; the declaration is.
+	swapped, err := kernel.NetDial(ctx, kernel.NetSpec{Host: other, Port: port, TLS: true})
+	require.NoError(t, err, "the certificate covers both names, so the handshake is not the gate")
+	defer func() { _ = kernel.NetClose(ctx, swapped.FD) }()
+	assert.False(t, swapped.Pooled,
+		"a socket established for %q must not be reused for %q", host, other)
+
+	// And the identity that DOES match is reused, or pooling would be decoration.
+	reused, err := kernel.NetDial(ctx, kernel.NetSpec{Host: host, Port: port, TLS: true})
+	require.NoError(t, err)
+	defer func() { _ = kernel.NetClose(ctx, reused.FD) }()
+	assert.True(t, reused.Pooled, "the same host and the same TLS identity is reusable")
+}
+
+// TestTLSRootsAreCopiedNotReferenced pins the installation semantics. A caller that kept a
+// reference to the pool it installed could add a root afterwards and widen trust in a
+// running kernel with no call, no record and no reboot.
+func TestTLSRootsAreCopiedNotReferenced(t *testing.T) {
+	harness.QuietConsole(t)
+	ip, cidr := netPrivateInterface(t)
+	netResetPrivate(t)
+	k := netBoot(t)
+	require.NoError(t, kernel.NetAllowPrivateRanges([]string{cidr}))
+
+	const host = "provider.internal"
+	cert, pool := tlsSelfSigned(t, host)
+	srv := tlsStart(t, ip, cert, pool)
+	netStub(t, k, host, ip)
+
+	require.NoError(t, k.NetSetTLSRoots(pool))
+
+	// Empty the pool the CALLER holds. If the kernel took a reference, the dial that
+	// follows would stop trusting a certificate it trusted a moment ago.
+	empty := x509.NewCertPool()
+	*pool = *empty
+
+	ctx, _ := netLoad(t, k, "nettlscopy", []kernel.Op{kernel.OpNetDial}, []string{host}, "")
+	res, err := kernel.NetDial(ctx, kernel.NetSpec{Host: host, Port: tlsPortOf(t, srv.addr), TLS: true})
+	require.NoError(t, err, "emptying the caller's pool must not change what the kernel trusts")
+	defer func() { _ = kernel.NetClose(ctx, res.FD) }()
+}
+
+// TestTLSIsNotAContextSwitch pins the gate: TLS termination is part of net:dial, so a
+// module without it gets no socket at all, encrypted or not. Asking for TLS must not be a
+// way to reach a dial the policy would have refused.
+func TestTLSIsNotAContextSwitch(t *testing.T) {
+	harness.QuietConsole(t)
+	netResetPrivate(t)
+	k := netBoot(t)
+
+	ctx, _ := netLoad(t, k, "nettlsnogrant", nil, []string{"provider.internal"}, "")
+	_, err := kernel.NetDial(ctx, kernel.NetSpec{Host: "provider.internal", TLS: true})
+	require.Error(t, err, "a module without net:dial gets no socket, TLS or not")
+	assert.True(t, kernel.IsDenied(err), "and the refusal is the policy one, got %v", err)
 }
 
 // ---------------------------------------------------------------------------
@@ -1045,4 +1401,41 @@ func TestConcurrentDialsAndClosesUnderRace(t *testing.T) {
 	for i := 1; i < len(history); i++ {
 		assert.Greater(t, history[i].Seq, history[i-1].Seq, "ledger sequence numbers increase")
 	}
+}
+
+// TestTLSRootsDoNotSurviveARestart pins the reset, and it is the one whose absence would
+// be invisible. Installing roots is an act of a deployment; a restarted kernel that still
+// trusted them would accept certificates nobody now vouches for, and the audit record
+// naming the installation would belong to a boot that is over.
+func TestTLSRootsDoNotSurviveARestart(t *testing.T) {
+	harness.QuietConsole(t)
+	ip, cidr := netPrivateInterface(t)
+	netResetPrivate(t)
+	k := netBoot(t)
+	require.NoError(t, kernel.NetAllowPrivateRanges([]string{cidr}))
+
+	const host = "provider.internal"
+	cert, pool := tlsSelfSigned(t, host)
+	require.NoError(t, k.NetSetTLSRoots(pool))
+	netStub(t, k, host, ip)
+	srv := tlsStart(t, ip, cert, pool)
+	port := tlsPortOf(t, srv.addr)
+
+	ctx, _ := netLoad(t, k, "nettlsrestart", []kernel.Op{kernel.OpNetDial}, []string{host}, "")
+	first, err := kernel.NetDial(ctx, kernel.NetSpec{Host: host, Port: port, TLS: true})
+	require.NoError(t, err, "the roots installed for this boot are trusted by it")
+	require.NoError(t, kernel.NetClose(ctx, first.FD))
+
+	require.NoError(t, k.Shutdown())
+
+	// A new boot, and no roots installed for it. The same certificate must now be refused,
+	// which is the whole assertion: if it is accepted, the previous boot's trust survived.
+	k2 := netBoot(t)
+	require.NoError(t, kernel.NetAllowPrivateRanges([]string{cidr}))
+	netStub(t, k2, host, ip)
+	ctx2, _ := netLoad(t, k2, "nettlsrestart2", []kernel.Op{kernel.OpNetDial}, []string{host}, "")
+
+	_, err = kernel.NetDial(ctx2, kernel.NetSpec{Host: host, Port: port, TLS: true})
+	require.Error(t, err, "a restarted kernel must not trust roots the previous boot installed")
+	assert.Contains(t, err.Error(), "handshake")
 }

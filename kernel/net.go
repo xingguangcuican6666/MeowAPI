@@ -22,6 +22,8 @@ package kernel
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"github.com/xingguangcuican6666/MeowAPI/abi"
@@ -125,18 +127,25 @@ const maxNetHistory = 2048
 // reclaimFDs on unload, which is what makes a module that dies mid-request leak no
 // descriptor.
 type netConn struct {
-	mu       sync.Mutex
-	conn     net.Conn
-	pid      PID
-	remote   string
-	addr     net.IP
-	label    string
-	closed   bool
-	pooled   bool
-	openedAt int64
-	lastRTT  int64
-	bytesIn  int64
-	bytesOut int64
+	mu     sync.Mutex
+	conn   net.Conn
+	pid    PID
+	remote string
+	addr   net.IP
+	label  string
+	closed bool
+	pooled bool
+	// tls records whether this socket had TLS terminated on it, and serverName is the
+	// name that termination was validated against. Both are part of the connection's
+	// identity for pooling: handing a caller that asked for TLS a plaintext socket - or a
+	// socket validated against a different name - would be a downgrade nothing downstream
+	// could detect, because the module cannot see the handshake.
+	tls        bool
+	serverName string
+	openedAt   int64
+	lastRTT    int64
+	bytesIn    int64
+	bytesOut   int64
 	// grant is the operation this socket was created under: OpNetDial for an outbound
 	// connection, OpNetListen for an accepted one. Closing and I/O are gated on it rather
 	// than on a fixed operation, because a listener-only module must be able to close what
@@ -557,7 +566,7 @@ func netDial(c *sContext, spec NetSpec) (NetDialResult, error) {
 	// a validated address needs no second decision. The pool is keyed on the resolved
 	// address rather than the name, so a name that starts resolving somewhere else does
 	// not inherit a connection to where it used to point.
-	if pooled, found := netTakePooled(c.pid, spec.Host, spec.Port); found {
+	if pooled, found := netTakePooled(c.pid, spec.Host, spec.Port, spec.TLS); found {
 		netRecord(c.pid, c.name, spec.Host, pooled.address, "dialed: pooled")
 		return NetDialResult{
 			FD: pooled.fd, Host: spec.Host, Address: pooled.address, Pooled: true,
@@ -649,9 +658,47 @@ func netDial(c *sContext, spec NetSpec) (NetDialResult, error) {
 		return NetDialResult{}, err
 	}
 
+	// The handshake happens here, after the ceiling check and before the handle exists.
+	//
+	// After the ceiling, because a refused dial must not cost a provider a handshake; and
+	// before the handle, because a module must never receive a socket on which the peer's
+	// identity is not yet proven. A handshake that fails closes the socket and records
+	// the refusal, so a vendor whose certificate does not validate is visible on the
+	// egress ledger rather than as an unexplained empty read later.
+	//
+	// The deadline is the dial's, not the I/O deadline: a handshake is part of
+	// establishing this connection, and giving it the thirty-second I/O window would let a
+	// peer that accepts and then says nothing hold a module goroutine three times longer
+	// than a connection attempt is allowed to take.
+	if spec.TLS {
+		tlsConn := tls.Client(raw, tlsClientConfig(netNormalizeHost(spec.Host)))
+		if err := tlsConn.SetDeadline(time.Now().Add(netClampedTimeout(netDialTimeout, c))); err != nil {
+			_ = raw.Close()
+			netRefuse(c, spec.Host, target, "refused: cannot bound the TLS handshake")
+			return NetDialResult{}, netErr("setting the handshake deadline failed: %v", err)
+		}
+		if err := tlsConn.Handshake(); err != nil {
+			_ = raw.Close()
+			netEscalate(c, spec.Host, target, "TLS handshake failed: "+err.Error())
+			netRefuse(c, spec.Host, target, "refused: TLS handshake")
+			return NetDialResult{}, netErr("the TLS handshake with %q failed: %v", spec.Host, err)
+		}
+		// The deadline is cleared, so the I/O path's own per-call deadlines decide from
+		// here. A handshake deadline left in place would expire mid-request and be
+		// reported as a read timeout rather than as what it was.
+		if err := tlsConn.SetDeadline(time.Time{}); err != nil {
+			_ = tlsConn.Close()
+			netRefuse(c, spec.Host, target, "refused: cannot clear the handshake deadline")
+			return NetDialResult{}, netErr("clearing the handshake deadline failed: %v", err)
+		}
+		rtt = mono() - start
+		raw = tlsConn
+	}
+
 	conn := &netConn{
 		conn: raw, pid: c.pid, remote: target, addr: addrs[0].IP,
 		label: spec.Label, openedAt: mono(), lastRTT: rtt, grant: OpNetDial,
+		tls: spec.TLS, serverName: netNormalizeHost(spec.Host),
 	}
 	fd, err := install(c.pid, conn, netLabelFor(spec, target))
 	if err != nil {
@@ -701,6 +748,100 @@ func netLabelFor(spec NetSpec, target string) string {
 		return spec.Host + " -> " + target
 	}
 	return spec.Label + " " + spec.Host + " -> " + target
+}
+
+// TLS is terminated here, and this is why it is here rather than in a module.
+//
+// A module gets bytes on an FD. If TLS were the module's job it would have to carry a
+// handshake implementation, a certificate-verification policy and a root store - and the
+// policy is the part that matters: a module that could choose "skip verification" would
+// have a way to be intercepted that nothing above it could observe, because the choice
+// would live in code the operator never reads. So the kernel terminates, the module sees
+// application bytes, and the deployment's single place to configure trust is the root
+// pool below.
+//
+// What is deliberately NOT an option anywhere in this ABI: disabling verification,
+// pinning a certificate, choosing a TLS version below 1.2, or naming a different SNI than
+// the host the dial was declared for. Each of those is a deployment decision that belongs
+// to whoever owns the trust root, and a module-side switch for any of them would be a
+// module-side bypass.
+//
+// A module that speaks plaintext to a public host is still allowed - JSON over a port an
+// operator opened for it - because the allowlist is the control that decides where a
+// module may talk, and TLS decides whether it is overheard. Refusing plaintext to
+// everything would break the legitimate case of a provider the deployment reaches over a
+// private network, which is the case the private-range opt-in already models.
+type tlsState struct {
+	mu    sync.RWMutex
+	roots *x509.CertPool
+}
+
+var netTLS = tlsState{}
+
+// NetSetTLSRoots installs the certificate roots TLS validates against. A nil pool
+// restores the system default rather than being refused, for the reason NetSetResolver
+// gives: "use the platform's roots" is a configuration, not a mistake.
+//
+// The pool is COPIED rather than held by reference. A caller that kept a reference to the
+// pool it installed could add a root afterwards and widen trust in a running kernel
+// without a reboot, an audit record or a second call; copying makes the installation an
+// event rather than a handle.
+func (k *Kernel) NetSetTLSRoots(pool *x509.CertPool) error {
+	if err := k.hostOnly(); err != nil {
+		return err
+	}
+	k.shutdownM.Lock()
+	shutdown := k.shutdown
+	k.shutdownM.Unlock()
+	if shutdown {
+		return errors.New("kernel: already shut down")
+	}
+	var cloned *x509.CertPool
+	if pool != nil {
+		cloned = pool.Clone()
+	}
+	netTLS.mu.Lock()
+	netTLS.roots = cloned
+	netTLS.mu.Unlock()
+
+	// The record says how many roots a call installed, and the count is the part that
+	// matters: "caller-supplied" tells an investigator that trust was widened somewhere,
+	// while the number tells them whether it was widened by one certificate or by a
+	// hundred. Subjects() allocates and is called once, outside the lock.
+	count := 0
+	if pool != nil {
+		count = len(pool.Subjects()) //nolint:staticcheck // the count is what is recorded
+	}
+	kaudit.record(AuditPolicy, nil, "egress TLS roots installed", map[string]any{
+		"roots": count, "source": map[bool]string{true: "caller-supplied", false: "system"}[pool != nil],
+	})
+	return nil
+}
+
+// tlsClientConfig builds the configuration for one host. It is built per dial rather
+// than shared, because the ServerName is the declared host and a shared config with a
+// mutable name would be a data race on the field that decides who the peer must prove
+// itself to be.
+func tlsClientConfig(host string) *tls.Config {
+	netTLS.mu.RLock()
+	roots := netTLS.roots
+	netTLS.mu.RUnlock()
+
+	cfg := &tls.Config{
+		ServerName: host,
+		MinVersion: tls.VersionTLS12,
+		// ALPN is pinned to HTTP/1.1 because that is the framing a module writes. Not
+		// negotiating HTTP/2 is what keeps the framing question answerable: h2 multiplexes
+		// streams over one connection with its own flow control, and a module hand-writing
+		// h2 frames is a module reimplementing a protocol the kernel has no reader for. A
+		// vendor offering only h2 will fail this handshake, and that failure names the
+		// reason instead of producing frames nobody parses.
+		NextProtos: []string{"http/1.1"},
+	}
+	if roots != nil {
+		cfg.RootCAs = roots
+	}
+	return cfg
 }
 
 // NetResolver resolves a hostname to addresses. The host installs one, following the same
@@ -821,6 +962,12 @@ func netEscalate(c *sContext, host, address, reason string) {
 type netPoolKey struct {
 	pid     PID
 	address string
+	// tls and serverName keep a pooled plaintext socket from being handed to a caller
+	// that asked for TLS, and keep a socket validated against one name from being reused
+	// for another that resolves to the same address. Two providers on one CDN edge share
+	// an address; they do not share a certificate.
+	tls        bool
+	serverName string
 }
 
 type netPoolEntry struct {
@@ -886,7 +1033,7 @@ func NetRelease(ctx SContext, fd FD) error {
 		netRecord(c.pid, c.name, conn.remote, conn.remote, "released: pool full, closed")
 		return nil
 	}
-	key := netPoolKey{pid: c.pid, address: conn.remote}
+	key := netPoolKeyFor(conn)
 	pooled := &netPoolEntry{
 		conn: conn, fd: fd, address: conn.remote, rtt: conn.lastRTT, idledAt: mono(),
 	}
@@ -904,7 +1051,7 @@ func NetRelease(ctx SContext, fd FD) error {
 // netTakePooled draws a socket from the pool. The address is re-validated on the way out,
 // because a host opt-in can be narrowed between the release and the reuse and a socket to
 // a now-refused range must not be handed back.
-func netTakePooled(pid PID, host string, port int) (netPoolEntry, bool) {
+func netTakePooled(pid PID, host string, port int, wantTLS bool) (netPoolEntry, bool) {
 	if port == 0 {
 		port = 443
 	}
@@ -928,6 +1075,28 @@ func netTakePooled(pid PID, host string, port int) (netPoolEntry, bool) {
 		}
 		if portFromAddress(key.address) != port {
 			continue
+		}
+		// Identity, not just address. A caller that asked for TLS must not be handed a
+		// plaintext socket, and a socket validated against one name must not be reused for
+		// a different name that happens to resolve to the same address - which is the
+		// ordinary case for two providers behind one CDN edge. The downgrade is invisible
+		// to the module because a module cannot see a handshake.
+		//
+		// The server name is checked only when the caller asked for TLS: a plaintext pool
+		// entry has none to match, and requiring one would make plaintext pooling miss
+		// every time.
+		if key.tls != wantTLS {
+			continue
+		}
+		if wantTLS {
+			hostOnly, _, err := net.SplitHostPort(key.address)
+			if err != nil {
+				continue
+			}
+			_ = hostOnly
+			if key.serverName != netNormalizeHost(host) {
+				continue
+			}
 		}
 		hostOnly, _, err := net.SplitHostPort(key.address)
 		if err != nil {
@@ -992,6 +1161,15 @@ func portFromAddress(address string) int {
 	return n
 }
 
+// netPoolKeyFor is the one place a pool key is built, and both the insert and the removal
+// go through it. Two spellings of the same key is a pooled socket that can never be drawn
+// again, which is a leak rather than a correctness bug and would sit unnoticed.
+func netPoolKeyFor(conn *netConn) netPoolKey {
+	return netPoolKey{
+		pid: conn.pid, address: conn.remote, tls: conn.tls, serverName: conn.serverName,
+	}
+}
+
 // netDropPooled removes a socket from the pool when it is closed by any path, including
 // reclaimFDs on unload. Without it a closed socket would stay drawable.
 func netDropPooled(conn *netConn) {
@@ -1002,7 +1180,7 @@ func netDropPooled(conn *netConn) {
 		return
 	}
 	delete(netPool.byConn, conn)
-	key := netPoolKey{pid: conn.pid, address: conn.remote}
+	key := netPoolKeyFor(conn)
 	entries := netPool.byKey[key]
 	out := entries[:0]
 	for _, e := range entries {
@@ -1519,6 +1697,15 @@ func resetNet() {
 	netResolver.mu.Lock()
 	netResolver.r = netSystemResolver{}
 	netResolver.mu.Unlock()
+
+	// The trust roots go back to the system default, for exactly the reason the resolver
+	// does: an installation is an act of the deployment that made it, not a fact about the
+	// kernel. Roots installed by one boot that survived into the next would mean a
+	// restarted kernel accepted certificates the current deployment never vouched for, and
+	// the audit record naming the installation would belong to a boot that is over.
+	netTLS.mu.Lock()
+	netTLS.roots = nil
+	netTLS.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -1561,17 +1748,16 @@ func (c *sContext) SyscallNetSockets() []NetInfo { return NetSockets(c.pid) }
 //    reclaimFDs still closes the descriptors, but the pool would keep entries naming
 //    sockets that are gone.
 //
-// 4. policy.go: OpNetDial and OpNetListen are in scopedOps and deliberately absent from
-//    enforcedScopedOps, so today they are refused at the domain ceiling and unreachable.
-//    This file now provides the per-call check that was missing - NetHostAllowed against
-//    the manifest's AllowedHosts, and an exact match against ListenAddr - so both can
-//    join enforcedScopedOps:
+// 4. policy.go: DONE. OpNetDial and OpNetListen are in enforcedScopedOps, and the
+//    per-call checks that justify it are this file's NetHostAllowed against the
+//    manifest's AllowedHosts and netListen's exact match against ListenAddr. Both are
+//    therefore declaration-grantable in the plugin domain, which is what a provider
+//    adapter needs and what tests/egress exercises.
 //
-//	OpNetDial:   true, // net.go: NetHostAllowed consults the manifest's AllowedHosts
-//	OpNetListen: true, // net.go: netListen matches the manifest's ListenAddr exactly
-//
-//    That is a policy surface change and belongs to whoever owns policy.go, which is why
-//    it is reported rather than made.
+//    Recorded as done rather than deleted, because the shape of the mistake is worth
+//    keeping: this item asserted both ops were unreachable at the ceiling, and the suite
+//    was green while it did, because nothing read the comment. A statement about the
+//    policy table that no test checks goes stale silently.
 //
 // 5. dump.go should render NetStatsSnapshot and NetSockets under a "--- egress ---"
 //    heading beside the peers section, since both describe reachability.
@@ -1580,3 +1766,11 @@ func (c *sContext) SyscallNetSockets() []NetInfo { return NetSockets(c.pid) }
 //    TrustRoot, sealed at boot like the rest. NetAllowPrivateRanges is the setter and can
 //    be called from Boot once bootconfig applies its configuration; until then the host
 //    calls it directly before loading modules, which is what main.go would do.
+//
+// 7. The TLS roots are host configuration in the same sense and have the same gap.
+//    NetSetTLSRoots is a host-only setter and resetNet clears it, so a boot cannot inherit
+//    another boot's trust - but nothing in BootConfig names them yet, which means a
+//    deployment that wants a private CA has to call the setter from main.go. A provider
+//    adapter dials with NetSpec.TLS and never configures anything, by design: which
+//    certificates are trusted is the deployment's decision, and a module-side switch for
+//    it would be a module-side bypass.
