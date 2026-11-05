@@ -41,12 +41,29 @@ BEGIN {
     # line. A skip with no reason line at all matches nothing and fails, which is the
     # safe direction.
     #
-    # tests/egress: the four dial tests need a non-loopback private IPv4 interface on
-    # the runner, and all four reach it through one helper that skips with this text.
+    # tests/egress: every test that dials a real address needs a non-loopback private IPv4
+    # interface on the runner, and all of them reach it through ONE helper that skips with
+    # this text. The list is therefore not a list of four choices but a list of every
+    # caller of netPrivateInterface, and tools/ci/suite_report_test.go derives it from the
+    # tree rather than trusting it: a new dial test is a new entry, and the coupling test
+    # says which. Enumerate by hand and the first test added after this comment is the one
+    # that turns a legitimate environment skip into a red build.
+    #
+    # tools/instrcheck's root skip is NOT here, deliberately. CI's runner is not root, so
+    # the entry would be dead weight that permits a test to stop asserting if the runner
+    # ever changed shape - and a red build saying "this test skipped because it ran as
+    # root" is the correct diagnosis of that, not a failure to fix by allowing it.
+    allow["tests/egress|TestATLSDialTerminatesInTheKernelAndHandsBackApplicationBytes|no non-loopback private IPv4 interface"] = 1
+    allow["tests/egress|TestATLSDialRefusesACertificateForAnotherName|no non-loopback private IPv4 interface"] = 1
+    allow["tests/egress|TestATLSDialRefusesAnUnknownRoot|no non-loopback private IPv4 interface"] = 1
+    allow["tests/egress|TestATLSPoolingDoesNotDowngrade|no non-loopback private IPv4 interface"] = 1
+    allow["tests/egress|TestTLSRootsAreCopiedNotReferenced|no non-loopback private IPv4 interface"] = 1
     allow["tests/egress|TestASuccessfulDialUsesTheValidatedAddress|no non-loopback private IPv4 interface"] = 1
     allow["tests/egress|TestThePoolReturnsTheSameSocketAndRevalidatesOnReuse|no non-loopback private IPv4 interface"] = 1
     allow["tests/egress|TestThePoolCeilingClosesRatherThanRefuses|no non-loopback private IPv4 interface"] = 1
     allow["tests/egress|TestSocketsAreReclaimedWhenTheModuleIsUnloaded|no non-loopback private IPv4 interface"] = 1
+    allow["tests/egress|TestTLSRootsDoNotSurviveARestart|no non-loopback private IPv4 interface"] = 1
+    allow["tests/egress|TestACleanCloseOfATLSSocketIsClassifiedTheSameWay|no non-loopback private IPv4 interface"] = 1
     # tests/state: the symlink-escape cases need os.Symlink to work.
     allow["tests/state|TestFSResolveRefusesEveryEscape|symlinks are not available here"] = 1
 }

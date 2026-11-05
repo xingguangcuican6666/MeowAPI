@@ -20,7 +20,39 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 package abi
 
+import "errors"
+
 // Controlled egress: what a module declares, what a dial returns.
+
+// ErrNetPeerClosed is what a read returns when the peer ended the connection, as opposed
+// to the read failing for another reason.
+//
+// It exists because the two are different facts about the world and a module cannot
+// otherwise tell them apart. SyscallNetRead reports a peer close as an error rather than
+// as a zero-length read with no error, which is the right call for a socket syscall and
+// the wrong one for a caller framing messages: "the vendor hung up" ends a
+// close-delimited response cleanly, while "the read timed out" or "the connection was
+// reset" means whatever bytes arrived are all there will ever be. Without a sentinel the
+// only way to distinguish them is to match the error's text, and text is not a contract:
+// rewording a message in the kernel would silently turn every adapter's clean-end
+// handling into its failure handling.
+//
+// It is not io.EOF, and a module cannot test for that instead. io.EOF is the standard
+// library's own value and the kernel's error is not it, because exposing io would make a
+// module's import of this package a dependency on how the kernel happens to read sockets
+// today.
+//
+// What the sentinel does NOT buy is a truncation check, and the limit is worth stating
+// because it looks like one. Measured against both a plaintext and a TLS-terminated
+// socket: a peer that sends a whole TLS record and then closes TCP reports io.EOF, whether
+// or not it sent close_notify, so a peer that stops mid-message at a record boundary is
+// indistinguishable from one that finished. A peer that tears a RECORD reports
+// io.ErrUnexpectedEOF instead, which is not this sentinel and so reaches the caller as a
+// plain failure. The framing above the transport is therefore what decides whether a
+// response is whole: HTTPResponse.Truncated reports a Content-Length that was not
+// satisfied or a chunked body with no terminating zero chunk, and that is the check to
+// make before trusting a body, not the classification of the close.
+var ErrNetPeerClosed = errors.New("abi: net: the peer closed the connection")
 
 // NetDialResult is what a successful dial reports. The Address field is the point: it is
 // the address that was validated and dialed, so an operator reading the audit record can

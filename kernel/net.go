@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/xingguangcuican6666/MeowAPI/abi"
+	"io"
 	"net"
 	"sort"
 	"strconv"
@@ -85,6 +86,14 @@ var ErrNetAddressBlocked = errors.New("kernel: net: the resolved address is in a
 // module author did not make, the other is an address the deployment refuses no matter
 // what any module declares.
 var ErrNetHostNotAllowed = errors.New("kernel: net: the host is outside the declared boundary")
+
+// ErrNetPeerClosed is abi.ErrNetPeerClosed, the same value rather than a second sentinel.
+//
+// It is declared in abi and not here because the party that has to test for it is a
+// module, and a module cannot import this package - which is the whole point of the abi
+// split. The alias exists so kernel-side code and tests name it the way they name every
+// other error in this file; there is one value, so errors.Is from either spelling agrees.
+var ErrNetPeerClosed = abi.ErrNetPeerClosed
 
 // netDialTimeout and netIOTimeout bound one dial and one read or write. They come from
 // documented constants clamped by the sealed CallTimeoutMillis ceiling rather than from
@@ -1290,13 +1299,31 @@ func NetRead(ctx SContext, fd FD, limit int) ([]byte, error) {
 	conn.bytesIn += int64(n)
 	conn.mu.Unlock()
 	if n > 0 && err != nil && !errors.Is(err, net.ErrClosed) {
-		// Bytes arrived and the connection then failed. Returning both is honest; the
-		// caller decides whether a partial read is useful.
+		// Bytes arrived and the connection then ended. Returning both is honest; the caller
+		// decides whether a partial read is useful. A clean end is classified as such so a
+		// caller framing messages can feed the bytes and then learn the peer is done,
+		// rather than having to guess from the text whether "failed after 6 bytes" means
+		// the vendor hung up or the record was torn.
+		//
+		// Measured, no transport this file can produce reaches this branch today: neither a
+		// plaintext TCP socket nor a crypto/tls socket returns bytes together with an error,
+		// so a FIN or an alert surfaces on the read AFTER the one that returned the data. The
+		// branch stays because it is the shape a caller must not lose bytes in, and a
+		// transport added later - or a socket type that reports both - would then be correct
+		// by construction rather than by luck. It is the one branch here that the suite
+		// cannot reach from outside the package, and that is recorded rather than papered
+		// over with a test that asserts nothing.
+		if netPeerClosed(err) {
+			return buf[:n], fmt.Errorf("%w: %s ended after %d bytes", ErrNetPeerClosed, conn.remote, n)
+		}
 		return buf[:n], netErr("reading from %s failed after %d bytes: %v", conn.remote, n, err)
 	}
 	if err != nil {
 		if errors.Is(err, net.ErrClosed) {
 			return nil, netErr("this socket is closed")
+		}
+		if netPeerClosed(err) {
+			return nil, fmt.Errorf("%w: %s", ErrNetPeerClosed, conn.remote)
 		}
 		var nerr net.Error
 		if errors.As(err, &nerr) && nerr.Timeout() {
@@ -1306,6 +1333,22 @@ func NetRead(ctx SContext, fd FD, limit int) ([]byte, error) {
 	}
 	return buf[:n], nil
 }
+
+// netPeerClosed reports whether a read error means the peer ended the connection, as
+// opposed to the connection failing.
+//
+// io.EOF is the whole test. Measured on both a plaintext and a TLS-terminated socket: a
+// peer that finishes its last record and closes TCP reports io.EOF whether or not it sent
+// close_notify, so one predicate covers the plain and the terminated socket alike. What it
+// deliberately excludes is io.ErrUnexpectedEOF, which is a record torn mid-frame - an
+// abrupt close inside a record, or a peer that wrote half of what it framed. Folding that
+// in here would report a truncation as a clean end.
+//
+// It is a classification of the CLOSE, not a statement that the response was whole, and a
+// caller must not read it as one: a peer that stops mid-message at a record boundary looks
+// exactly like a peer that finished. Whether the message was whole is the framing's
+// question, and HTTPResponse.Truncated is where that is answered.
+func netPeerClosed(err error) bool { return errors.Is(err, io.EOF) }
 
 // netSocketFor looks up an fd, kind-checks it, and gates the operation on the grant this
 // socket was created under. The kind check is what stops a module passing a pipe handle

@@ -47,11 +47,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/xingguangcuican6666/MeowAPI/abi"
 	"github.com/xingguangcuican6666/MeowAPI/kernel"
 	"github.com/xingguangcuican6666/MeowAPI/tests/harness"
 )
@@ -1438,4 +1440,243 @@ func TestTLSRootsDoNotSurviveARestart(t *testing.T) {
 	_, err = kernel.NetDial(ctx2, kernel.NetSpec{Host: host, Port: port, TLS: true})
 	require.Error(t, err, "a restarted kernel must not trust roots the previous boot installed")
 	assert.Contains(t, err.Error(), "handshake")
+}
+
+// ---------------------------------------------------------------------------
+// The close classification.
+//
+// SyscallNetRead reports a peer close as an error rather than as a zero-length read with
+// no error, and that is a decision about a socket syscall rather than about framing. But a
+// module framing HTTP responses over it needs to tell "the vendor hung up", which ends a
+// close-delimited response cleanly, from "the read timed out" or "the connection was
+// reset", which means whatever bytes arrived are all there will ever be. The only way to
+// tell them apart was to match the error's text, and text is not a contract: rewording a
+// message here would silently turn every adapter's clean-end handling into its failure
+// handling.
+
+// netListenBound returns a listener the module declared, the fd for it, and the address it
+// actually bound to. The port is discovered from the fd table's label rather than parsed
+// out of a request, because a declaration of port 0 means the kernel chose one.
+func netListenBound(t *testing.T, ctx kernel.SContext, fd kernel.FD, pid kernel.PID) string {
+	t.Helper()
+	for _, f := range kernel.FDList(pid) {
+		if f.Kind == "listener" {
+			return strings.TrimPrefix(f.Label, "listen ")
+		}
+	}
+	require.Fail(t, "no listener was bound", "fd %d pid %d", fd, pid)
+	return ""
+}
+
+// netAcceptOne sets up a listener on the declared loopback address, takes one inbound
+// connection from the test side, and returns the module's handle for it along with the raw
+// peer connection the test drives.
+//
+// The accepted connection is used because it needs no private interface: an accepted
+// connection is deliberately not address-validated, so loopback works and the test runs on
+// every machine rather than skipping on a runner with no non-loopback address. What is
+// under test is the classification of what the peer did, and the peer is the test.
+func netAcceptOne(t *testing.T) (kernel.SContext, kernel.FD, net.Conn) {
+	t.Helper()
+	harness.QuietConsole(t)
+	netResetPrivate(t)
+	k := netBoot(t)
+	ctx, pid := netLoad(t, k, "netclose", []kernel.Op{kernel.OpNetListen}, nil, "127.0.0.1:0")
+
+	lfd, err := kernel.NetListen(ctx, "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = kernel.NetCloseListener(ctx, lfd) })
+
+	bound := netListenBound(t, ctx, lfd, pid)
+	peer, err := net.Dial("tcp", bound)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peer.Close() })
+
+	type accepted struct {
+		fd  kernel.FD
+		err error
+	}
+	got := make(chan accepted, 1)
+	go func() {
+		fd, aerr := kernel.NetAccept(ctx, lfd)
+		got <- accepted{fd, aerr}
+	}()
+
+	select {
+	case a := <-got:
+		require.NoError(t, a.err, "the inbound connection is accepted")
+		return ctx, a.fd, peer
+	case <-time.After(10 * time.Second):
+		require.Fail(t, "accepting did not return within 10s")
+		return nil, kernel.FD(0), nil
+	}
+}
+
+func TestAPeerCloseIsReportedAsACloseAndNotAsAFailure(t *testing.T) {
+	ctx, fd, peer := netAcceptOne(t)
+	t.Cleanup(func() { _ = kernel.NetClose(ctx, fd) })
+
+	_, err := peer.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"))
+	require.NoError(t, err)
+	require.NoError(t, peer.Close())
+
+	// The bytes arrive first, and the read that gets them succeeds.
+	got, err := kernel.NetRead(ctx, fd, 4096)
+	require.NoError(t, err)
+	require.NotEmpty(t, got)
+
+	// The next read is where the close shows up, and it shows up as a sentinel a module can
+	// test for rather than as a message it has to match.
+	_, err = kernel.NetRead(ctx, fd, 4096)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, kernel.ErrNetPeerClosed,
+		"a peer that hung up must be classifiable as such")
+	assert.NotErrorIs(t, err, kernel.ErrNetAddressBlocked)
+	assert.False(t, kernel.IsDenied(err), "a hung-up peer is not a policy denial")
+}
+
+func TestTheSentinelIsOneValueInTheKernelAndInTheABI(t *testing.T) {
+	// The sentinel is declared in abi because the party that has to test for it is a module,
+	// and a module cannot import the kernel. The kernel aliases it rather than declaring a
+	// second one, and this is the check that the alias is an alias: two sentinels with the
+	// same text would each satisfy their own errors.Is and silently disagree about every
+	// read.
+	assert.Same(t, error(abi.ErrNetPeerClosed), error(kernel.ErrNetPeerClosed),
+		"the kernel must alias abi's sentinel rather than declare its own")
+	assert.True(t, errors.Is(kernel.ErrNetPeerClosed, abi.ErrNetPeerClosed))
+	assert.True(t, errors.Is(abi.ErrNetPeerClosed, kernel.ErrNetPeerClosed))
+}
+
+func TestABrokenConnectionIsNotReportedAsAPeerClose(t *testing.T) {
+	// A reset is the other half of the distinction, and the half that would be wrong to fold
+	// in. SO_LINGER with a zero timeout makes Close abortive, so the peer sends RST rather
+	// than FIN - which is what an abrupt disconnect, a load balancer that dropped the
+	// connection, or a truncation looks like from here.
+	//
+	// The peer sends NOTHING before the reset, and that is measured rather than arbitrary: a
+	// socket with unread data in its receive buffer also resets on close, but the first read
+	// on this side then SUCCEEDS with those bytes and only the second reports the reset. A
+	// test that wrote first and read once would assert nothing at all. With nothing sent,
+	// the first read is where the reset arrives.
+	ctx, fd, peer := netAcceptOne(t)
+	t.Cleanup(func() { _ = kernel.NetClose(ctx, fd) })
+
+	raw, err := peer.(*net.TCPConn).SyscallConn()
+	require.NoError(t, err)
+	var soErr error
+	require.NoError(t, raw.Control(func(sysfd uintptr) {
+		soErr = syscall.SetsockoptLinger(int(sysfd), syscall.SOL_SOCKET, syscall.SO_LINGER,
+			&syscall.Linger{Onoff: 1, Linger: 0})
+	}))
+	require.NoError(t, soErr)
+
+	// Give the accept a moment to complete, then reset. Without this the reset can arrive
+	// before the kernel has taken the connection and the failure would be a different one.
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, peer.Close())
+
+	_, err = kernel.NetRead(ctx, fd, 4096)
+	require.Error(t, err, "a reset connection is a failure")
+	assert.NotErrorIs(t, err, kernel.ErrNetPeerClosed,
+		"a reset must not be reported as a clean end, or a truncated response reads as complete")
+	assert.Contains(t, err.Error(), "reset", "and the message says what actually happened")
+}
+
+func TestACleanCloseOfATLSSocketIsClassifiedTheSameWay(t *testing.T) {
+	// The TLS half, and the part that could have been different. crypto/tls reports io.EOF
+	// both after a close_notify and after a plain TCP close of a whole record, and reports
+	// io.ErrUnexpectedEOF for a record torn mid-frame. One predicate over io.EOF therefore
+	// classifies a clean end correctly and leaves a truncation a failure - but only because
+	// the two are different values, which is measured here on both branches rather than
+	// assumed from the library's documentation.
+	ip, cidr := netPrivateInterface(t)
+	netResetPrivate(t)
+	k := netBoot(t)
+	require.NoError(t, kernel.NetAllowPrivateRanges([]string{cidr}))
+
+	const host = "provider.internal"
+	cert, pool := tlsSelfSigned(t, host)
+	require.NoError(t, k.NetSetTLSRoots(pool))
+	t.Cleanup(func() { _ = k.NetSetTLSRoots(nil) })
+	netStub(t, k, host, ip)
+	ctx, _ := netLoad(t, k, "nettlsclose", []kernel.Op{kernel.OpNetDial}, []string{host}, "")
+
+	// tlsRespondThenTearDown serves one response over TLS and then ends the connection the
+	// way the caller asks: with close_notify, with a plain TCP close after a whole record, or
+	// with a record torn in the middle.
+	tlsRespondThenTearDown := func(t *testing.T, mode string, response string) int {
+		t.Helper()
+		ln, err := net.Listen("tcp", net.JoinHostPort(ip, "0"))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ln.Close() })
+		go func() {
+			raw, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			tl := tls.Server(raw, &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12,
+				NextProtos:   []string{"http/1.1"},
+			})
+			if herr := tl.Handshake(); herr != nil {
+				return
+			}
+			if mode == "torn" {
+				// The response goes out as a whole record; the tearing happens after it.
+				_, _ = tl.Write([]byte(response))
+				time.Sleep(50 * time.Millisecond)
+				// A raw record header claiming 100 bytes of payload, then 10, then FIN.
+				_, _ = raw.Write([]byte{0x17, 0x03, 0x03, 0x00, 0x64})
+				_, _ = raw.Write(make([]byte, 10))
+				_ = raw.Close()
+				return
+			}
+			_, _ = tl.Write([]byte(response))
+			if mode == "close_notify" {
+				_ = tl.CloseWrite()
+				time.Sleep(100 * time.Millisecond)
+				_ = tl.Close()
+				return
+			}
+			// A plain TCP close with no close_notify at all.
+			_ = tl.Close()
+			_ = raw.Close()
+		}()
+		return tlsPortOf(t, ln.Addr().String())
+	}
+
+	// The three ways a peer can end a TLS connection, and what each must be classified as.
+	for _, tc := range []struct {
+		name      string
+		mode      string
+		wantClose bool
+	}{
+		{"a close_notify is a clean end", "close_notify", true},
+		{"a plain TCP close after a whole record is a clean end", "tcp_close", true},
+		{"a torn record is not", "torn", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const response = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
+			port := tlsRespondThenTearDown(t, tc.mode, response)
+
+			res, err := kernel.NetDial(ctx, kernel.NetSpec{Host: host, Port: port, TLS: true})
+			require.NoError(t, err)
+			defer func() { _ = kernel.NetClose(ctx, res.FD) }()
+
+			got, err := kernel.NetRead(ctx, res.FD, 4096)
+			require.NoError(t, err)
+			assert.Equal(t, response, string(got), "the module sees application bytes")
+
+			_, err = kernel.NetRead(ctx, res.FD, 4096)
+			require.Error(t, err, "the connection ended, so the next read cannot succeed")
+			if tc.wantClose {
+				assert.ErrorIs(t, err, kernel.ErrNetPeerClosed,
+					"a whole record and then an end is a clean close, however it was signalled")
+			} else {
+				assert.NotErrorIs(t, err, kernel.ErrNetPeerClosed,
+					"a record torn mid-frame is a truncation and must not read as a clean end")
+			}
+		})
+	}
 }

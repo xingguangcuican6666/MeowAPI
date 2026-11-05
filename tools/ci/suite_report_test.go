@@ -32,6 +32,9 @@ package ci
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -579,10 +582,17 @@ func firstLineMatching(text, prefix string) string {
 }
 
 // TestTheRealAllowlistMatchesTheRealSkipSites is the check that keeps the allowlist from
-// drifting away from the tests it names. It reads the five skip sites out of the tree and
+// drifting away from the tests it names. It reads the skip sites out of the tree and
 // asserts each one's package, name and reason text still match an entry - a renamed test
-// or reworded t.Skip would otherwise turn a legitimate environment skip into a red build,
-// or worse, leave a stale entry permitting a name that no longer exists.
+// or reworded t.Skip would otherwise turn a legitimate environment skip into a red build.
+//
+// It also checks the direction a list of sites cannot: EVERY test in tests/egress that can
+// reach the skipping helper must have an entry. That is not hypothetical. The allowlist
+// named four tests while six more already dialed a private interface, and the tree was
+// green only because this machine has one - the same suite on a runner without one skips
+// twelve tests and the gate reports eight unexpected skips. A list of the sites that skip
+// today cannot see a caller added yesterday, so the list is derived instead: the callers of
+// the helper are found by parsing the file, and each one must be allowlisted.
 func TestTheRealAllowlistMatchesTheRealSkipSites(t *testing.T) {
 	sites := []struct {
 		file   string
@@ -596,5 +606,84 @@ func TestTheRealAllowlistMatchesTheRealSkipSites(t *testing.T) {
 		require.NoError(t, err, "the gate's allowlist must be checked against the tree it gates")
 		assert.Contains(t, string(body), site.reason,
 			"%s must still skip with the reason text the allowlist matches on", site.file)
+	}
+}
+
+// TestEveryTestThatCanSkipIsOnTheAllowlist derives the set of tests that can skip from the
+// source rather than from a hand-written list, in both directions.
+//
+// The forward direction is the one that matters: a test that calls the skipping helper but
+// has no entry fails CI on every runner that lacks the interface, and the failure names a
+// gate as if the gate were wrong. The reverse direction keeps the list honest: an entry
+// for a name that no longer reaches the helper permits a same-named test to stop asserting,
+// which is the hole the allowlist exists to close.
+func TestEveryTestThatCanSkipIsOnTheAllowlist(t *testing.T) {
+	const helper = "netPrivateInterface"
+	const reason = "no non-loopback private IPv4 interface"
+
+	body, err := os.ReadFile("../../tests/egress/egress_test.go")
+	require.NoError(t, err)
+	fset := token.NewFileSet()
+	af, err := parser.ParseFile(fset, "egress_test.go", body, 0)
+	require.NoError(t, err)
+
+	// Every top-level test function, and whether it reaches the helper - directly or
+	// through one level of a local fixture, which is how a future test is likely to be
+	// written given that the helper is the thing being wrapped.
+	reaches := map[string]bool{}
+	declared := map[string]bool{}
+	ast.Inspect(af, func(n ast.Node) bool {
+		fd, ok := n.(*ast.FuncDecl)
+		if !ok || !strings.HasPrefix(fd.Name.Name, "Test") || fd.Recv != nil {
+			return true
+		}
+		declared[fd.Name.Name] = true
+		if fd.Body == nil {
+			return true
+		}
+		ast.Inspect(fd.Body, func(inner ast.Node) bool {
+			call, ok := inner.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == helper {
+				reaches[fd.Name.Name] = true
+			}
+			return true
+		})
+		return true
+	})
+	require.NotEmpty(t, reaches,
+		"no test reaches %s; the walk is wrong and this test would pass on nothing", helper)
+	require.Contains(t, declared, "TestASuccessfulDialUsesTheValidatedAddress",
+		"a known dial test must be found; the walk is wrong")
+
+	awkBody, err := os.ReadFile("suite-report.awk")
+	require.NoError(t, err)
+	allowEntries := map[string]bool{}
+	for _, line := range strings.Split(string(awkBody), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, `allow["tests/egress|`) {
+			continue
+		}
+		rest := strings.TrimPrefix(line, `allow["tests/egress|`)
+		bar := strings.IndexByte(rest, '|')
+		require.Positive(t, bar, "a malformed allowlist line: %s", line)
+		name := rest[:bar]
+		if strings.Contains(rest, reason) {
+			allowEntries[name] = true
+		}
+	}
+	require.NotEmpty(t, allowEntries, "no entry names the reason; the parse is wrong")
+
+	for name := range reaches {
+		assert.True(t, allowEntries[name],
+			"%s reaches %s, so it skips on a runner without a private IPv4 interface and "+
+				"must have an allowlist entry with that reason", name, helper)
+	}
+	for name := range allowEntries {
+		assert.True(t, reaches[name],
+			"the allowlist permits %s to skip, but it does not reach %s, so the entry is "+
+				"permitting a name that no longer skips", name, helper)
 	}
 }
