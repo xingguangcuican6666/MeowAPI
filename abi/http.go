@@ -1028,21 +1028,50 @@ func (r *HTTPResponse) parseChunked() error {
 	}
 }
 
-// httpChunkSize reads a chunk-size line: hex digits, an optional semicolon and extensions
-// this reader ignores. The extension is parsed past rather than validated, because its
-// grammar belongs to whatever extension defined it and the framing does not depend on it.
+// httpChunkSize reads a chunk-size line: one or more hex digits, then an optional
+// semicolon and extensions this reader ignores. The extension is parsed past rather than
+// validated, because its grammar belongs to whatever extension defined it and the framing
+// does not depend on it.
+//
+// The digits are parsed here rather than handed to strconv.ParseInt, which accepts a sign -
+// so "+5" would be a size of 5, and a peer that can make this reader see a number the
+// grammar does not contain is a peer that can make it disagree with the next parser of the
+// same bytes. The one tolerance kept is trailing whitespace, which Go's own chunked reader
+// also trims, so a peer that pads the line is not refused for padding it.
+//
+// The length cap is the overflow guard, and it is a digit count rather than an arithmetic
+// check because it is provable at a glance: 15 hex digits reach at most 2^60-1, which is an
+// int64, and the 16th can exceed it. A size that wrapped would make this reader consume the
+// wrong number of bytes and then parse the rest of the response as framing, which is the
+// misframe every other check here exists to prevent. No peer sends a chunk near that large,
+// and a caller's body ceiling would refuse one long before it arrived.
 func httpChunkSize(line []byte) (int64, error) {
 	s := string(line)
 	if i := strings.IndexByte(s, ';'); i >= 0 {
 		s = s[:i]
 	}
-	s = strings.TrimSpace(s)
+	s = strings.TrimRight(s, " \t")
 	if s == "" {
 		return 0, fmt.Errorf("%w: a chunk size is empty", ErrHTTPMalformed)
 	}
-	n, err := strconv.ParseInt(s, 16, 64)
-	if err != nil || n < 0 {
-		return 0, fmt.Errorf("%w: a chunk size is not hexadecimal", ErrHTTPMalformed)
+	if len(s) > 15 {
+		return 0, fmt.Errorf("%w: a chunk size is too large to represent", ErrHTTPTooLarge)
+	}
+	var n int64
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		var d int64
+		switch {
+		case c >= '0' && c <= '9':
+			d = int64(c - '0')
+		case c >= 'a' && c <= 'f':
+			d = int64(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			d = int64(c-'A') + 10
+		default:
+			return 0, fmt.Errorf("%w: a chunk size is not hexadecimal", ErrHTTPMalformed)
+		}
+		n = n<<4 | d
 	}
 	return n, nil
 }

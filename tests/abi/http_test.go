@@ -741,6 +741,24 @@ func TestMalformedShapesAreRefused(t *testing.T) {
 		in   string
 	}{
 		{"no status code", "HTTP/1.1\r\n\r\n"},
+		// Shorter than three digits after the version. These are in the table because
+		// removing the length guard is a panic rather than a refusal: the reader slices
+		// three bytes off a string that does not have them. A table case that only asserted
+		// "an error" would have caught it, and none did - the mutation was found by
+		// measuring, not by reading.
+		{"two digits after the version", "HTTP/1.1 20\r\n\r\n"},
+		{"one digit after the version", "HTTP/1.1 2\r\n\r\n"},
+		{"nothing after the version", "HTTP/1.1 \r\n\r\n"},
+		// The grammar is 3DIGIT with no range and no sign, so a sign is not a digit and a
+		// code of "-20" would reach the caller as a negative number it never expects. The
+		// two-digit spellings are the ones that matter: with a sign and three digits the
+		// code is still refused, but by the space check that follows rather than by the digit
+		// class, so those cases pass with the class deleted. Measured - "+200" is refused
+		// either way and "+20" is not.
+		{"a signed status code", "HTTP/1.1 +200 OK\r\n\r\n"},
+		{"a negative status code", "HTTP/1.1 -200 OK\r\n\r\n"},
+		{"a signed two-digit code", "HTTP/1.1 +20 OK\r\nContent-Length: 0\r\n\r\n"},
+		{"a negative two-digit code", "HTTP/1.1 -20 OK\r\nContent-Length: 0\r\n\r\n"},
 		{"no space after the version", "HTTP/1.1200 OK\r\n\r\n"},
 		{"a two-digit code", "HTTP/1.1 20 OK\r\n\r\n"},
 		{"a four-digit code", "HTTP/1.1 2000 OK\r\n\r\n"},
@@ -763,6 +781,15 @@ func TestMalformedShapesAreRefused(t *testing.T) {
 		{"a folding with a tab", "HTTP/1.1 200 OK\r\nX-A: 1\r\n\tcontinued\r\n\r\n"},
 		{"a chunk size that is not hex", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n"},
 		{"an empty chunk size", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\r\n"},
+		// An empty size and a size that is not hex are different facts, and both would be
+		// refused by the hex parse alone - so the diagnosis is the property, pinned here
+		// rather than left to whichever branch happens to run first.
+		{"a chunk size with a sign", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n+5\r\nhello\r\n0\r\n\r\n"},
+		// Leading whitespace is refused while trailing is tolerated, because Go's own
+		// chunked reader trims trailing whitespace too and a peer that pads the line should
+		// not be unreachable through this stack for padding it.
+		{"a chunk size with leading whitespace",
+			"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n 5\r\nhello\r\n0\r\n\r\n"},
 		{"a chunk not followed by CRLF", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nabX0\r\n\r\n"},
 		// Two junk bytes and then a valid terminator. This is the shape the terminator check
 		// exists for: a decoder that skipped whatever two bytes sat there would read the
@@ -1216,6 +1243,66 @@ func TestATransferEncodingNamingChunkedOnlyAsASubstringIsNotChunked(t *testing.T
 			require.Error(t, err, "%q does not end with the coding that frames the message", coding)
 			assert.ErrorIs(t, err, abi.ErrHTTPHeaderInjection)
 			assert.Empty(t, got)
+		})
+	}
+}
+
+func TestTheFramingDiagnosisIsPinnedWhereAFallThroughWouldAlsoRefuse(t *testing.T) {
+	// Three refusals that another check would produce anyway, with a worse message. An
+	// operator reading "a chunk size is not hexadecimal" about a size line that is EMPTY is
+	// sent looking for a bad number where there is no number; one reading "the status line
+	// has no status code" about a status line that is too short is told the wrong thing about
+	// a line that does have one. The sentinel is the same, so ErrorIs cannot see the
+	// difference and the text is what has to be asserted.
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"an empty chunk size", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\r\n",
+			"a chunk size is empty"},
+		{"a status line that is too short", "HTTP/1.1 20\r\n\r\n",
+			"the status line has no status code"},
+		{"a status line with no code at all", "HTTP/1.1\r\n\r\n",
+			"the status line has no status code"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := mustFeedErr(t, tc.in)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, abi.ErrHTTPMalformed)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestAChunkSizeThatOverflowsIsRefusedBeforeItIsRead(t *testing.T) {
+	// Sixteen hex digits can exceed an int64, and a size that wrapped would make this reader
+	// consume the wrong number of bytes and then parse the rest of the response as framing.
+	// It is ErrHTTPTooLarge rather than ErrHTTPMalformed and so is not in that table: the
+	// size is well-formed hex, it is just not a size this reader can represent.
+	// The cap is a digit count, and the number is chosen so the property is checkable rather
+	// than incidental: 15 digits always parse, 16 always refuse, and the two are separated by
+	// one digit rather than by how large the number happens to be.
+	for _, digits := range []int{1, 8, 14, 15} {
+		size := strings.Repeat("F", digits)
+		t.Run(strconv.Itoa(digits)+" digits", func(t *testing.T) {
+			r, err := abi.NewHTTPResponseReader(1 << 20)
+			require.NoError(t, err)
+			require.NoError(t, r.Feed([]byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")))
+			require.NoError(t, r.Feed([]byte(size+"\r\n")),
+				"%d hex digits must be a representable size", digits)
+		})
+	}
+	for _, digits := range []int{16, 17, 40} {
+		size := strings.Repeat("F", digits)
+		t.Run(strconv.Itoa(digits)+" digits", func(t *testing.T) {
+			r, err := abi.NewHTTPResponseReader(1 << 20)
+			require.NoError(t, err)
+			require.NoError(t, r.Feed([]byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")))
+			err = r.Feed([]byte(size + "\r\n"))
+			require.Error(t, err, "%d hex digits cannot be represented", digits)
+			assert.ErrorIs(t, err, abi.ErrHTTPTooLarge)
 		})
 	}
 }
